@@ -211,9 +211,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         width  = 12
         height = 6
         properties = {
-          title  = "Lambda Errors"
-          period = 60
-          stat   = "Sum"
+          title   = "Lambda Errors"
+          region  = var.aws_region
+          period  = 60
+          stat    = "Sum"
           metrics = [
             for fn in var.lambda_function_names : ["AWS/Lambda", "Errors", "FunctionName", fn]
           ]
@@ -227,9 +228,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         width  = 12
         height = 6
         properties = {
-          title  = "Lambda Duration (p95)"
-          period = 60
-          stat   = "p95"
+          title   = "Lambda Duration (p95)"
+          region  = var.aws_region
+          period  = 60
+          stat    = "p95"
           metrics = [
             for fn in var.lambda_function_names : ["AWS/Lambda", "Duration", "FunctionName", fn]
           ]
@@ -243,9 +245,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         width  = 12
         height = 6
         properties = {
-          title  = "API Gateway Requests"
-          period = 60
-          stat   = "Sum"
+          title   = "API Gateway Requests"
+          region  = var.aws_region
+          period  = 60
+          stat    = "Sum"
           metrics = [
             ["AWS/ApiGateway", "Count", "ApiName", "${var.project}-${var.environment}-api", "Stage", var.environment],
             ["AWS/ApiGateway", "5XXError", "ApiName", "${var.project}-${var.environment}-api", "Stage", var.environment],
@@ -261,9 +264,10 @@ resource "aws_cloudwatch_dashboard" "main" {
         width  = 12
         height = 6
         properties = {
-          title  = "Step Function Executions"
-          period = 60
-          stat   = "Sum"
+          title   = "Step Function Executions"
+          region  = var.aws_region
+          period  = 60
+          stat    = "Sum"
           metrics = [
             ["AWS/States", "ExecutionsStarted", "StateMachineArn", var.state_machine_arn],
             ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", var.state_machine_arn],

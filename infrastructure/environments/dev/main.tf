@@ -194,6 +194,7 @@ module "cloudwatch" {
 
   project     = var.project
   environment = var.environment
+  aws_region  = var.aws_region
   alert_email = var.alert_email
 
   lambda_function_names = [
