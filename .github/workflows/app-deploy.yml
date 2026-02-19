@@ -129,6 +129,62 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.6'
+          terraform_wrapper: false
+
+      - name: Fetch Terraform outputs for frontend build
+        id: terraform-outputs
+        run: |
+          cd infrastructure/environments/dev
+          terraform init \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ env.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -input=false
+          
+          # Fetch outputs
+          COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
+          COGNITO_CLIENT_ID=$(terraform output -raw cognito_client_id 2>/dev/null || echo "")
+          API_ENDPOINT=$(terraform output -raw api_endpoint 2>/dev/null || echo "")
+          
+          # Validate outputs
+          if [ -z "$COGNITO_USER_POOL_ID" ] || [ "$COGNITO_USER_POOL_ID" = "null" ]; then
+            echo "❌ Error: COGNITO_USER_POOL_ID is not set or is null"
+            exit 1
+          fi
+          
+          if [ -z "$COGNITO_CLIENT_ID" ] || [ "$COGNITO_CLIENT_ID" = "null" ]; then
+            echo "❌ Error: COGNITO_CLIENT_ID is not set or is null"
+            exit 1
+          fi
+          
+          if [ -z "$API_ENDPOINT" ] || [ "$API_ENDPOINT" = "null" ]; then
+            echo "❌ Error: API_ENDPOINT is not set or is null"
+            exit 1
+          fi
+          
+          echo "✅ Terraform outputs fetched successfully:"
+          echo "   COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID}"
+          echo "   COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID}"
+          echo "   API_ENDPOINT: ${API_ENDPOINT}"
+          
+          # Set outputs for use in build step
+          echo "cognito_user_pool_id=$COGNITO_USER_POOL_ID" >> $GITHUB_OUTPUT
+          echo "cognito_client_id=$COGNITO_CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "api_endpoint=$API_ENDPOINT" >> $GITHUB_OUTPUT
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -146,6 +202,9 @@ jobs:
           npm run build
         env:
           REACT_APP_ENVIRONMENT: dev
+          REACT_APP_COGNITO_USER_POOL_ID: ${{ steps.terraform-outputs.outputs.cognito_user_pool_id }}
+          REACT_APP_COGNITO_CLIENT_ID: ${{ steps.terraform-outputs.outputs.cognito_client_id }}
+          REACT_APP_API_URL: ${{ steps.terraform-outputs.outputs.api_endpoint }}
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
