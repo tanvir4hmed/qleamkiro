@@ -146,5 +146,5 @@ jobs:
           cd infrastructure/environments/dev
           echo "──────────────────────────────────────"
           echo "DEV infrastructure deployed ✅"
-          terraform output 2>/dev/null || true
-          echo "──────────────────────────────────────"
+          # terraform output 2>/dev/null || true
+          # echo "──────────────────────────────────────"
