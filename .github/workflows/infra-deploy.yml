@@ -134,7 +134,7 @@ jobs:
       - name: Terraform Plan
         run: |
           cd infrastructure/environments/dev
-          terraform plan -var-file=terraform.tfvars -no-color
+          terraform plan -var-file=terraform.tfvars -out=tfplan
 
       - name: Terraform Apply
         run: |
