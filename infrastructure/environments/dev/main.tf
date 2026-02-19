@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.0"
+    }
   }
 
   backend "s3" {
@@ -159,6 +163,47 @@ module "lambda" {
   allowed_origins               = ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"]
 
   depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.frontend]
+}
+
+# -----------------------------------------------------------------------------
+# Update Lambda environment with Step Function ARN
+# This is needed because Step Functions depends on Lambda, but Lambda needs Step Function ARN
+# We update the Lambda function's environment variable after Step Functions is created
+# -----------------------------------------------------------------------------
+resource "null_resource" "update_lambda_step_function_arn" {
+  triggers = {
+    step_function_arn    = module.step_functions.state_machine_arn
+    lambda_function_name = module.lambda.api_handler_function_name
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      ENV_VARS=$(cat <<EOF
+      {
+        "Variables": {
+          "ENVIRONMENT": "${var.environment}",
+          "S3_BUCKET_NAME": "${local.audio_bucket_name}",
+          "CHILD_PROFILE_TABLE": "${module.dynamodb.child_profile_table_name}",
+          "SESSION_TABLE": "${module.dynamodb.session_table_name}",
+          "SOUND_CLUSTER_TABLE": "${module.dynamodb.sound_cluster_table_name}",
+          "SEMANTIC_BRIDGE_TABLE": "${module.dynamodb.semantic_bridge_table_name}",
+          "FEEDBACK_TABLE": "${module.dynamodb.feedback_table_name}",
+          "ALPHA_VALUE": "${tostring(var.alpha_value)}",
+          "CLUSTER_SIMILARITY_THRESHOLD": "${tostring(var.cluster_similarity_threshold)}",
+          "STEP_FUNCTION_ARN": "${module.step_functions.state_machine_arn}",
+          "LOG_LEVEL": "DEBUG",
+          "ALLOWED_ORIGINS": "https://${module.frontend.cloudfront_domain_name},http://localhost:3000"
+        }
+      }
+      EOF
+      )
+      aws lambda update-function-configuration \
+        --function-name ${module.lambda.api_handler_function_name} \
+        --environment "$ENV_VARS"
+    EOT
+  }
+
+  depends_on = [module.lambda, module.step_functions, module.frontend]
 }
 
 # -----------------------------------------------------------------------------
