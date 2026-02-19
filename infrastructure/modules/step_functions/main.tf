@@ -157,7 +157,7 @@ resource "aws_cloudwatch_event_target" "sfn_trigger" {
   rule      = aws_cloudwatch_event_rule.s3_upload.name
   target_id = "TriggerProcessingPipeline"
   arn       = aws_sfn_state_machine.processing_pipeline.id
-  role_arn  = var.eventbridge_role_arn
+  role_arn  = aws_iam_role.eventbridge.arn
 
   input_transformer {
     input_paths = {
