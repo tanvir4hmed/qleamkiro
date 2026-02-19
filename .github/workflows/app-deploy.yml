@@ -13,6 +13,8 @@ env:
   AWS_REGION: us-east-1
   PYTHON_VERSION: '3.11'
   NODE_VERSION: '18'
+  TF_STATE_BUCKET: qleam-terraform-state
+  TF_STATE_LOCK_TABLE: qleam-terraform-state-lock
 
 jobs:
   # ===========================================================================
@@ -193,8 +195,8 @@ jobs:
         run: |
           cd infrastructure/environments/dev
           terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ env.TF_STATE_LOCK_TABLE }}" \
             -backend-config="key=dev/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="encrypt=true"

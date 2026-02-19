@@ -16,7 +16,6 @@ env:
 jobs:
   # ===========================================================================
   # Job 1: Bootstrap — Create S3 bucket & DynamoDB table if they don't exist
-  # Then write the names into GitHub Actions secrets automatically
   # ===========================================================================
   bootstrap:
     name: Bootstrap Remote State
@@ -83,55 +82,16 @@ jobs:
             echo "✅ DynamoDB table '$TABLE' created."
           fi
 
-          echo "bucket_name=$BUCKET"       >> $GITHUB_OUTPUT
-          echo "lock_table_name=$TABLE"    >> $GITHUB_OUTPUT
+          echo "bucket_name=$BUCKET"    >> $GITHUB_OUTPUT
+          echo "lock_table_name=$TABLE" >> $GITHUB_OUTPUT
 
-      - name: Save bucket & table names to GitHub secrets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BUCKET="${{ env.TF_STATE_BUCKET }}"
-          TABLE="${{ env.TF_STATE_LOCK_TABLE }}"
-          REPO="${{ github.repository }}"
-
-          # Fetch the repo public key for secret encryption
-          KEY_JSON=$(gh api /repos/${REPO}/actions/public-key)
-          KEY_ID=$(echo "$KEY_JSON" | jq -r '.key_id')
-          PUB_KEY=$(echo "$KEY_JSON" | jq -r '.key')
-
-          # Helper: encrypt a secret value with the repo public key (libsodium)
-          encrypt_secret() {
-            local value="$1"
-            python3 - <<PYEOF
-          import base64, sys
-          from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
-          from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-          import nacl.encoding, nacl.public
-
-          pub_key_bytes = base64.b64decode("${PUB_KEY}")
-          pub_key = nacl.public.PublicKey(pub_key_bytes)
-          sealed = nacl.public.SealedBox(pub_key)
-          encrypted = sealed.encrypt(b"${value}")
-          print(base64.b64encode(encrypted).decode())
-          PYEOF
-          }
-
-          pip install pynacl --quiet
-
-          ENC_BUCKET=$(encrypt_secret "$BUCKET")
-          ENC_TABLE=$(encrypt_secret "$TABLE")
-
-          # Upsert TF_STATE_BUCKET secret
-          gh api --method PUT /repos/${REPO}/actions/secrets/TF_STATE_BUCKET \
-            -f encrypted_value="$ENC_BUCKET" \
-            -f key_id="$KEY_ID"
-          echo "✅ GitHub secret TF_STATE_BUCKET set to '$BUCKET'"
-
-          # Upsert TF_STATE_LOCK_TABLE secret
-          gh api --method PUT /repos/${REPO}/actions/secrets/TF_STATE_LOCK_TABLE \
-            -f encrypted_value="$ENC_TABLE" \
-            -f key_id="$KEY_ID"
-          echo "✅ GitHub secret TF_STATE_LOCK_TABLE set to '$TABLE'"
+          echo ""
+          echo "══════════════════════════════════════════════════════"
+          echo "  State bucket : $BUCKET"
+          echo "  Lock table   : $TABLE"
+          echo "  These values are already set in the workflow env."
+          echo "  No manual secret setup required."
+          echo "══════════════════════════════════════════════════════"
 
   # ===========================================================================
   # Job 2: Terraform — Plan & Apply dev infrastructure
