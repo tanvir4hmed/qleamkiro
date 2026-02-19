@@ -97,15 +97,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Create placeholder zips so filebase64sha256() doesn't fail during plan.
-      # Real Lambda code is deployed by the "app deploy" workflow.
-      - name: Create placeholder Lambda zips
+      # Audio layer is sourced from S3 (too large for direct upload).
+      # Upload a placeholder so the S3 object exists for Terraform to reference.
+      # Real code is deployed by the "app deploy" workflow.
+      - name: Upload placeholder audio layer to S3
+        run: |
+          echo "placeholder" > /tmp/placeholder.py
+          zip /tmp/placeholder.zip /tmp/placeholder.py
+
+          S3_KEY="lambda-layers/qleam-dev-audio-processing.zip"
+          if ! aws s3api head-object --bucket "${{ env.TF_STATE_BUCKET }}" --key "$S3_KEY" 2>/dev/null; then
+            aws s3 cp /tmp/placeholder.zip \
+              s3://${{ env.TF_STATE_BUCKET }}/${S3_KEY} --no-progress
+            echo "✅ Placeholder audio layer uploaded."
+          else
+            echo "✅ Audio layer already exists in S3 — skipping."
+          fi
+
+      # Other layers/functions use local file paths — create placeholders for filebase64sha256()
+      - name: Create placeholder Lambda zips (local)
         run: |
           echo "placeholder" > /tmp/placeholder.py
           zip /tmp/placeholder.zip /tmp/placeholder.py
 
           mkdir -p lambdas/layers
-          cp /tmp/placeholder.zip lambdas/layers/audio_processing.zip
           cp /tmp/placeholder.zip lambdas/layers/shared_utils.zip
 
           for fn in feature_extraction cluster_engine reinforcement_engine \
@@ -113,7 +128,7 @@ jobs:
             mkdir -p lambdas/${fn}/dist
             cp /tmp/placeholder.zip lambdas/${fn}/dist/${fn}.zip
           done
-          echo "✅ Placeholder zips created."
+          echo "✅ Local placeholder zips created."
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -170,14 +185,28 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Placeholders must exist again in this fresh runner for filebase64sha256()
-      - name: Create placeholder Lambda zips
+      # Upload placeholder audio layer to S3 if not already present
+      - name: Upload placeholder audio layer to S3
+        run: |
+          echo "placeholder" > /tmp/placeholder.py
+          zip /tmp/placeholder.zip /tmp/placeholder.py
+
+          S3_KEY="lambda-layers/qleam-dev-audio-processing.zip"
+          if ! aws s3api head-object --bucket "${{ env.TF_STATE_BUCKET }}" --key "$S3_KEY" 2>/dev/null; then
+            aws s3 cp /tmp/placeholder.zip \
+              s3://${{ env.TF_STATE_BUCKET }}/${S3_KEY} --no-progress
+            echo "✅ Placeholder audio layer uploaded."
+          else
+            echo "✅ Audio layer already exists in S3 — skipping."
+          fi
+
+      # Create local placeholder zips for filebase64sha256()
+      - name: Create placeholder Lambda zips (local)
         run: |
           echo "placeholder" > /tmp/placeholder.py
           zip /tmp/placeholder.zip /tmp/placeholder.py
 
           mkdir -p lambdas/layers
-          cp /tmp/placeholder.zip lambdas/layers/audio_processing.zip
           cp /tmp/placeholder.zip lambdas/layers/shared_utils.zip
 
           for fn in feature_extraction cluster_engine reinforcement_engine \
@@ -185,7 +214,7 @@ jobs:
             mkdir -p lambdas/${fn}/dist
             cp /tmp/placeholder.zip lambdas/${fn}/dist/${fn}.zip
           done
-          echo "✅ Placeholder zips created."
+          echo "✅ Local placeholder zips created."
 
       - uses: hashicorp/setup-terraform@v3
         with:

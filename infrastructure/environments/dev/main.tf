@@ -128,6 +128,7 @@ module "lambda" {
 
   project                  = var.project
   environment              = var.environment
+  tf_state_bucket          = "qleam-terraform-state"
   lambda_execution_role_arn = module.iam.lambda_execution_role_arn
   private_subnet_ids       = module.vpc.private_subnet_ids
   lambda_security_group_id = module.vpc.lambda_security_group_id

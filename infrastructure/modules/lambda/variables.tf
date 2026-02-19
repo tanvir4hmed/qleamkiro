@@ -89,9 +89,15 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "tf_state_bucket" {
+  description = "S3 bucket used to store large Lambda layer zips (audio processing)"
+  type        = string
+  default     = "qleam-terraform-state"
+}
+
 # Lambda deployment package paths
 variable "audio_layer_zip_path" {
-  description = "Path to audio processing Lambda layer zip"
+  description = "Path to audio processing Lambda layer zip (used only when small enough for direct upload)"
   type        = string
   default     = "../../../lambdas/layers/audio_processing.zip"
 }

@@ -191,14 +191,21 @@ jobs:
           terraform_version: '1.6.6'
           terraform_wrapper: false
 
-      - name: Create placeholder Lambda zips (for filebase64sha256)
+      - name: Upload audio layer to S3 (bypasses 70 MB direct-upload limit)
+        run: |
+          S3_KEY="lambda-layers/qleam-dev-audio-processing.zip"
+          aws s3 cp lambdas/layers/audio_processing.zip \
+            s3://${{ env.TF_STATE_BUCKET }}/${S3_KEY} \
+            --no-progress
+          echo "✅ Audio layer uploaded to s3://${{ env.TF_STATE_BUCKET }}/${S3_KEY}"
+
+      - name: Create placeholder zips for remaining layers (filebase64sha256)
         run: |
           echo "placeholder" > /tmp/placeholder.py
           zip /tmp/placeholder.zip /tmp/placeholder.py
           mkdir -p lambdas/layers
-          # Only create placeholders if real zips are missing
-          [ -f lambdas/layers/audio_processing.zip ] || cp /tmp/placeholder.zip lambdas/layers/audio_processing.zip
-          [ -f lambdas/layers/shared_utils.zip ]     || cp /tmp/placeholder.zip lambdas/layers/shared_utils.zip
+          # shared_utils is small — keep direct upload; audio is now via S3
+          [ -f lambdas/layers/shared_utils.zip ] || cp /tmp/placeholder.zip lambdas/layers/shared_utils.zip
           for fn in feature_extraction cluster_engine reinforcement_engine \
                     insight_generator feedback_processor api_handler; do
             mkdir -p lambdas/${fn}/dist

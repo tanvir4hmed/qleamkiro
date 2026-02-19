@@ -21,12 +21,15 @@ locals {
 
 # -----------------------------------------------------------------------------
 # Lambda Layer — Audio Processing (librosa, numpy, scipy)
+# Uploaded via S3 to bypass the 70 MB direct-upload limit.
+# The workflow uploads the zip to s3://<tf_state_bucket>/lambda-layers/audio_processing.zip
+# before running Terraform.
 # -----------------------------------------------------------------------------
 resource "aws_lambda_layer_version" "audio_processing" {
   layer_name          = "${var.project}-${var.environment}-audio-processing"
   description         = "librosa, numpy, scipy for audio feature extraction"
-  filename            = var.audio_layer_zip_path
-  source_code_hash    = filebase64sha256(var.audio_layer_zip_path)
+  s3_bucket           = var.tf_state_bucket
+  s3_key              = "lambda-layers/${var.project}-${var.environment}-audio-processing.zip"
   compatible_runtimes = ["python3.11"]
   compatible_architectures = ["x86_64"]
 }
