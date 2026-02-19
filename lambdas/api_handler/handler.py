@@ -38,6 +38,13 @@ log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
 logger = logging.getLogger(__name__)
 
+# Get allowed CORS origins from environment variable
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
 sfn_client = boto3.client("stepfunctions")
@@ -70,15 +77,30 @@ def _float_to_decimal(obj: Any) -> Any:
     return obj
 
 
-def response(status_code: int, body: Any) -> Dict:
+def get_allowed_origin(event: Dict) -> str:
+    """Get the allowed origin from request headers if trusted, otherwise return '*'."""
+    if not ALLOWED_ORIGINS:
+        return "*"  # If no allowed origins configured, allow all (backward compatibility)
+    
+    origin = event.get("headers", {}).get("Origin") or event.get("headers", {}).get("origin", "")
+    if origin and origin in ALLOWED_ORIGINS:
+        return origin
+    # Return '*' as fallback for untrusted origins (allows localhost and other dev origins)
+    return "*"
+
+
+def response(status_code: int, body: Any, event: Optional[Dict] = None) -> Dict:
+    """Create API Gateway response with CORS headers."""
+    origin = get_allowed_origin(event) if event else "*"
+    headers = {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+    }
     return {
         "statusCode": status_code,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
-        },
+        "headers": headers,
         "body": json.dumps(body, default=str),
     }
 
@@ -115,7 +137,7 @@ def create_child(event: Dict) -> Dict:
     child_profile_table.put_item(Item=_float_to_decimal(profile))
     logger.info(f"Created child profile {child_id} for user {user_id}")
 
-    return response(201, {"child_id": child_id, "message": "Child profile created"})
+    return response(201, {"child_id": child_id, "message": "Child profile created"}, event)
 
 
 # =============================================================================
@@ -128,11 +150,11 @@ def delete_child(event: Dict) -> Dict:
     # Verify ownership
     profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
     if "Item" not in profile_resp:
-        return response(404, {"error": "Child not found"})
+        return response(404, {"error": "Child not found"}, event)
 
     profile = profile_resp["Item"]
     if profile.get("parent_id") != user_id:
-        return response(403, {"error": "Not authorized to delete this child profile"})
+        return response(403, {"error": "Not authorized to delete this child profile"}, event)
 
     # Delete sessions
     sessions_resp = session_table.query(
@@ -162,7 +184,7 @@ def delete_child(event: Dict) -> Dict:
     child_profile_table.delete_item(Key={"child_id": child_id})
 
     logger.info(f"Deleted all data for child {child_id}")
-    return response(200, {"message": "Child profile and all associated data deleted"})
+    return response(200, {"message": "Child profile and all associated data deleted"}, event)
 
 
 # =============================================================================
@@ -195,7 +217,7 @@ def list_sessions(event: Dict) -> Dict:
             } if s.get("insight") else None,
         })
 
-    return response(200, {"sessions": summaries, "count": len(summaries)})
+    return response(200, {"sessions": summaries, "count": len(summaries)}, event)
 
 
 # =============================================================================
@@ -207,7 +229,7 @@ def upload_session(event: Dict) -> Dict:
     child_id = body.get("child_id")
 
     if not child_id:
-        return response(400, {"error": "child_id is required"})
+        return response(400, {"error": "child_id is required"}, event)
 
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -244,7 +266,7 @@ def upload_session(event: Dict) -> Dict:
         "s3_key": s3_key,
         "expires_in": 300,
         "instructions": "PUT audio/wav file to upload_url, then call start_processing",
-    })
+    }, event)
 
 
 # =============================================================================
@@ -256,7 +278,7 @@ def start_processing(event: Dict) -> Dict:
 
     session_resp = session_table.get_item(Key={"session_id": session_id})
     if "Item" not in session_resp:
-        return response(404, {"error": "Session not found"})
+        return response(404, {"error": "Session not found"}, event)
 
     session = _decimal_to_float(session_resp["Item"])
     child_id = session["child_id"]
@@ -264,7 +286,7 @@ def start_processing(event: Dict) -> Dict:
 
     sfn_arn = os.environ.get("STEP_FUNCTION_ARN", STEP_FUNCTION_ARN)
     if not sfn_arn:
-        return response(500, {"error": "Step Function ARN not configured"})
+        return response(500, {"error": "Step Function ARN not configured"}, event)
 
     sfn_input = {
         "child_id": child_id,
@@ -283,7 +305,7 @@ def start_processing(event: Dict) -> Dict:
         "message": "Processing started",
         "session_id": session_id,
         "status": "processing",
-    })
+    }, event)
 
 
 # =============================================================================
@@ -294,22 +316,22 @@ def get_insight(event: Dict) -> Dict:
 
     session_resp = session_table.get_item(Key={"session_id": session_id})
     if "Item" not in session_resp:
-        return response(404, {"error": "Session not found"})
+        return response(404, {"error": "Session not found"}, event)
 
     session = _decimal_to_float(session_resp["Item"])
 
     if not session.get("processed"):
-        return response(202, {"status": "processing", "message": "Session is still being processed"})
+        return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
 
     insight = session.get("insight")
     if not insight:
-        return response(404, {"error": "Insight not yet generated"})
+        return response(404, {"error": "Insight not yet generated"}, event)
 
     return response(200, {
         "session_id": session_id,
         "insight": insight,
         "timestamp": session.get("timestamp"),
-    })
+    }, event)
 
 
 # =============================================================================
@@ -339,10 +361,10 @@ def submit_feedback(event: Dict) -> Dict:
             Payload=json.dumps(feedback_payload).encode(),
         )
         result_payload = json.loads(result["Payload"].read())
-        return response(200, result_payload)
+        return response(200, result_payload, event)
     except Exception as e:
         logger.error(f"Feedback processor failed: {e}")
-        return response(500, {"error": "Failed to process feedback"})
+        return response(500, {"error": "Failed to process feedback"}, event)
 
 
 # =============================================================================
@@ -366,7 +388,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     logger.info(f"API request: {method} {path}")
 
     if method == "OPTIONS":
-        return response(200, {})
+        return response(200, {}, event)
 
     for (route_method, route_path), handler in ROUTES.items():
         if method == route_method and _path_matches(path, route_path):
@@ -374,9 +396,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 return handler(event)
             except Exception as e:
                 logger.error(f"Handler error: {e}", exc_info=True)
-                return response(500, {"error": "Internal server error"})
+                return response(500, {"error": "Internal server error"}, event)
 
-    return response(404, {"error": f"Route not found: {method} {path}"})
+    return response(404, {"error": f"Route not found: {method} {path}"}, event)
 
 
 def _path_matches(actual: str, template: str) -> bool:

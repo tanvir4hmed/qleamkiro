@@ -143,3 +143,9 @@ variable "api_handler_zip_path" {
   type        = string
   default     = "../../../lambdas/api_handler/dist/api_handler.zip"
 }
+
+variable "allowed_origins" {
+  description = "List of allowed CORS origins (CloudFront URLs)"
+  type        = list(string)
+  default     = []
+}

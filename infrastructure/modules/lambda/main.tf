@@ -279,7 +279,9 @@ resource "aws_lambda_function" "api_handler" {
   ]
 
   environment {
-    variables = local.common_env_vars
+    variables = merge(local.common_env_vars, {
+      ALLOWED_ORIGINS = join(",", var.allowed_origins)
+    })
   }
 
   vpc_config {

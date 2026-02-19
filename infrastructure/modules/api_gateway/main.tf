@@ -71,7 +71,7 @@ resource "aws_api_gateway_integration" "post_child" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# OPTIONS /child (CORS preflight)
+# OPTIONS /child (CORS preflight - unauthenticated)
 resource "aws_api_gateway_method" "options_child" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.child.id
@@ -113,7 +113,7 @@ resource "aws_api_gateway_integration" "delete_child" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# OPTIONS /child/{child_id} (CORS preflight)
+# OPTIONS /child/{child_id} (CORS preflight - unauthenticated)
 resource "aws_api_gateway_method" "options_child_id" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.child_id.id
@@ -162,7 +162,7 @@ resource "aws_api_gateway_integration" "post_session_upload" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# OPTIONS /session/upload (CORS preflight)
+# OPTIONS /session/upload (CORS preflight - unauthenticated)
 resource "aws_api_gateway_method" "options_session_upload" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.session_upload.id
@@ -211,7 +211,7 @@ resource "aws_api_gateway_integration" "get_session_insight" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# OPTIONS /session/{session_id}/insight (CORS preflight)
+# OPTIONS /session/{session_id}/insight (CORS preflight - unauthenticated)
 resource "aws_api_gateway_method" "options_session_insight" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.session_insight.id
@@ -253,7 +253,7 @@ resource "aws_api_gateway_integration" "post_session_feedback" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# OPTIONS /session/{session_id}/feedback (CORS preflight)
+# OPTIONS /session/{session_id}/feedback (CORS preflight - unauthenticated)
 resource "aws_api_gateway_method" "options_session_feedback" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.session_feedback.id
@@ -295,7 +295,7 @@ resource "aws_api_gateway_integration" "get_child_sessions" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# OPTIONS /child/{child_id}/sessions (CORS preflight)
+# OPTIONS /child/{child_id}/sessions (CORS preflight - unauthenticated)
 resource "aws_api_gateway_method" "options_child_sessions" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.child_sessions.id

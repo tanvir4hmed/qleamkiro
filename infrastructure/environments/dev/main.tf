@@ -156,8 +156,9 @@ module "lambda" {
   insight_generator_zip_path    = var.insight_generator_zip_path
   feedback_processor_zip_path   = var.feedback_processor_zip_path
   api_handler_zip_path          = var.api_handler_zip_path
+  allowed_origins               = ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"]
 
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3]
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.frontend]
 }
 
 # -----------------------------------------------------------------------------
