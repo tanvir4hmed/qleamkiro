@@ -133,13 +133,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          # No cache — package-lock.json is not committed to the repo
 
       - name: Install dependencies
         run: |
           cd frontend
-          npm ci
+          npm install
 
       - name: Build frontend
         run: |
@@ -190,6 +189,21 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.6.6'
+          terraform_wrapper: false
+
+      - name: Create placeholder Lambda zips (for filebase64sha256)
+        run: |
+          echo "placeholder" > /tmp/placeholder.py
+          zip /tmp/placeholder.zip /tmp/placeholder.py
+          mkdir -p lambdas/layers
+          # Only create placeholders if real zips are missing
+          [ -f lambdas/layers/audio_processing.zip ] || cp /tmp/placeholder.zip lambdas/layers/audio_processing.zip
+          [ -f lambdas/layers/shared_utils.zip ]     || cp /tmp/placeholder.zip lambdas/layers/shared_utils.zip
+          for fn in feature_extraction cluster_engine reinforcement_engine \
+                    insight_generator feedback_processor api_handler; do
+            mkdir -p lambdas/${fn}/dist
+            [ -f lambdas/${fn}/dist/${fn}.zip ] || cp /tmp/placeholder.zip lambdas/${fn}/dist/${fn}.zip
+          done
 
       - name: Terraform Init
         run: |
@@ -215,23 +229,50 @@ jobs:
           echo "✅ Frontend deployed to s3://${FRONTEND_BUCKET}"
 
       - name: Invalidate CloudFront cache (DEV)
+        id: cloudfront
         run: |
+          CF_DOMAIN=""
           CF_ID=$(aws cloudfront list-distributions \
-            --query "DistributionList.Items[?Comment=='Qleam dev frontend'].Id" \
+            --query "DistributionList.Items[?contains(Origins.Items[0].DomainName,'qleam-dev-frontend')].Id" \
             --output text 2>/dev/null || echo "")
+
+          if [ -z "$CF_ID" ] || [ "$CF_ID" = "None" ]; then
+            CF_ID=$(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?contains(Comment,'dev')].Id" \
+              --output text 2>/dev/null || echo "")
+          fi
+
           if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
+            CF_DOMAIN=$(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?Id=='${CF_ID}'].DomainName" \
+              --output text 2>/dev/null || echo "")
             aws cloudfront create-invalidation \
               --distribution-id "$CF_ID" \
-              --paths "/*"
+              --paths "/*" > /dev/null
             echo "✅ CloudFront cache invalidated: $CF_ID"
           else
             echo "ℹ️  No CloudFront distribution found — skipping invalidation."
           fi
 
+          echo "cf_domain=$CF_DOMAIN" >> $GITHUB_OUTPUT
+          echo "cf_id=$CF_ID"         >> $GITHUB_OUTPUT
+
       - name: Deployment summary
         run: |
-          echo "──────────────────────────────────────"
-          echo "✅ DEV application deployed successfully"
-          echo "   Branch : ${{ github.ref_name }}"
-          echo "   Commit : ${{ github.sha }}"
-          echo "──────────────────────────────────────"
+          CF_DOMAIN="${{ steps.cloudfront.outputs.cf_domain }}"
+          echo "══════════════════════════════════════════════════════"
+          echo "✅  DEV application deployed successfully!"
+          echo ""
+          echo "   Branch  : ${{ github.ref_name }}"
+          echo "   Commit  : ${{ github.sha }}"
+          if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
+            echo ""
+            echo "   🌐 App URL : https://${CF_DOMAIN}"
+            echo ""
+            echo "   Open in browser → https://${CF_DOMAIN}"
+          else
+            echo ""
+            echo "   ℹ️  CloudFront domain not found in this step."
+            echo "   Check AWS Console → CloudFront for the domain."
+          fi
+          echo "══════════════════════════════════════════════════════"
