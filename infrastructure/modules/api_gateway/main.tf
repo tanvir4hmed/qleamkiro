@@ -186,6 +186,48 @@ resource "aws_api_gateway_resource" "session_id" {
   path_part   = "{session_id}"
 }
 
+# /session/{session_id}/start
+resource "aws_api_gateway_resource" "session_start" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.session_id.id
+  path_part   = "start"
+}
+
+# POST /session/{session_id}/start
+resource "aws_api_gateway_method" "post_session_start" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.session_start.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "post_session_start" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_start.id
+  http_method             = aws_api_gateway_method.post_session_start.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
+# OPTIONS /session/{session_id}/start (CORS preflight - unauthenticated)
+resource "aws_api_gateway_method" "options_session_start" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.session_start.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_session_start" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_start.id
+  http_method             = aws_api_gateway_method.options_session_start.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
 # /session/{session_id}/insight
 resource "aws_api_gateway_resource" "session_insight" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -329,6 +371,11 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_integration.options_child_id.id,
       aws_api_gateway_method.options_session_upload.id,
       aws_api_gateway_integration.options_session_upload.id,
+      aws_api_gateway_resource.session_start.id,
+      aws_api_gateway_method.post_session_start.id,
+      aws_api_gateway_integration.post_session_start.id,
+      aws_api_gateway_method.options_session_start.id,
+      aws_api_gateway_integration.options_session_start.id,
       aws_api_gateway_resource.session_insight.id,
       aws_api_gateway_method.get_session_insight.id,
       aws_api_gateway_method.options_session_insight.id,
@@ -353,6 +400,8 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.options_child_id,
     aws_api_gateway_integration.post_session_upload,
     aws_api_gateway_integration.options_session_upload,
+    aws_api_gateway_integration.post_session_start,
+    aws_api_gateway_integration.options_session_start,
     aws_api_gateway_integration.get_session_insight,
     aws_api_gateway_integration.options_session_insight,
     aws_api_gateway_integration.post_session_feedback,
