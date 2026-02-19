@@ -71,6 +71,23 @@ resource "aws_api_gateway_integration" "post_child" {
   uri                     = var.api_handler_invoke_arn
 }
 
+# OPTIONS /child (CORS preflight)
+resource "aws_api_gateway_method" "options_child" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.child.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_child" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.child.id
+  http_method             = aws_api_gateway_method.options_child.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
 # /child/{child_id}
 resource "aws_api_gateway_resource" "child_id" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -91,6 +108,23 @@ resource "aws_api_gateway_integration" "delete_child" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.child_id.id
   http_method             = aws_api_gateway_method.delete_child.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
+# OPTIONS /child/{child_id} (CORS preflight)
+resource "aws_api_gateway_method" "options_child_id" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.child_id.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_child_id" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.child_id.id
+  http_method             = aws_api_gateway_method.options_child_id.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.api_handler_invoke_arn
@@ -128,6 +162,23 @@ resource "aws_api_gateway_integration" "post_session_upload" {
   uri                     = var.api_handler_invoke_arn
 }
 
+# OPTIONS /session/upload (CORS preflight)
+resource "aws_api_gateway_method" "options_session_upload" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.session_upload.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_session_upload" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_upload.id
+  http_method             = aws_api_gateway_method.options_session_upload.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
 # /session/{session_id}
 resource "aws_api_gateway_resource" "session_id" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -160,6 +211,23 @@ resource "aws_api_gateway_integration" "get_session_insight" {
   uri                     = var.api_handler_invoke_arn
 }
 
+# OPTIONS /session/{session_id}/insight (CORS preflight)
+resource "aws_api_gateway_method" "options_session_insight" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.session_insight.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_session_insight" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_insight.id
+  http_method             = aws_api_gateway_method.options_session_insight.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
 # /session/{session_id}/feedback
 resource "aws_api_gateway_resource" "session_feedback" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -180,6 +248,23 @@ resource "aws_api_gateway_integration" "post_session_feedback" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.session_feedback.id
   http_method             = aws_api_gateway_method.post_session_feedback.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
+# OPTIONS /session/{session_id}/feedback (CORS preflight)
+resource "aws_api_gateway_method" "options_session_feedback" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.session_feedback.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_session_feedback" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.session_feedback.id
+  http_method             = aws_api_gateway_method.options_session_feedback.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.api_handler_invoke_arn
@@ -210,6 +295,23 @@ resource "aws_api_gateway_integration" "get_child_sessions" {
   uri                     = var.api_handler_invoke_arn
 }
 
+# OPTIONS /child/{child_id}/sessions (CORS preflight)
+resource "aws_api_gateway_method" "options_child_sessions" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.child_sessions.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_child_sessions" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.child_sessions.id
+  http_method             = aws_api_gateway_method.options_child_sessions.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
 # -----------------------------------------------------------------------------
 # Deployment and Stage
 # -----------------------------------------------------------------------------
@@ -221,12 +323,22 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.child.id,
       aws_api_gateway_method.post_child.id,
       aws_api_gateway_integration.post_child.id,
-      aws_api_gateway_resource.session_upload.id,
-      aws_api_gateway_method.post_session_upload.id,
+      aws_api_gateway_method.options_child.id,
+      aws_api_gateway_integration.options_child.id,
+      aws_api_gateway_method.options_child_id.id,
+      aws_api_gateway_integration.options_child_id.id,
+      aws_api_gateway_method.options_session_upload.id,
+      aws_api_gateway_integration.options_session_upload.id,
       aws_api_gateway_resource.session_insight.id,
       aws_api_gateway_method.get_session_insight.id,
+      aws_api_gateway_method.options_session_insight.id,
+      aws_api_gateway_integration.options_session_insight.id,
       aws_api_gateway_resource.session_feedback.id,
       aws_api_gateway_method.post_session_feedback.id,
+      aws_api_gateway_method.options_session_feedback.id,
+      aws_api_gateway_integration.options_session_feedback.id,
+      aws_api_gateway_method.options_child_sessions.id,
+      aws_api_gateway_integration.options_child_sessions.id,
     ]))
   }
 
@@ -236,11 +348,17 @@ resource "aws_api_gateway_deployment" "main" {
 
   depends_on = [
     aws_api_gateway_integration.post_child,
+    aws_api_gateway_integration.options_child,
     aws_api_gateway_integration.delete_child,
+    aws_api_gateway_integration.options_child_id,
     aws_api_gateway_integration.post_session_upload,
+    aws_api_gateway_integration.options_session_upload,
     aws_api_gateway_integration.get_session_insight,
+    aws_api_gateway_integration.options_session_insight,
     aws_api_gateway_integration.post_session_feedback,
+    aws_api_gateway_integration.options_session_feedback,
     aws_api_gateway_integration.get_child_sessions,
+    aws_api_gateway_integration.options_child_sessions,
   ]
 }
 
