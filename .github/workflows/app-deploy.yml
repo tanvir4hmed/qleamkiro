@@ -94,6 +94,11 @@ jobs:
               --no-cache-dir \
               --only-binary=:all: \
               --quiet
+
+          # Docker runs as root → installed files are root-owned.
+          # The runner user cannot delete them without taking ownership first.
+          sudo chown -R "$(id -u):$(id -g)" lambdas/layers/audio_processing_pkg/
+
           # ── Strip files to stay under Lambda's 250 MB unzipped limit ──
           PKG=lambdas/layers/audio_processing_pkg/python
 
