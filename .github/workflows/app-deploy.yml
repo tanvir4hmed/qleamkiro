@@ -86,12 +86,13 @@ jobs:
             -v "$(pwd)/lambdas/layers/audio_processing_pkg:/out" \
             public.ecr.aws/lambda/python:3.11 \
             install \
-              numpy \
-              scipy \
-              librosa \
-              soundfile \
+              "numpy>=1.24.0,<2" \
+              "scipy>=1.11.0" \
+              "librosa>=0.10.0" \
+              "soundfile>=0.12.1" \
               --target /out/python \
               --no-cache-dir \
+              --only-binary=:all: \
               --quiet
           # Strip test dirs, __pycache__, and *.dist-info to reduce layer size
           find lambdas/layers/audio_processing_pkg/python \
