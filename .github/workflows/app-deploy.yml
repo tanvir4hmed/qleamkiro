@@ -307,6 +307,17 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="encrypt=true"
 
+      - name: Force refresh audio layer (remove from state so Terraform republishes)
+        run: |
+          cd infrastructure/environments/dev
+          # The audio_processing layer resource has no source_code_hash, so
+          # Terraform cannot detect that the S3 zip was updated and skips
+          # creating a new layer version. Removing it from state forces
+          # Terraform to publish a fresh version from the newly uploaded zip.
+          terraform state rm 'module.lambda.aws_lambda_layer_version.audio_processing' \
+            2>/dev/null && echo "✅ Audio layer removed from state (will be republished)" \
+            || echo "ℹ️  Audio layer not in state yet (first deploy)"
+
       - name: Terraform Apply (Lambda updates only)
         run: |
           cd infrastructure/environments/dev
