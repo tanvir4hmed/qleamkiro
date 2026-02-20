@@ -127,7 +127,12 @@ jobs:
           find $PKG \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
           find $PKG -type d \( -name "*.dist-info" -o -name "*.egg-info" \) \
             -exec rm -rf {} + 2>/dev/null || true
-          find $PKG -name "*.pyi" -delete 2>/dev/null || true
+          # NOTE: do NOT delete __init__.pyi — librosa 0.10+ and scipy 1.11+
+          # use lazy_loader.attach_stub() which reads __init__.pyi at runtime
+          # to build the module's lazy attribute access. Deleting it breaks import.
+          find $PKG -name "*.pyi" \
+            -not -name "__init__.pyi" \
+            -delete 2>/dev/null || true
           find $PKG \( \
             -name "*.c" -o -name "*.h" \
             -o -name "*.pyx" -o -name "*.pxd" \
