@@ -150,11 +150,10 @@ jobs:
             rm -rf $PKG/scipy/$mod 2>/dev/null || true
           done
 
-          # ── Pass 3: Remove unused numpy submodules (~20 MB savings) ──
-          # librosa only needs numpy core, fft, linalg, random
-          for mod in distutils polynomial ma/tests; do
-            rm -rf $PKG/numpy/$mod 2>/dev/null || true
-          done
+          # ── Pass 3: Remove unused numpy submodules ──
+          # numpy/__init__.py imports polynomial and ma internally on startup,
+          # so those must be kept. Only distutils (build tooling) is safe to remove.
+          rm -rf $PKG/numpy/distutils 2>/dev/null || true
 
           # ── Size check — fail fast if still over limit ──
           UNZIPPED_BYTES=$(du -sb $PKG | cut -f1)
