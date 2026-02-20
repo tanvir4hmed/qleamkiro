@@ -81,19 +81,48 @@ jobs:
           # extensions that must match Lambda's runtime environment).
           # pip --only-binary approach silently skips packages without wheels
           # and produces an incomplete layer — Docker is the reliable fix.
+          # Switch to bash so we can run multiple commands in one container:
+          #  1. Install libsndfile (system .so that soundfile Python package needs)
+          #  2. Copy libsndfile + its transitive deps into layer lib/
+          #  3. Install Python packages
           docker run --rm \
-            --entrypoint pip \
+            --entrypoint /bin/bash \
             -v "$(pwd)/lambdas/layers/audio_processing_pkg:/out" \
             public.ecr.aws/lambda/python:3.11 \
-            install \
-              "numpy>=1.24.0,<2" \
-              "scipy>=1.11.0" \
-              "librosa>=0.10.0" \
-              "soundfile>=0.12.1" \
-              --target /out/python \
-              --no-cache-dir \
-              --only-binary=:all: \
-              --quiet
+            -c "
+              set -e
+              mkdir -p /out/lib /out/python
+
+              # Install libsndfile via yum (Amazon Linux 2 — matches Lambda runtime)
+              yum install -y -q libsndfile 2>&1 | grep -E '(Installed|Already|Error)' || true
+
+              # Copy libsndfile.so* into /out/lib/
+              # Lambda automatically prepends /opt/lib to LD_LIBRARY_PATH
+              find /usr/lib64 /usr/lib -maxdepth 2 -name 'libsndfile.so*' 2>/dev/null \
+                -exec cp -L {} /out/lib/ \; || true
+
+              # Copy libsndfile transitive deps (FLAC, ogg, vorbis, opus)
+              # that may not be present in the Lambda runtime environment
+              for dep in libFLAC libogg libvorbis libvorbisenc libopus; do
+                find /usr/lib64 /usr/lib -maxdepth 2 -name \"\${dep}.so*\" 2>/dev/null \
+                  -exec cp -L {} /out/lib/ \; || true
+              done
+
+              echo 'Bundled .so files:'
+              ls -lh /out/lib/
+
+              # Install Python packages (--only-binary ensures no source builds;
+              # the Lambda Docker image has no compiler)
+              pip install \
+                'numpy>=1.24.0,<2' \
+                'scipy>=1.11.0' \
+                'librosa>=0.10.0' \
+                'soundfile>=0.12.1' \
+                --target /out/python \
+                --no-cache-dir \
+                --only-binary=:all: \
+                --quiet
+            "
 
           # Docker runs as root → installed files are root-owned.
           # The runner user cannot delete them without taking ownership first.
@@ -161,16 +190,19 @@ jobs:
           rm -rf $PKG/numpy/distutils 2>/dev/null || true
 
           # ── Size check — fail fast if still over limit ──
-          UNZIPPED_BYTES=$(du -sb $PKG | cut -f1)
+          # Check total layer size (python/ + lib/ combined)
+          LAYER_DIR=lambdas/layers/audio_processing_pkg
+          UNZIPPED_BYTES=$(du -sb $LAYER_DIR | cut -f1)
           LIMIT=262000000
-          echo "Unzipped size: $(du -sh $PKG | cut -f1) (${UNZIPPED_BYTES} bytes, limit ${LIMIT})"
+          echo "Unzipped size: $(du -sh $LAYER_DIR | cut -f1) (${UNZIPPED_BYTES} bytes, limit ${LIMIT})"
           if [ "$UNZIPPED_BYTES" -ge "$LIMIT" ]; then
             echo "❌ Layer still too large for Lambda (>250 MB). Build aborted."
             exit 1
           fi
 
           cd lambdas/layers/audio_processing_pkg
-          zip -r ../audio_processing.zip python/ -q
+          # Include both python/ (packages) and lib/ (libsndfile.so + deps)
+          zip -r ../audio_processing.zip python/ lib/ -q
           echo "Zipped size:   $(du -sh ../audio_processing.zip | cut -f1)"
           echo "✅ Audio processing layer built"
 
