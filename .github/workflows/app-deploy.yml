@@ -97,6 +97,21 @@ jobs:
           # ── Strip files to stay under Lambda's 250 MB unzipped limit ──
           PKG=lambdas/layers/audio_processing_pkg/python
 
+          # ── Pass 0: Remove heavyweight optional dependencies (~300 MB savings) ──
+          # numba + llvmlite: an LLVM-based JIT compiler pulled in by librosa.
+          # librosa uses it only for JIT-compiling a few inner loops; our
+          # audio_utils.py never triggers those paths, so it is safe to remove.
+          rm -rf $PKG/numba      2>/dev/null || true
+          rm -rf $PKG/llvmlite   2>/dev/null || true
+
+          # scikit-learn: pulled in by librosa.decompose / librosa.segment.
+          # Our audio_utils.py only uses librosa.feature, librosa.effects and
+          # librosa.core — none of which import sklearn at runtime (librosa 0.10+
+          # uses lazy loading). Safe to remove.
+          rm -rf $PKG/sklearn    2>/dev/null || true
+
+          echo "After Pass 0 — size: $(du -sh $PKG | cut -f1)"
+
           # ── Pass 1: General cleanup ──
           # Test suites (scipy/numpy tests alone are 80-100 MB)
           find $PKG -type d \( \
