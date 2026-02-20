@@ -82,9 +82,10 @@ jobs:
           # pip --only-binary approach silently skips packages without wheels
           # and produces an incomplete layer — Docker is the reliable fix.
           docker run --rm \
+            --entrypoint pip \
             -v "$(pwd)/lambdas/layers/audio_processing_pkg:/out" \
             public.ecr.aws/lambda/python:3.11 \
-            pip install \
+            install \
               numpy \
               scipy \
               librosa \
