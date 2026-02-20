@@ -94,48 +94,56 @@ jobs:
               --no-cache-dir \
               --only-binary=:all: \
               --quiet
-          # ── Aggressively strip files to stay under Lambda's 250 MB unzipped limit ──
+          # ── Strip files to stay under Lambda's 250 MB unzipped limit ──
           PKG=lambdas/layers/audio_processing_pkg/python
 
-          # Test suites (largest single saving — scipy/numpy tests are huge)
+          # ── Pass 1: General cleanup ──
+          # Test suites (scipy/numpy tests alone are 80-100 MB)
           find $PKG -type d \( \
             -name "tests" -o -name "test" -o -name "testing" \
           \) -exec rm -rf {} + 2>/dev/null || true
 
-          # __pycache__ directories & compiled bytecode
           find $PKG -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find $PKG \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
-
-          # Package metadata (not needed at runtime)
           find $PKG -type d \( -name "*.dist-info" -o -name "*.egg-info" \) \
             -exec rm -rf {} + 2>/dev/null || true
-
-          # Type stubs (IDE / mypy only — not loaded by the interpreter)
           find $PKG -name "*.pyi" -delete 2>/dev/null || true
-
-          # C/Fortran/Cython source files (already compiled into .so)
           find $PKG \( \
             -name "*.c" -o -name "*.h" \
             -o -name "*.pyx" -o -name "*.pxd" \
             -o -name "*.f" -o -name "*.f90" \
-            -o -name "*.f2py" \
           \) -delete 2>/dev/null || true
-
-          # Static libraries
           find $PKG -name "*.a" -delete 2>/dev/null || true
-
-          # Documentation & example directories
           find $PKG -type d \( \
-            -name "doc" -o -name "docs" \
-            -o -name "documentation" -o -name "examples" \
+            -name "doc" -o -name "docs" -o -name "examples" \
             -o -name "tutorials" -o -name "notebooks" \
           \) -exec rm -rf {} + 2>/dev/null || true
+          find $PKG \( -name "*.md" -o -name "*.rst" \) -delete 2>/dev/null || true
 
-          # Loose text/markdown/rst files inside packages
-          find $PKG \( -name "*.md" -o -name "*.rst" \) \
-            -delete 2>/dev/null || true
+          # ── Pass 2: Remove unused scipy submodules (~100 MB savings) ──
+          # librosa only needs: scipy.signal, scipy.fft, scipy.ndimage,
+          #                     scipy.interpolate, scipy.special
+          # Everything else is safe to delete.
+          for mod in \
+            stats sparse linalg optimize io odr cluster spatial \
+            datasets integrate misc weave; do
+            rm -rf $PKG/scipy/$mod 2>/dev/null || true
+          done
 
-          echo "Unzipped size: $(du -sh $PKG | cut -f1)"
+          # ── Pass 3: Remove unused numpy submodules (~20 MB savings) ──
+          # librosa only needs numpy core, fft, linalg, random
+          for mod in distutils polynomial ma/tests; do
+            rm -rf $PKG/numpy/$mod 2>/dev/null || true
+          done
+
+          # ── Size check — fail fast if still over limit ──
+          UNZIPPED_BYTES=$(du -sb $PKG | cut -f1)
+          LIMIT=262000000
+          echo "Unzipped size: $(du -sh $PKG | cut -f1) (${UNZIPPED_BYTES} bytes, limit ${LIMIT})"
+          if [ "$UNZIPPED_BYTES" -ge "$LIMIT" ]; then
+            echo "❌ Layer still too large for Lambda (>250 MB). Build aborted."
+            exit 1
+          fi
 
           cd lambdas/layers/audio_processing_pkg
           zip -r ../audio_processing.zip python/ -q
