@@ -76,13 +76,37 @@ jobs:
       - name: Build audio processing layer
         run: |
           mkdir -p lambdas/layers/audio_processing_pkg/python
-          pip install librosa numpy scipy \
-            --target lambdas/layers/audio_processing_pkg/python/ \
-            --platform manylinux2014_x86_64 \
-            --only-binary=:all: \
-            --python-version 3.11
+          # Use the official AWS Lambda Python 3.11 Docker image to ensure
+          # Linux-compatible binaries (numpy, scipy, soundfile all have native
+          # extensions that must match Lambda's runtime environment).
+          # pip --only-binary approach silently skips packages without wheels
+          # and produces an incomplete layer — Docker is the reliable fix.
+          docker run --rm \
+            -v "$(pwd)/lambdas/layers/audio_processing_pkg:/out" \
+            public.ecr.aws/lambda/python:3.11 \
+            pip install \
+              numpy \
+              scipy \
+              librosa \
+              soundfile \
+              --target /out/python \
+              --no-cache-dir \
+              --quiet
+          # Strip test dirs, __pycache__, and *.dist-info to reduce layer size
+          find lambdas/layers/audio_processing_pkg/python \
+            \( -type d -name "tests"      \
+            -o -type d -name "test"       \
+            -o -type d -name "__pycache__" \) \
+            -exec rm -rf {} + 2>/dev/null || true
+          find lambdas/layers/audio_processing_pkg/python \
+            \( -name "*.pyc" -o -name "*.pyo" \) \
+            -delete 2>/dev/null || true
+          find lambdas/layers/audio_processing_pkg/python \
+            -type d -name "*.dist-info" \
+            -exec rm -rf {} + 2>/dev/null || true
           cd lambdas/layers/audio_processing_pkg
-          zip -r ../audio_processing.zip python/
+          zip -r ../audio_processing.zip python/ -q
+          echo "Layer zip size: $(du -sh ../audio_processing.zip | cut -f1)"
           echo "✅ Audio processing layer built"
 
       - name: Build Lambda function packages
