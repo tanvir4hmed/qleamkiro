@@ -9,12 +9,13 @@ RUN yum install -y -q libsndfile && \
     yum clean all
 
 # Install Python dependencies for audio processing
-# Using librosa without numba - uses scipy/numpy fallbacks instead
+# Using soundfile + soxr for audio loading (librosa still needs audioread at import time)
 RUN pip install --no-cache-dir --only-binary=:all: \
     'numpy==1.26.4' \
     'scipy==1.11.4' \
     'soundfile==0.12.1' \
     'soxr==0.3.7' \
+    'audioread>=3.0.0' \
     'joblib>=1.2.0' \
     'decorator>=5.0.0' \
     'lazy_loader>=0.1' \

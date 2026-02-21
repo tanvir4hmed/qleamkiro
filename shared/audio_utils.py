@@ -65,15 +65,26 @@ def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = 22050) -> Tuple[n
     Returns:
         Tuple of (audio_array, sample_rate)
     """
-    librosa = _get_librosa()
+    import soundfile as sf
+    import soxr
     
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
     
     try:
-        # Load as mono, resample to target_sr
-        y, sr = librosa.load(tmp_path, sr=target_sr, mono=True)
+        # Load audio using soundfile (no audioread dependency)
+        y, sr = sf.read(tmp_path, dtype='float32')
+        
+        # Convert to mono if stereo
+        if len(y.shape) > 1:
+            y = np.mean(y, axis=1)
+        
+        # Resample if needed using soxr (high quality, no numba)
+        if sr != target_sr:
+            y = soxr.resample(y, sr, target_sr)
+            sr = target_sr
+        
         logger.info(f"Loaded audio: {len(y)} samples at {sr}Hz ({len(y)/sr:.2f}s)")
         return y, sr
     finally:
