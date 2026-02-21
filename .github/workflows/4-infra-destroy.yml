@@ -20,6 +20,7 @@ jobs:
     name: Destroy DEV Infrastructure & Application
     runs-on: ubuntu-latest
     if: github.event.inputs.confirm == 'destroy'
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +39,6 @@ jobs:
         run: |
           echo "🔧 Ensuring Terraform state resources exist..."
           
-          # Create DynamoDB lock table if it doesn't exist
           if ! aws dynamodb describe-table --table-name ${{ env.TF_STATE_LOCK_TABLE }} 2>/dev/null; then
             echo "  Creating DynamoDB lock table..."
             aws dynamodb create-table \
@@ -53,199 +53,371 @@ jobs:
             echo "  ✅ DynamoDB lock table exists"
           fi
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 1 — Delete Lambda functions FIRST (releases ENIs for VPC deletion)
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Delete Lambda functions
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 1: Stop all running processes and delete compute resources
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 1 - Stop all running processes
         run: |
-          echo "🗑️  Deleting Lambda functions first (to release ENIs)..."
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 1: Stopping all running processes and compute resources"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+
+          # Stop all Step Functions executions
+          echo "🛑 Stopping Step Functions executions..."
+          SFNS=$(aws stepfunctions list-state-machines \
+            --query "stateMachines[?starts_with(name, '${{ env.PROJECT }}-${{ env.ENV }}')].stateMachineArn" \
+            --output text 2>/dev/null || echo "")
+          
+          for SFN_ARN in $SFNS; do
+            EXECUTIONS=$(aws stepfunctions list-executions \
+              --state-machine-arn "$SFN_ARN" \
+              --query "executions[?status=='RUNNING'].executionArn" \
+              --output text 2>/dev/null || echo "")
+            for EXEC_ARN in $EXECUTIONS; do
+              echo "  Stopping execution: $EXEC_ARN"
+              aws stepfunctions stop-execution --execution-arn "$EXEC_ARN" 2>/dev/null || true
+            done
+          done
+          echo "  ✅ Step Functions executions stopped"
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 2: Delete Lambda functions (releases ENIs for VPC deletion)
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 2 - Delete Lambda functions
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 2: Deleting Lambda functions (releases ENIs)"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
 
           FUNCTIONS=$(aws lambda list-functions \
             --query "Functions[?starts_with(FunctionName, '${{ env.PROJECT }}-${{ env.ENV }}')].FunctionName" \
-            --output text)
+            --output text 2>/dev/null || echo "")
 
           for FN in $FUNCTIONS; do
-            echo "  → Deleting Lambda function $FN ..."
+            echo "  → Processing Lambda function: $FN"
             
-            # Wait for ENIs to be released by setting function to non-VPC config first
+            # First, remove from VPC to release ENIs
+            echo "    Removing from VPC..."
             aws lambda update-function-configuration \
               --function-name "$FN" \
               --vpc-config SubnetIds=,SecurityGroupIds= 2>/dev/null || true
             
-            # Wait a moment for ENI release
-            sleep 5
+            # Wait for ENI release
+            echo "    Waiting for ENI release (30s)..."
+            sleep 30
             
-            aws lambda delete-function --function-name "$FN" && \
-              echo "  ✅ Lambda $FN deleted." || \
-              echo "  ⚠️  Could not delete Lambda $FN."
+            # Delete function with retry
+            for attempt in 1 2 3; do
+              if aws lambda delete-function --function-name "$FN" 2>/dev/null; then
+                echo "    ✅ Lambda $FN deleted"
+                break
+              else
+                echo "    Attempt $attempt failed, waiting 10s..."
+                sleep 10
+              fi
+            done
           done
-
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 2 — Delete Lambda Layers (from previous zip-based deployments)
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Delete Lambda layers
-        run: |
-          echo "🗑️  Deleting Lambda layers..."
-
+          
+          # Also delete Lambda layers
+          echo ""
+          echo "  Deleting Lambda layers..."
           LAYERS=$(aws lambda list-layers \
             --query "Layers[?starts_with(LayerName, '${{ env.PROJECT }}-${{ env.ENV }}')].LayerName" \
             --output text 2>/dev/null || echo "")
 
           for LAYER in $LAYERS; do
-            echo "  → Processing layer $LAYER ..."
-            
-            # Get all versions and delete them
             VERSIONS=$(aws lambda list-layer-versions \
               --layer-name "$LAYER" \
               --query 'LayerVersions[].Version' \
               --output text 2>/dev/null || echo "")
-            
             for VER in $VERSIONS; do
-              aws lambda delete-layer-version \
-                --layer-name "$LAYER" \
-                --version-number "$VER" 2>/dev/null || true
+              aws lambda delete-layer-version --layer-name "$LAYER" --version-number "$VER" 2>/dev/null || true
             done
-            
-            echo "  ✅ Layer $LAYER deleted."
+            echo "    ✅ Layer $LAYER deleted"
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 3 — Delete Cognito Identity Pool (separate from User Pool)
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Delete Cognito Identity Pools
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 3: Delete API Gateway (depends on Lambda)
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 3 - Delete API Gateway
         run: |
-          echo "🗑️  Deleting Cognito Identity Pools..."
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 3: Deleting API Gateway"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
 
-          # Get Identity Pool IDs by name pattern
-          IDENTITY_POOLS=$(aws cognito-identity list-identity-pools \
-            --max-results 60 \
-            --query "IdentityPools[?starts_with(IdentityPoolName, '${{ env.PROJECT }}-${{ env.ENV }}')].IdentityPoolId" \
+          APIS=$(aws apigatewayv2 get-apis \
+            --query "Items[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].ApiId" \
             --output text 2>/dev/null || echo "")
 
-          for POOL_ID in $IDENTITY_POOLS; do
-            echo "  → Deleting Identity Pool $POOL_ID ..."
-            
-            # Delete the pool
-            aws cognito-identity delete-identity-pool \
-              --identity-pool-id "$POOL_ID" 2>/dev/null && \
-              echo "  ✅ Identity Pool $POOL_ID deleted." || \
-              echo "  ⚠️  Could not delete Identity Pool $POOL_ID."
+          for API_ID in $APIS; do
+            echo "  → Deleting API: $API_ID"
+            aws apigatewayv2 delete-api --api-id "$API_ID" 2>/dev/null && \
+              echo "    ✅ API $API_ID deleted" || \
+              echo "    ⚠️  Could not delete API $API_ID"
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 4 — Empty all S3 buckets owned by this project
-      # (S3 buckets must be empty before Terraform can delete them)
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Empty all project S3 buckets
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 4: Delete Step Functions
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 4 - Delete Step Functions
         run: |
-          echo "🗑️  Emptying all S3 buckets for project '${{ env.PROJECT }}-${{ env.ENV }}'..."
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 4: Deleting Step Functions"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
 
-          BUCKETS=$(aws s3api list-buckets \
-            --query "Buckets[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Name" \
-            --output text)
+          SFNS=$(aws stepfunctions list-state-machines \
+            --query "stateMachines[?starts_with(name, '${{ env.PROJECT }}-${{ env.ENV }}')].stateMachineArn" \
+            --output text 2>/dev/null || echo "")
 
-          for BUCKET in $BUCKETS; do
-            echo "  → Emptying s3://$BUCKET ..."
-
-            # Delete all versioned objects
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null | \
-            jq -c 'select(.Objects != null and (.Objects | length) > 0)' | \
-            while read -r batch; do
-              aws s3api delete-objects --bucket "$BUCKET" --delete "$batch" > /dev/null
-            done
-
-            # Delete all delete markers
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null | \
-            jq -c 'select(.Objects != null and (.Objects | length) > 0)' | \
-            while read -r batch; do
-              aws s3api delete-objects --bucket "$BUCKET" --delete "$batch" > /dev/null
-            done
-
-            # Remove any remaining non-versioned objects
-            aws s3 rm "s3://$BUCKET" --recursive 2>/dev/null || true
-
-            echo "  ✅ s3://$BUCKET emptied."
+          for SFN_ARN in $SFNS; do
+            echo "  → Deleting state machine: $(basename $SFN_ARN)"
+            aws stepfunctions delete-state-machine --state-machine-arn "$SFN_ARN" 2>/dev/null && \
+              echo "    ✅ State machine deleted" || \
+              echo "    ⚠️  Could not delete state machine"
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 5 — Detach & delete IAM policies / roles created by Terraform
-      # (Terraform sometimes fails to delete roles that still have attachments)
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Detach IAM policies from project roles
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 5: Delete CloudFront (CRITICAL - must be disabled first)
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 5 - Disable and Delete CloudFront
         run: |
-          echo "🔑 Detaching IAM policies from project roles..."
-
-          ROLES=$(aws iam list-roles \
-            --query "Roles[?starts_with(RoleName, '${{ env.PROJECT }}-${{ env.ENV }}')].RoleName" \
-            --output text)
-
-          for ROLE in $ROLES; do
-            echo "  → Processing role: $ROLE"
-
-            # Detach managed policies
-            POLICIES=$(aws iam list-attached-role-policies \
-              --role-name "$ROLE" \
-              --query 'AttachedPolicies[].PolicyArn' \
-              --output text)
-            for POLICY_ARN in $POLICIES; do
-              aws iam detach-role-policy --role-name "$ROLE" --policy-arn "$POLICY_ARN"
-              echo "    Detached $POLICY_ARN"
-            done
-
-            # Delete inline policies
-            INLINE=$(aws iam list-role-policies --role-name "$ROLE" --query 'PolicyNames[]' --output text)
-            for INLINE_POLICY in $INLINE; do
-              aws iam delete-role-policy --role-name "$ROLE" --policy-name "$INLINE_POLICY"
-              echo "    Deleted inline policy $INLINE_POLICY"
-            done
-
-            # Remove from instance profiles
-            PROFILES=$(aws iam list-instance-profiles-for-role \
-              --role-name "$ROLE" \
-              --query 'InstanceProfiles[].InstanceProfileName' \
-              --output text)
-            for PROFILE in $PROFILES; do
-              aws iam remove-role-from-instance-profile \
-                --instance-profile-name "$PROFILE" \
-                --role-name "$ROLE"
-            done
-          done
-          echo "✅ IAM policies detached."
-
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 6 — Disable CloudFront distributions (must be disabled before delete)
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Disable CloudFront distributions
-        run: |
-          echo "☁️  Disabling CloudFront distributions..."
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 5: Disabling and Deleting CloudFront Distributions"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
 
           DIST_IDS=$(aws cloudfront list-distributions \
             --query "DistributionList.Items[?contains(Comment, '${{ env.PROJECT }}') && contains(Comment, '${{ env.ENV }}')].Id" \
             --output text 2>/dev/null || echo "")
 
           for DIST_ID in $DIST_IDS; do
-            echo "  → Disabling distribution $DIST_ID ..."
-            ETAG=$(aws cloudfront get-distribution-config --id "$DIST_ID" --query 'ETag' --output text)
-            CONFIG=$(aws cloudfront get-distribution-config --id "$DIST_ID" --query 'DistributionConfig' --output json)
-            DISABLED_CONFIG=$(echo "$CONFIG" | jq '.Enabled = false')
-
-            aws cloudfront update-distribution \
-              --id "$DIST_ID" \
-              --distribution-config "$DISABLED_CONFIG" \
-              --if-match "$ETAG" > /dev/null
-
-            echo "  ⏳ Waiting for distribution $DIST_ID to be deployed (disabled)..."
-            aws cloudfront wait distribution-deployed --id "$DIST_ID"
-            echo "  ✅ Distribution $DIST_ID disabled."
+            echo "  → Processing distribution: $DIST_ID"
+            
+            # Get current config
+            ETAG=$(aws cloudfront get-distribution-config --id "$DIST_ID" --query 'ETag' --output text 2>/dev/null || echo "")
+            if [ -z "$ETAG" ]; then
+              echo "    ⚠️  Could not get distribution config, skipping"
+              continue
+            fi
+            
+            CONFIG=$(aws cloudfront get-distribution-config --id "$DIST_ID" --query 'DistributionConfig' --output json 2>/dev/null || echo "")
+            if [ -z "$CONFIG" ]; then
+              continue
+            fi
+            
+            # Check if already disabled
+            IS_ENABLED=$(echo "$CONFIG" | jq -r '.Enabled')
+            
+            if [ "$IS_ENABLED" = "true" ]; then
+              echo "    Disabling distribution..."
+              DISABLED_CONFIG=$(echo "$CONFIG" | jq '.Enabled = false')
+              
+              aws cloudfront update-distribution \
+                --id "$DIST_ID" \
+                --distribution-config "$DISABLED_CONFIG" \
+                --if-match "$ETAG" > /dev/null 2>&1
+              
+              # Wait for deployment with timeout
+              echo "    Waiting for distribution to be disabled (this may take 10-15 minutes)..."
+              for i in $(seq 1 30); do
+                STATUS=$(aws cloudfront get-distribution --id "$DIST_ID" --query 'Distribution.Status' --output text 2>/dev/null || echo "")
+                if [ "$STATUS" = "Deployed" ]; then
+                  echo "    ✅ Distribution disabled"
+                  break
+                fi
+                echo "    Status: $STATUS (attempt $i/30)..."
+                sleep 30
+              done
+            else
+              echo "    Distribution already disabled"
+            fi
+            
+            # Now delete the distribution
+            echo "    Deleting distribution..."
+            ETAG=$(aws cloudfront get-distribution --id "$DIST_ID" --query 'ETag' --output text 2>/dev/null || echo "")
+            aws cloudfront delete-distribution --id "$DIST_ID" --if-match "$ETAG" 2>/dev/null && \
+              echo "    ✅ Distribution $DIST_ID deleted" || \
+              echo "    ⚠️  Could not delete distribution"
+          done
+          
+          # Delete CloudFront OACs
+          echo ""
+          echo "  Deleting CloudFront Origin Access Controls..."
+          OACS=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Id" \
+            --output text 2>/dev/null || echo "")
+          
+          for OAC_ID in $OACS; do
+            echo "    Deleting OAC: $OAC_ID"
+            aws cloudfront delete-origin-access-control --id "$OAC_ID" 2>/dev/null && \
+              echo "    ✅ OAC deleted" || \
+              echo "    ⚠️  Could not delete OAC"
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 7 — Terraform destroy (handles all remaining resources)
-      # ────────────────────────────────────────────────────────────────────────
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 6: Empty and delete S3 buckets
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 6 - Empty and Delete S3 Buckets
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 6: Emptying and Deleting S3 Buckets"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+
+          empty_bucket() {
+            local BUCKET=$1
+            echo "  → Emptying bucket: $BUCKET"
+            
+            # Delete all object versions
+            echo "    Deleting object versions..."
+            while true; do
+              VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" \
+                --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
+                --output json 2>/dev/null || echo '{"Objects":[]}')
+              
+              COUNT=$(echo "$VERSIONS" | jq '.Objects | length')
+              if [ "$COUNT" -eq 0 ] || [ "$COUNT" = "null" ]; then
+                break
+              fi
+              
+              echo "$VERSIONS" | jq -c '.Objects' | while read -r batch; do
+                aws s3api delete-objects --bucket "$BUCKET" --delete "{\"Objects\": $batch}" > /dev/null 2>&1 || true
+              done
+            done
+            
+            # Delete all delete markers
+            echo "    Deleting delete markers..."
+            while true; do
+              MARKERS=$(aws s3api list-object-versions --bucket "$BUCKET" \
+                --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
+                --output json 2>/dev/null || echo '{"Objects":[]}')
+              
+              COUNT=$(echo "$MARKERS" | jq '.Objects | length')
+              if [ "$COUNT" -eq 0 ] || [ "$COUNT" = "null" ]; then
+                break
+              fi
+              
+              echo "$MARKERS" | jq -c '.Objects' | while read -r batch; do
+                aws s3api delete-objects --bucket "$BUCKET" --delete "{\"Objects\": $batch}" > /dev/null 2>&1 || true
+              done
+            done
+            
+            # Final cleanup with s3 rm
+            echo "    Final cleanup..."
+            aws s3 rm "s3://$BUCKET" --recursive 2>/dev/null || true
+            
+            echo "    ✅ Bucket emptied: $BUCKET"
+          }
+
+          BUCKETS=$(aws s3api list-buckets \
+            --query "Buckets[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Name" \
+            --output text 2>/dev/null || echo "")
+
+          for BUCKET in $BUCKETS; do
+            empty_bucket "$BUCKET"
+            
+            # Delete the bucket
+            echo "    Deleting bucket..."
+            aws s3api delete-bucket --bucket "$BUCKET" 2>/dev/null && \
+              echo "    ✅ Bucket deleted: $BUCKET" || \
+              echo "    ⚠️  Could not delete bucket: $BUCKET"
+          done
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 7: Delete Cognito resources
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 7 - Delete Cognito Resources
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 7: Deleting Cognito Resources"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+
+          # Delete Identity Pools first
+          echo "  Deleting Identity Pools..."
+          IDENTITY_POOLS=$(aws cognito-identity list-identity-pools \
+            --max-results 60 \
+            --query "IdentityPools[?starts_with(IdentityPoolName, '${{ env.PROJECT }}-${{ env.ENV }}')].IdentityPoolId" \
+            --output text 2>/dev/null || echo "")
+
+          for POOL_ID in $IDENTITY_POOLS; do
+            echo "    Deleting Identity Pool: $POOL_ID"
+            aws cognito-identity delete-identity-pool --identity-pool-id "$POOL_ID" 2>/dev/null && \
+              echo "    ✅ Identity Pool deleted" || \
+              echo "    ⚠️  Could not delete Identity Pool"
+          done
+
+          # Delete User Pools
+          echo "  Deleting User Pools..."
+          POOLS=$(aws cognito-idp list-user-pools --max-results 60 \
+            --query "UserPools[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Id" \
+            --output text 2>/dev/null || echo "")
+
+          for POOL_ID in $POOLS; do
+            echo "    Processing User Pool: $POOL_ID"
+            
+            # Delete app clients first
+            CLIENTS=$(aws cognito-idp list-user-pool-clients \
+              --user-pool-id "$POOL_ID" \
+              --query 'UserPoolClients[].ClientId' --output text 2>/dev/null || echo "")
+            for CLIENT in $CLIENTS; do
+              echo "      Deleting app client: $CLIENT"
+              aws cognito-idp delete-user-pool-client --user-pool-id "$POOL_ID" --client-id "$CLIENT" 2>/dev/null || true
+            done
+            
+            # Delete domain
+            DOMAIN=$(aws cognito-idp describe-user-pool \
+              --user-pool-id "$POOL_ID" \
+              --query 'UserPool.Domain' --output text 2>/dev/null || echo "")
+            if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "None" ] && [ "$DOMAIN" != "null" ]; then
+              echo "      Deleting domain: $DOMAIN"
+              aws cognito-idp delete-user-pool-domain --user-pool-id "$POOL_ID" --domain "$DOMAIN" 2>/dev/null || true
+              sleep 5
+            fi
+            
+            # Delete the pool
+            echo "      Deleting User Pool..."
+            aws cognito-idp delete-user-pool --user-pool-id "$POOL_ID" 2>/dev/null && \
+              echo "    ✅ User Pool deleted" || \
+              echo "    ⚠️  Could not delete User Pool"
+          done
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 8: Delete DynamoDB tables
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 8 - Delete DynamoDB Tables
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 8: Deleting DynamoDB Tables"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+
+          TABLES=$(aws dynamodb list-tables \
+            --query "TableNames[?starts_with(@, '${{ env.PROJECT }}-${{ env.ENV }}')]" \
+            --output text 2>/dev/null || echo "")
+
+          for TABLE in $TABLES; do
+            echo "  → Deleting table: $TABLE"
+            aws dynamodb delete-table --table-name "$TABLE" 2>/dev/null && \
+              echo "    ✅ Table deleted" || \
+              echo "    ⚠️  Could not delete table"
+          done
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 9: Terraform Destroy
+      # ════════════════════════════════════════════════════════════════════════
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -263,405 +435,271 @@ jobs:
 
       - name: Remove lifecycle prevent_destroy overrides
         run: |
-          # Temporarily patch any prevent_destroy = true so Terraform can delete
           find infrastructure/ -name "*.tf" -exec \
             sed -i 's/prevent_destroy\s*=\s*true/prevent_destroy = false/g' {} +
           echo "✅ prevent_destroy overrides removed."
 
-      - name: Terraform Destroy
+      - name: PHASE 9 - Terraform Destroy
         run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 9: Terraform Destroy"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          
           cd infrastructure/environments/dev
           terraform destroy -auto-approve -var-file=terraform.tfvars 2>&1 || true
-          echo "✅ Terraform destroy completed (errors above are non-fatal — manual cleanup follows)."
+          echo "✅ Terraform destroy completed"
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 8 — Force-delete any S3 buckets Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining project S3 buckets
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 10: Force cleanup any remaining resources
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 10 - Force Cleanup Remaining Resources
         run: |
-          echo "🗑️  Force-deleting any remaining project S3 buckets..."
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 10: Force Cleanup Remaining Resources"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
 
+          # Delete any remaining S3 buckets
+          echo "🗑️  Checking for remaining S3 buckets..."
           BUCKETS=$(aws s3api list-buckets \
             --query "Buckets[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Name" \
-            --output text)
-
+            --output text 2>/dev/null || echo "")
           for BUCKET in $BUCKETS; do
-            echo "  → Force-deleting s3://$BUCKET ..."
-
-            # Empty versioned objects
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null | \
-            jq -c 'select(.Objects != null and (.Objects | length) > 0)' | \
-            while read -r batch; do
-              aws s3api delete-objects --bucket "$BUCKET" --delete "$batch" > /dev/null
-            done
-
-            # Empty delete markers
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null | \
-            jq -c 'select(.Objects != null and (.Objects | length) > 0)' | \
-            while read -r batch; do
-              aws s3api delete-objects --bucket "$BUCKET" --delete "$batch" > /dev/null
-            done
-
-            aws s3 rb "s3://$BUCKET" --force 2>/dev/null && \
-              echo "  ✅ s3://$BUCKET deleted." || \
-              echo "  ⚠️  Could not delete s3://$BUCKET — may already be gone."
+            echo "  → Force deleting bucket: $BUCKET"
+            aws s3 rm "s3://$BUCKET" --recursive 2>/dev/null || true
+            aws s3api delete-bucket --bucket "$BUCKET" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 9 — Force-delete CloudFront distributions Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining CloudFront distributions
-        run: |
+          # Delete remaining Lambda functions
+          echo "🗑️  Checking for remaining Lambda functions..."
+          FUNCTIONS=$(aws lambda list-functions \
+            --query "Functions[?starts_with(FunctionName, '${{ env.PROJECT }}-${{ env.ENV }}')].FunctionName" \
+            --output text 2>/dev/null || echo "")
+          for FN in $FUNCTIONS; do
+            echo "  → Deleting Lambda: $FN"
+            aws lambda delete-function --function-name "$FN" 2>/dev/null || true
+          done
+
+          # Delete remaining CloudFront distributions
+          echo "🗑️  Checking for remaining CloudFront distributions..."
           DIST_IDS=$(aws cloudfront list-distributions \
             --query "DistributionList.Items[?contains(Comment, '${{ env.PROJECT }}') && contains(Comment, '${{ env.ENV }}')].Id" \
             --output text 2>/dev/null || echo "")
-
           for DIST_ID in $DIST_IDS; do
-            echo "  → Deleting CloudFront distribution $DIST_ID ..."
-            ETAG=$(aws cloudfront get-distribution --id "$DIST_ID" --query 'ETag' --output text)
-            aws cloudfront delete-distribution --id "$DIST_ID" --if-match "$ETAG" && \
-              echo "  ✅ Distribution $DIST_ID deleted." || \
-              echo "  ⚠️  Could not delete $DIST_ID — may need manual removal."
+            echo "  → Deleting CloudFront: $DIST_ID"
+            ETAG=$(aws cloudfront get-distribution --id "$DIST_ID" --query 'ETag' --output text 2>/dev/null || echo "")
+            [ -n "$ETAG" ] && aws cloudfront delete-distribution --id "$DIST_ID" --if-match "$ETAG" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 10 — Force-delete IAM roles Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining IAM roles
-        run: |
-          ROLES=$(aws iam list-roles \
-            --query "Roles[?starts_with(RoleName, '${{ env.PROJECT }}-${{ env.ENV }}')].RoleName" \
-            --output text)
-
-          for ROLE in $ROLES; do
-            echo "  → Deleting IAM role $ROLE ..."
-
-            POLICIES=$(aws iam list-attached-role-policies \
-              --role-name "$ROLE" --query 'AttachedPolicies[].PolicyArn' --output text)
-            for P in $POLICIES; do
-              aws iam detach-role-policy --role-name "$ROLE" --policy-arn "$P" 2>/dev/null || true
-            done
-
-            INLINE=$(aws iam list-role-policies --role-name "$ROLE" --query 'PolicyNames[]' --output text)
-            for IP in $INLINE; do
-              aws iam delete-role-policy --role-name "$ROLE" --policy-name "$IP" 2>/dev/null || true
-            done
-
-            aws iam delete-role --role-name "$ROLE" && \
-              echo "  ✅ IAM role $ROLE deleted." || \
-              echo "  ⚠️  Could not delete $ROLE."
+          # Delete remaining OACs
+          echo "🗑️  Checking for remaining CloudFront OACs..."
+          OACS=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Id" \
+            --output text 2>/dev/null || echo "")
+          for OAC_ID in $OACS; do
+            echo "  → Deleting OAC: $OAC_ID"
+            aws cloudfront delete-origin-access-control --id "$OAC_ID" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 11 — Delete Lambda functions Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining Lambda functions
-        run: |
-          FUNCTIONS=$(aws lambda list-functions \
-            --query "Functions[?starts_with(FunctionName, '${{ env.PROJECT }}-${{ env.ENV }}')].FunctionName" \
-            --output text)
-
-          for FN in $FUNCTIONS; do
-            aws lambda delete-function --function-name "$FN" && \
-              echo "  ✅ Lambda $FN deleted." || \
-              echo "  ⚠️  Could not delete Lambda $FN."
-          done
-
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 12 — Delete DynamoDB tables Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining DynamoDB tables
-        run: |
+          # Delete remaining DynamoDB tables
+          echo "🗑️  Checking for remaining DynamoDB tables..."
           TABLES=$(aws dynamodb list-tables \
             --query "TableNames[?starts_with(@, '${{ env.PROJECT }}-${{ env.ENV }}')]" \
-            --output text)
-
+            --output text 2>/dev/null || echo "")
           for TABLE in $TABLES; do
-            aws dynamodb delete-table --table-name "$TABLE" && \
-              echo "  ✅ DynamoDB table $TABLE deleted." || \
-              echo "  ⚠️  Could not delete table $TABLE."
+            echo "  → Deleting table: $TABLE"
+            aws dynamodb delete-table --table-name "$TABLE" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 13 — Delete Cognito User Pools Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining Cognito User Pools
-        run: |
+          # Delete remaining Cognito resources
+          echo "🗑️  Checking for remaining Cognito User Pools..."
           POOLS=$(aws cognito-idp list-user-pools --max-results 60 \
             --query "UserPools[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Id" \
-            --output text)
-
+            --output text 2>/dev/null || echo "")
           for POOL_ID in $POOLS; do
-            # Delete all app clients first
-            CLIENTS=$(aws cognito-idp list-user-pool-clients \
-              --user-pool-id "$POOL_ID" \
-              --query 'UserPoolClients[].ClientId' --output text)
-            for CLIENT in $CLIENTS; do
-              aws cognito-idp delete-user-pool-client \
-                --user-pool-id "$POOL_ID" --client-id "$CLIENT" 2>/dev/null || true
-            done
-
-            # Delete User Pool domain first (required before deleting pool)
-            DOMAIN=$(aws cognito-idp describe-user-pool \
-              --user-pool-id "$POOL_ID" \
-              --query 'UserPool.Domain' --output text 2>/dev/null || echo "")
-            
-            if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "None" ] && [ "$DOMAIN" != "null" ]; then
-              echo "    Deleting User Pool domain: $DOMAIN"
-              aws cognito-idp delete-user-pool-domain \
-                --user-pool-id "$POOL_ID" \
-                --domain "$DOMAIN" 2>/dev/null || true
-            fi
-
-            aws cognito-idp delete-user-pool --user-pool-id "$POOL_ID" && \
-              echo "  ✅ Cognito pool $POOL_ID deleted." || \
-              echo "  ⚠️  Could not delete Cognito pool $POOL_ID."
+            echo "  → Deleting User Pool: $POOL_ID"
+            aws cognito-idp delete-user-pool --user-pool-id "$POOL_ID" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 14 — Delete IAM policies created by Terraform
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining IAM policies
-        run: |
-          # Get all custom policies (not AWS managed) that match our project pattern
-          POLICIES=$(aws iam list-policies \
-            --scope Local \
-            --query "Policies[?starts_with(PolicyName, '${{ env.PROJECT }}-${{ env.ENV }}')].{Arn:Arn,Name:PolicyName}" \
-            --output json 2>/dev/null || echo "[]")
-
-          echo "$POLICIES" | jq -c '.[]' 2>/dev/null | while read -r POLICY; do
-            POLICY_ARN=$(echo "$POLICY" | jq -r '.Arn')
-            POLICY_NAME=$(echo "$POLICY" | jq -r '.Name')
-            
-            echo "  → Deleting IAM policy $POLICY_NAME ..."
-            
-            # Detach from all roles first
-            ATTACHED_ROLES=$(aws iam list-entities-for-policy \
-              --policy-arn "$POLICY_ARN" \
-              --query 'PolicyRoles[].RoleName' \
-              --output text 2>/dev/null || echo "")
-            
-            for ROLE in $ATTACHED_ROLES; do
-              aws iam detach-role-policy \
-                --role-name "$ROLE" \
-                --policy-arn "$POLICY_ARN" 2>/dev/null || true
-            done
-
-            # Detach from users
-            ATTACHED_USERS=$(aws iam list-entities-for-policy \
-              --policy-arn "$POLICY_ARN" \
-              --query 'PolicyUsers[].UserName' \
-              --output text 2>/dev/null || echo "")
-            
-            for USER in $ATTACHED_USERS; do
-              aws iam detach-user-policy \
-                --user-name "$USER" \
-                --policy-arn "$POLICY_ARN" 2>/dev/null || true
-            done
-
-            # Delete all policy versions except default
-            VERSIONS=$(aws iam list-policy-versions \
-              --policy-arn "$POLICY_ARN" \
-              --query 'Versions[?IsDefaultVersion==`false`].VersionId' \
-              --output text 2>/dev/null || echo "")
-            
-            for VER in $VERSIONS; do
-              aws iam delete-policy-version \
-                --policy-arn "$POLICY_ARN" \
-                --version-id "$VER" 2>/dev/null || true
-            done
-
-            # Delete the policy
-            aws iam delete-policy --policy-arn "$POLICY_ARN" 2>/dev/null && \
-              echo "  ✅ IAM policy $POLICY_NAME deleted." || \
-              echo "  ⚠️  Could not delete policy $POLICY_NAME."
+          # Delete remaining Step Functions
+          echo "🗑️  Checking for remaining Step Functions..."
+          SFNS=$(aws stepfunctions list-state-machines \
+            --query "stateMachines[?starts_with(name, '${{ env.PROJECT }}-${{ env.ENV }}')].stateMachineArn" \
+            --output text 2>/dev/null || echo "")
+          for SFN_ARN in $SFNS; do
+            echo "  → Deleting state machine: $(basename $SFN_ARN)"
+            aws stepfunctions delete-state-machine --state-machine-arn "$SFN_ARN" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 15 — Delete API Gateway APIs Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining API Gateway APIs
-        run: |
+          # Delete remaining API Gateways
+          echo "🗑️  Checking for remaining API Gateways..."
           APIS=$(aws apigatewayv2 get-apis \
             --query "Items[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].ApiId" \
             --output text 2>/dev/null || echo "")
-
           for API_ID in $APIS; do
-            aws apigatewayv2 delete-api --api-id "$API_ID" && \
-              echo "  ✅ API Gateway $API_ID deleted." || \
-              echo "  ⚠️  Could not delete API $API_ID."
+            echo "  → Deleting API: $API_ID"
+            aws apigatewayv2 delete-api --api-id "$API_ID" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 16 — Delete CloudWatch Log Groups Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining CloudWatch Log Groups
-        run: |
+          # Delete remaining CloudWatch Log Groups
+          echo "🗑️  Deleting CloudWatch Log Groups..."
           LOG_GROUPS=$(aws logs describe-log-groups \
             --log-group-name-prefix "/aws/lambda/${{ env.PROJECT }}-${{ env.ENV }}" \
-            --query 'logGroups[].logGroupName' --output text)
-
+            --query 'logGroups[].logGroupName' --output text 2>/dev/null || echo "")
           for LG in $LOG_GROUPS; do
-            aws logs delete-log-group --log-group-name "$LG" && \
-              echo "  ✅ Log group $LG deleted." || true
+            echo "  → Deleting log group: $LG"
+            aws logs delete-log-group --log-group-name "$LG" 2>/dev/null || true
           done
-
-          # Also clean up Step Functions log groups
+          
+          # Also delete Step Functions log groups
           SFN_LOGS=$(aws logs describe-log-groups \
             --log-group-name-prefix "/aws/states/${{ env.PROJECT }}-${{ env.ENV }}" \
-            --query 'logGroups[].logGroupName' --output text)
-
+            --query 'logGroups[].logGroupName' --output text 2>/dev/null || echo "")
           for LG in $SFN_LOGS; do
-            aws logs delete-log-group --log-group-name "$LG" && \
-              echo "  ✅ Log group $LG deleted." || true
+            echo "  → Deleting log group: $LG"
+            aws logs delete-log-group --log-group-name "$LG" 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 17 — Delete Step Functions state machines Terraform missed
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining Step Functions
-        run: |
-          SFNS=$(aws stepfunctions list-state-machines \
-            --query "stateMachines[?starts_with(name, '${{ env.PROJECT }}-${{ env.ENV }}')].stateMachineArn" \
-            --output text)
-
-          for SFN_ARN in $SFNS; do
-            aws stepfunctions delete-state-machine --state-machine-arn "$SFN_ARN" && \
-              echo "  ✅ State machine $SFN_ARN deleted." || \
-              echo "  ⚠️  Could not delete $SFN_ARN."
+          # Delete remaining ECR repositories
+          echo "🗑️  Checking for remaining ECR repositories..."
+          REPOS=$(aws ecr describe-repositories \
+            --query "repositories[?starts_with(repositoryName, '${{ env.PROJECT }}-${{ env.ENV }}')].repositoryName" \
+            --output text 2>/dev/null || echo "")
+          for REPO in $REPOS; do
+            echo "  → Deleting ECR repo: $REPO"
+            aws ecr delete-repository --repository-name "$REPO" --force 2>/dev/null || true
           done
 
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 18 — Delete VPC and all its dependencies
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining VPC resources
-        run: |
+          # Delete remaining IAM roles
+          echo "🗑️  Checking for remaining IAM roles..."
+          ROLES=$(aws iam list-roles \
+            --query "Roles[?starts_with(RoleName, '${{ env.PROJECT }}-${{ env.ENV }}')].RoleName" \
+            --output text 2>/dev/null || echo "")
+          for ROLE in $ROLES; do
+            echo "  → Processing role: $ROLE"
+            # Detach all policies
+            POLICIES=$(aws iam list-attached-role-policies --role-name "$ROLE" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || echo "")
+            for P in $POLICIES; do
+              aws iam detach-role-policy --role-name "$ROLE" --policy-arn "$P" 2>/dev/null || true
+            done
+            # Delete inline policies
+            INLINE=$(aws iam list-role-policies --role-name "$ROLE" --query 'PolicyNames[]' --output text 2>/dev/null || echo "")
+            for IP in $INLINE; do
+              aws iam delete-role-policy --role-name "$ROLE" --policy-name "$IP" 2>/dev/null || true
+            done
+            # Delete role
+            aws iam delete-role --role-name "$ROLE" 2>/dev/null || true
+          done
+
+          # Delete remaining IAM policies
+          echo "🗑️  Checking for remaining IAM policies..."
+          POLICIES=$(aws iam list-policies --scope Local \
+            --query "Policies[?starts_with(PolicyName, '${{ env.PROJECT }}-${{ env.ENV }}')].Arn" \
+            --output text 2>/dev/null || echo "")
+          for P_ARN in $POLICIES; do
+            echo "  → Deleting policy: $(basename $P_ARN)"
+            aws iam delete-policy --policy-arn "$P_ARN" 2>/dev/null || true
+          done
+
+          # Release any orphaned EIPs
+          echo "🗑️  Releasing orphaned Elastic IPs..."
+          EIPS=$(aws ec2 describe-addresses \
+            --query 'Addresses[?AssociationId==`null`].AllocationId' \
+            --output text 2>/dev/null || echo "")
+          for EIP in $EIPS; do
+            echo "  → Releasing EIP: $EIP"
+            aws ec2 release-address --allocation-id "$EIP" 2>/dev/null || true
+          done
+
+          # Delete any orphaned ENIs
+          echo "🗑️  Deleting orphaned Network Interfaces..."
+          ENIS=$(aws ec2 describe-network-interfaces \
+            --filters "Name=status,Values=available" "Name=description,Values=AWS Lambda*" \
+            --query 'NetworkInterfaces[].NetworkInterfaceId' \
+            --output text 2>/dev/null || echo "")
+          for ENI in $ENIS; do
+            echo "  → Deleting ENI: $ENI"
+            aws ec2 delete-network-interface --network-interface-id "$ENI" 2>/dev/null || true
+          done
+
+          # Delete remaining VPCs
+          echo "🗑️  Checking for remaining VPCs..."
           VPC_IDS=$(aws ec2 describe-vpcs \
-            --filters "Name=tag:Project,Values=${{ env.PROJECT }}" \
-                      "Name=tag:Environment,Values=${{ env.ENV }}" \
-            --query 'Vpcs[].VpcId' --output text)
-
+            --filters "Name=tag:Project,Values=${{ env.PROJECT }}" "Name=tag:Environment,Values=${{ env.ENV }}" \
+            --query 'Vpcs[].VpcId' --output text 2>/dev/null || echo "")
           for VPC_ID in $VPC_IDS; do
-            echo "  → Cleaning up VPC $VPC_ID ..."
-
+            echo "  → Cleaning up VPC: $VPC_ID"
+            
+            # Delete network interfaces
+            ENIS=$(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null || echo "")
+            for ENI in $ENIS; do
+              aws ec2 delete-network-interface --network-interface-id "$ENI" 2>/dev/null || true
+            done
+            
             # Delete subnets
-            SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
-              --query 'Subnets[].SubnetId' --output text)
+            SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[].SubnetId' --output text 2>/dev/null || echo "")
             for SUBNET in $SUBNETS; do
               aws ec2 delete-subnet --subnet-id "$SUBNET" 2>/dev/null || true
             done
-
-            # Detach and delete internet gateways
-            IGWS=$(aws ec2 describe-internet-gateways \
-              --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
-              --query 'InternetGateways[].InternetGatewayId' --output text)
+            
+            # Detach and delete IGWs
+            IGWS=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --query 'InternetGateways[].InternetGatewayId' --output text 2>/dev/null || echo "")
             for IGW in $IGWS; do
               aws ec2 detach-internet-gateway --internet-gateway-id "$IGW" --vpc-id "$VPC_ID" 2>/dev/null || true
               aws ec2 delete-internet-gateway --internet-gateway-id "$IGW" 2>/dev/null || true
             done
-
-            # Delete NAT gateways
-            NATS=$(aws ec2 describe-nat-gateways \
-              --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
-              --query 'NatGateways[].NatGatewayId' --output text)
-            for NAT in $NATS; do
-              aws ec2 delete-nat-gateway --nat-gateway-id "$NAT" 2>/dev/null || true
-            done
-
-            # Delete route tables (non-main)
-            RTS=$(aws ec2 describe-route-tables \
-              --filters "Name=vpc-id,Values=$VPC_ID" \
-              --query 'RouteTables[?Associations[?Main==`false`] || length(Associations)==`0`].RouteTableId' \
-              --output text)
+            
+            # Delete route tables
+            RTS=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --query 'RouteTables[?Associations[?Main==`false`] || length(Associations)==`0`].RouteTableId' --output text 2>/dev/null || echo "")
             for RT in $RTS; do
               aws ec2 delete-route-table --route-table-id "$RT" 2>/dev/null || true
             done
-
-            # Delete security groups (non-default)
-            SGS=$(aws ec2 describe-security-groups \
-              --filters "Name=vpc-id,Values=$VPC_ID" \
-              --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text)
+            
+            # Delete security groups
+            SGS=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text 2>/dev/null || echo "")
             for SG in $SGS; do
               aws ec2 delete-security-group --group-id "$SG" 2>/dev/null || true
             done
-
-            # Delete the VPC itself
-            aws ec2 delete-vpc --vpc-id "$VPC_ID" && \
-              echo "  ✅ VPC $VPC_ID deleted." || \
-              echo "  ⚠️  Could not delete VPC $VPC_ID — may need manual removal."
+            
+            # Delete NAT Gateways (wait for deletion)
+            NATS=$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" --query 'NatGateways[].NatGatewayId' --output text 2>/dev/null || echo "")
+            for NAT in $NATS; do
+              aws ec2 delete-nat-gateway --nat-gateway-id "$NAT" 2>/dev/null || true
+            done
+            
+            # Wait for NAT gateways to be deleted
+            if [ -n "$NATS" ]; then
+              echo "    Waiting for NAT gateways to delete (60s)..."
+              sleep 60
+            fi
+            
+            # Finally delete the VPC
+            aws ec2 delete-vpc --vpc-id "$VPC_ID" 2>/dev/null && \
+              echo "    ✅ VPC deleted" || \
+              echo "    ⚠️  Could not delete VPC"
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 19 — Delete CloudFront Origin Access Controls (OAC)
+      # Final Summary
       # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining CloudFront OACs
+      - name: Final Summary
         run: |
-          echo "🗑️  Deleting CloudFront Origin Access Controls..."
-          
-          # List all OACs and delete those matching our project pattern
-          OACS=$(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Id" \
-            --output text 2>/dev/null || echo "")
-          
-          for OAC_ID in $OACS; do
-            echo "  → Deleting CloudFront OAC $OAC_ID ..."
-            aws cloudfront delete-origin-access-control --id "$OAC_ID" 2>/dev/null && \
-              echo "  ✅ OAC $OAC_ID deleted." || \
-              echo "  ⚠️  Could not delete OAC $OAC_ID."
-          done
-
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 20 — Delete ECR repositories
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Force-delete remaining ECR repositories
-        run: |
-          REPOS=$(aws ecr describe-repositories \
-            --query "repositories[?starts_with(repositoryName, '${{ env.PROJECT }}-${{ env.ENV }}')].repositoryName" \
-            --output text 2>/dev/null || echo "")
-
-          for REPO in $REPOS; do
-            echo "  → Deleting ECR repository $REPO ..."
-            # Force delete even if images exist
-            aws ecr delete-repository --repository-name "$REPO" --force 2>/dev/null && \
-              echo "  ✅ ECR repository $REPO deleted." || \
-              echo "  ⚠️  Could not delete $REPO."
-          done
-
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 20 — Preserve Terraform state resources (S3 bucket & DynamoDB table)
-      # These are created by bootstrap and preserved across destroy/deploy cycles
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Preserve Terraform state resources
-        run: |
-          echo "══════════════════════════════════════════════════════"
-          echo "ℹ️  Terraform state resources are PRESERVED:"
           echo ""
-          echo "   📦 S3 State Bucket: ${{ env.TF_STATE_BUCKET }}"
-          echo "      Location: s3://${{ env.TF_STATE_BUCKET }}/dev/"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "                    DESTROY COMPLETE"
+          echo "═══════════════════════════════════════════════════════════════"
           echo ""
-          echo "   🔒 DynamoDB Lock Table: ${{ env.TF_STATE_LOCK_TABLE }}"
-          echo "      Purpose: State locking for concurrent runs"
+          echo "✅ All '${{ env.PROJECT }}-${{ env.ENV }}' resources have been removed."
           echo ""
-          echo "   These resources are created by the bootstrap step"
-          echo "   and persist across destroy/deploy cycles."
-          echo "══════════════════════════════════════════════════════"
+          echo "ℹ️  PRESERVED (for future deployments):"
+          echo "   • S3 State Bucket: ${{ env.TF_STATE_BUCKET }}"
+          echo "   • DynamoDB Lock Table: ${{ env.TF_STATE_LOCK_TABLE }}"
           echo ""
-          echo "   To manually delete state resources (not recommended):"
-          echo "   1. Empty the bucket: aws s3 rm s3://${{ env.TF_STATE_BUCKET }} --recursive"
-          echo "   2. Delete the bucket: aws s3 rb s3://${{ env.TF_STATE_BUCKET }}"
-          echo "   3. Delete the lock table: aws dynamodb delete-table --table-name ${{ env.TF_STATE_LOCK_TABLE }}"
-
-      # ────────────────────────────────────────────────────────────────────────
-      # STEP 21 — Final summary
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Destroy summary
-        run: |
-          echo "══════════════════════════════════════════════"
-          echo "✅  DEV environment fully destroyed."
-          echo "    AWS account is clean — all '${{ env.PROJECT }}-${{ env.ENV }}'"
-          echo "    resources have been removed."
-          echo "══════════════════════════════════════════════"
+          echo "   To manually delete state resources:"
+          echo "   aws s3 rm s3://${{ env.TF_STATE_BUCKET }} --recursive"
+          echo "   aws s3 rb s3://${{ env.TF_STATE_BUCKET }}"
+          echo "   aws dynamodb delete-table --table-name ${{ env.TF_STATE_LOCK_TABLE }}"
+          echo "═══════════════════════════════════════════════════════════════"

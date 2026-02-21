@@ -183,7 +183,70 @@ jobs:
               echo "  ⚠️  Could not delete OAC $OAC_ID (may be in use)"
           done
 
-      - name: Terraform Apply
+      # ────────────────────────────────────────────────────────────────────────
+      # Phase 1: Create ECR repositories first (Lambda needs images)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Terraform Apply - ECR Repositories
+        run: |
+          cd infrastructure/environments/dev
+          echo "📦 Phase 1: Creating ECR repositories..."
+          terraform apply -auto-approve -var-file=terraform.tfvars \
+            -target=module.ecr 2>&1 || true
+
+      # ────────────────────────────────────────────────────────────────────────
+      # Phase 2: Push placeholder images to ECR
+      # Lambda requires images to exist before function creation
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push placeholder Lambda images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          echo "📦 Phase 2: Pushing placeholder Lambda images to ECR..."
+          
+          # List of Lambda function names (matching ECR repo names)
+          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
+          
+          # Create a minimal placeholder image using a simple approach
+          # Pull the base image first
+          docker pull public.ecr.aws/lambda/python:3.11
+          
+          # Build and push placeholder image to each ECR repo
+          for FUNC in $LAMBDA_FUNCTIONS; do
+            REPO_NAME="qleam-dev-${FUNC}"
+            
+            echo "  → Pushing placeholder to $REPO_NAME..."
+            
+            # Create temporary directory for this function
+            mkdir -p /tmp/placeholder_$FUNC
+            
+            # Create a simple handler file
+            printf 'def lambda_handler(event, context):\n    return {"statusCode": 200, "body": "Placeholder - run lambda-deploy workflow"}\n' > /tmp/placeholder_$FUNC/handler.py
+            
+            # Create Dockerfile
+            printf 'FROM public.ecr.aws/lambda/python:3.11\nCOPY handler.py /var/task/\nCMD ["handler.lambda_handler"]\n' > /tmp/placeholder_$FUNC/Dockerfile
+            
+            # Build placeholder image
+            docker build -t "$ECR_REGISTRY/$REPO_NAME:latest" /tmp/placeholder_$FUNC
+            
+            # Push to ECR
+            docker push "$ECR_REGISTRY/$REPO_NAME:latest"
+            
+            echo "  ✅ Placeholder pushed to $REPO_NAME"
+          done
+          
+          echo ""
+          echo "══════════════════════════════════════════════════════"
+          echo "✅ Placeholder images ready for Lambda creation"
+          echo "══════════════════════════════════════════════════════"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # Phase 3: Create all remaining resources (including Lambda functions)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Terraform Apply - All Resources
         run: |
           cd infrastructure/environments/dev
           terraform apply -auto-approve -var-file=terraform.tfvars
