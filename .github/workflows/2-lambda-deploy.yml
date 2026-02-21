@@ -129,18 +129,30 @@ jobs:
           ECR_URLS: ${{ steps.ecr-urls.outputs.ecr_urls }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
+          # Map of ECR repo names (underscores) to Lambda function names (hyphens)
+          # ECR uses underscores, Lambda uses hyphens
+          declare -A LAMBDA_NAMES
+          LAMBDA_NAMES["feature_extraction"]="qleam-dev-feature-extraction"
+          LAMBDA_NAMES["cluster_engine"]="qleam-dev-cluster-engine"
+          LAMBDA_NAMES["reinforcement_engine"]="qleam-dev-reinforcement-engine"
+          LAMBDA_NAMES["insight_generator"]="qleam-dev-insight-generator"
+          LAMBDA_NAMES["feedback_processor"]="qleam-dev-feedback-processor"
+          LAMBDA_NAMES["api_handler"]="qleam-dev-api-handler"
           
-          for fn in $LAMBDA_FUNCTIONS; do
+          for fn in "${!LAMBDA_NAMES[@]}"; do
             ECR_URL=$(echo "$ECR_URLS" | jq -r ".\"$fn\"")
-            FUNCTION_NAME="qleam-dev-$fn"
+            FUNCTION_NAME="${LAMBDA_NAMES[$fn]}"
             
             echo "🔄 Updating Lambda function $FUNCTION_NAME..."
             
             aws lambda update-function-code \
-              --function-name $FUNCTION_NAME \
-              --image-uri $ECR_URL:$IMAGE_TAG \
+              --function-name "$FUNCTION_NAME" \
+              --image-uri "$ECR_URL:$IMAGE_TAG" \
               --no-cli-pager || echo "⚠️ Could not update $FUNCTION_NAME - may need manual update"
+            
+            # Wait for update to complete before updating next function
+            echo "   Waiting for update to complete..."
+            sleep 5
           done
 
       - name: Deployment summary
