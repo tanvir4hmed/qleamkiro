@@ -4,25 +4,30 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
-# Disable numba JIT caching (Lambda has read-only filesystem for packages)
-ENV NUMBA_DISABLE_JIT=1
-ENV NUMBA_CACHE_DIR=/tmp/numba_cache
-
 # Install system dependencies for audio processing
 RUN yum install -y -q libsndfile && \
     yum clean all
 
 # Install Python dependencies for audio processing
-# Using specific versions with pre-built wheels (no compilation required)
-# IMPORTANT: Only use versions that have manylinux wheels available
+# Using librosa without numba - uses scipy/numpy fallbacks instead
 RUN pip install --no-cache-dir --only-binary=:all: \
     'numpy==1.26.4' \
     'scipy==1.11.4' \
-    'librosa==0.10.1' \
     'soundfile==0.12.1' \
-    'boto3==1.34.0' \
-    'numba==0.58.1' \
-    'llvmlite==0.41.1'
+    'soxr==0.3.7' \
+    'joblib>=1.2.0' \
+    'decorator>=5.0.0' \
+    'lazy_loader>=0.1' \
+    'msgpack>=1.0.0' \
+    'platformdirs>=2.5.0' \
+    'pooch>=1.0.0' \
+    'typer>=0.10.0' \
+    'boto3==1.34.0'
+
+# Install librosa without numba dependencies
+RUN pip install --no-cache-dir \
+    'librosa==0.10.2.post1' \
+    --no-deps
 
 # Copy shared utilities
 COPY shared/ /var/task/shared/

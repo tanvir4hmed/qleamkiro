@@ -204,12 +204,13 @@ def extract_emotional_intensity(y: np.ndarray, sr: int) -> float:
     """
     librosa = _get_librosa()
     
-    # Pitch (F0) using pyin
+    # Pitch (F0) using yin (pure numpy/scipy, no numba required)
     try:
-        f0, voiced_flag, voiced_probs = librosa.pyin(
+        f0 = librosa.yin(
             y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7')
         )
-        f0_voiced = f0[voiced_flag] if voiced_flag is not None else np.array([])
+        # Filter out NaN values (unvoiced frames)
+        f0_voiced = f0[~np.isnan(f0)] if f0 is not None else np.array([])
         
         if len(f0_voiced) > 1:
             f0_variance = float(np.std(f0_voiced) / (np.mean(f0_voiced) + 1e-8))
