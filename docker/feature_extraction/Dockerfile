@@ -2,27 +2,39 @@
 # Feature Extraction Lambda - Docker Image
 # Includes librosa, scipy, numpy for audio feature extraction
 # =============================================================================
-# Use :3.11; install step below supports both yum (AL2) and dnf (AL2023) so base updates don't break the build.
 FROM public.ecr.aws/lambda/python:3.11
 
-# FFmpeg: fixed BtbN release (no "latest" tag); must be declared before the RUN that uses them
-ARG FFMPEG_TAG=autobuild-2026-02-21-13-00
-ARG FFMPEG_ASSET=ffmpeg-n7.1.3-40-gcddd06f3b9-linux64-gpl-7.1.tar.xz
+# Download and extract ffmpeg using Python (no package manager needed)
+# Using johnvansickle static builds - reliable and self-contained
+RUN python3 -c "
+import urllib.request
+import tarfile
+import os
+import shutil
 
-# Install system deps + FFmpeg in one RUN so curl is available when used (avoids exit 127).
-# libsndfile for soundfile; curl + xz for FFmpeg. Support both yum (AL2) and dnf (AL2023).
-RUN set -e; \
-    if command -v dnf >/dev/null 2>&1; then \
-      dnf install -y libsndfile curl xz && dnf clean all; \
-    else \
-      yum install -y libsndfile curl xz && yum clean all; \
-    fi; \
-    /usr/bin/curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET}" -o /tmp/ffmpeg.tar.xz; \
-    tar -xf /tmp/ffmpeg.tar.xz -C /tmp; \
-    cp /tmp/ffmpeg-*/bin/ffmpeg /usr/local/bin/; \
-    cp /tmp/ffmpeg-*/bin/ffprobe /usr/local/bin/; \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe; \
-    rm -rf /tmp/ffmpeg*; \
+# Download ffmpeg static build
+url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz'
+print('Downloading ffmpeg...')
+urllib.request.urlretrieve(url, '/tmp/ffmpeg.tar.xz')
+print('Download complete')
+
+# Extract
+print('Extracting...')
+with tarfile.open('/tmp/ffmpeg.tar.xz', 'r:xz') as tar:
+    tar.extractall('/tmp')
+
+# Find and copy ffmpeg/ffprobe binaries
+for name in os.listdir('/tmp'):
+    if name.startswith('ffmpeg-') and os.path.isdir(f'/tmp/{name}'):
+        shutil.copy(f'/tmp/{name}/ffmpeg', '/usr/local/bin/ffmpeg')
+        shutil.copy(f'/tmp/{name}/ffprobe', '/usr/local/bin/ffprobe')
+        break
+
+os.chmod('/usr/local/bin/ffmpeg', 0o755)
+os.chmod('/usr/local/bin/ffprobe', 0o755)
+print('ffmpeg installed successfully')
+" && \
+    rm -rf /tmp/ffmpeg* && \
     /usr/local/bin/ffmpeg -version
 
 # Install Python dependencies for audio processing
