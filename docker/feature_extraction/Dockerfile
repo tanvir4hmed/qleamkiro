@@ -5,11 +5,16 @@
 FROM public.ecr.aws/lambda/python:3.11
 
 # Install system dependencies for audio processing
-# ffmpeg-free is the free version of ffmpeg available in Amazon Linux 2023
-# Create symlink so 'ffmpeg' command works (ffmpeg-free installs as ffmpeg-free)
-RUN dnf install -y libsndfile ffmpeg-free && \
-    ln -s /usr/bin/ffmpeg-free /usr/bin/ffmpeg && \
-    dnf clean all && \
+# libsndfile for soundfile library
+# Download static ffmpeg binary (ffmpeg not available in Amazon Linux repos)
+RUN yum install -y libsndfile curl xz && \
+    curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz -o /tmp/ffmpeg.tar.xz && \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp && \
+    cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ && \
+    cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    rm -rf /tmp/ffmpeg* && \
+    yum clean all && \
     ffmpeg -version
 
 # Install Python dependencies for audio processing
