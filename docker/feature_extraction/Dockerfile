@@ -4,6 +4,10 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
+# Disable numba JIT caching (Lambda has read-only filesystem for packages)
+ENV NUMBA_DISABLE_JIT=1
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
 # Install system dependencies for audio processing
 RUN yum install -y -q libsndfile && \
     yum clean all
