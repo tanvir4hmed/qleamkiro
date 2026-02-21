@@ -58,6 +58,9 @@ def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = 22050) -> Tuple[n
     """
     Load audio from bytes, convert to mono, resample.
     
+    Always uses ffmpeg for maximum compatibility with all audio formats
+    (WebM, WAV, MP3, MP4, OGG, etc.) including corrupted or variant files.
+    
     Args:
         audio_bytes: Raw audio bytes
         target_sr: Target sample rate
@@ -66,129 +69,66 @@ def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = 22050) -> Tuple[n
         Tuple of (audio_array, sample_rate)
     """
     import soundfile as sf
-    import soxr
     import subprocess
     
-    # Try to detect format from magic bytes
-    # WAV: RIFF....WAVE
-    # WebM: 1A 45 DF A3
-    # MP3: ID3 or FF FB
-    # M4A: ftyp
-    # OGG: 4F 67 67 53
-    header = audio_bytes[:12] if len(audio_bytes) >= 12 else audio_bytes
+    # Log file info for debugging
+    file_size = len(audio_bytes)
+    header = audio_bytes[:16] if len(audio_bytes) >= 16 else audio_bytes
+    logger.info(f"Loading audio: {file_size} bytes, header: {header.hex()}")
     
-    # Detect WebM/MKV format (from browser MediaRecorder)
-    is_webm = header[:4] == b'\x1a\x45\xdf\xa3'
-    # Detect OGG format
-    is_ogg = header[:4] == b'OggS'
-    # Detect MP4/M4A format
-    is_mp4 = header[4:8] == b'ftyp'
-    # Detect MP3 format
-    is_mp3 = header[:3] == b'ID3' or (len(header) > 2 and header[0:1] == b'\xff')
-    # Detect WAV format
-    is_wav = header[:4] == b'RIFF' and header[8:12] == b'WAVE'
+    if file_size < 100:
+        raise ValueError(f"Audio file too small: {file_size} bytes")
     
-    logger.info(f"Audio format detection: webm={is_webm}, ogg={is_ogg}, mp4={is_mp4}, mp3={is_mp3}, wav={is_wav}")
-    
-    # For WebM, OGG, MP4, MP3 - use ffmpeg to convert to WAV first
-    if is_webm or is_ogg or is_mp4 or is_mp3:
-        logger.info("Using ffmpeg to convert audio to WAV format")
-        
-        # Write input to temp file
-        with tempfile.NamedTemporaryFile(suffix='.webm' if is_webm else '.ogg' if is_ogg else '.m4a' if is_mp4 else '.mp3', delete=False) as tmp_in:
-            tmp_in.write(audio_bytes)
-            tmp_in_path = tmp_in.name
-        
-        # Output WAV file
-        tmp_out_path = tempfile.mktemp(suffix='.wav')
-        
-        try:
-            # Use ffmpeg to convert to WAV (mono, target sample rate)
-            cmd = [
-                'ffmpeg', '-y', '-i', tmp_in_path,
-                '-ac', '1',  # Mono
-                '-ar', str(target_sr),  # Target sample rate
-                '-f', 'wav',
-                '-acodec', 'pcm_f32le',  # 32-bit float PCM
-                tmp_out_path
-            ]
-            
-            logger.info(f"Running ffmpeg: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode != 0:
-                logger.error(f"ffmpeg error: {result.stderr}")
-                raise RuntimeError(f"ffmpeg failed: {result.stderr}")
-            
-            # Read the converted WAV file
-            y, sr = sf.read(tmp_out_path, dtype='float32')
-            
-            logger.info(f"Loaded audio via ffmpeg: {len(y)} samples at {sr}Hz ({len(y)/sr:.2f}s)")
-            return y, sr
-            
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("ffmpeg conversion timed out")
-        finally:
-            # Clean up temp files
-            if os.path.exists(tmp_in_path):
-                os.unlink(tmp_in_path)
-            if os.path.exists(tmp_out_path):
-                os.unlink(tmp_out_path)
-    
-    # For WAV files - use soundfile directly
-    if is_wav:
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-        
-        try:
-            y, sr = sf.read(tmp_path, dtype='float32')
-            
-            # Convert to mono if stereo
-            if len(y.shape) > 1:
-                y = np.mean(y, axis=1)
-            
-            # Resample if needed using soxr
-            if sr != target_sr:
-                y = soxr.resample(y, sr, target_sr)
-                sr = target_sr
-            
-            logger.info(f"Loaded audio: {len(y)} samples at {sr}Hz ({len(y)/sr:.2f}s)")
-            return y, sr
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-    
-    # Fallback: try ffmpeg on unknown format
-    logger.warning(f"Unknown audio format, trying ffmpeg. Header: {header.hex()}")
-    
+    # Always use ffmpeg - handles all formats reliably
+    # Write input to temp file (ffmpeg auto-detects format)
     with tempfile.NamedTemporaryFile(delete=False) as tmp_in:
         tmp_in.write(audio_bytes)
         tmp_in_path = tmp_in.name
     
+    # Output WAV file
     tmp_out_path = tempfile.mktemp(suffix='.wav')
     
     try:
+        # Use ffmpeg to convert to WAV (mono, target sample rate)
+        # -y: overwrite output
+        # -i: input file (auto-detect format)
+        # -ac 1: mono
+        # -ar: target sample rate
+        # -resampler soxr: use libsoxr for high-quality resampling
+        # -precision 28: maximum precision for soxr (28-bit)
+        # -f wav: output format
+        # -acodec pcm_f32le: 32-bit float PCM for soundfile compatibility
         cmd = [
             'ffmpeg', '-y', '-i', tmp_in_path,
             '-ac', '1',
             '-ar', str(target_sr),
+            '-resampler', 'soxr',
+            '-precision', '28',
             '-f', 'wav',
             '-acodec', 'pcm_f32le',
             tmp_out_path
         ]
         
+        logger.info(f"Running ffmpeg: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         
         if result.returncode != 0:
-            raise ValueError(f"Could not load audio file. ffmpeg error: {result.stderr}. "
-                           f"File header: {header.hex()}")
+            logger.error(f"ffmpeg stderr: {result.stderr}")
+            raise RuntimeError(f"ffmpeg failed to process audio: {result.stderr[:500]}")
         
+        # Read the converted WAV file
         y, sr = sf.read(tmp_out_path, dtype='float32')
-        logger.info(f"Loaded audio via ffmpeg fallback: {len(y)} samples at {sr}Hz")
+        
+        logger.info(f"Loaded audio: {len(y)} samples at {sr}Hz ({len(y)/sr:.2f}s)")
         return y, sr
         
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffmpeg conversion timed out (60s limit)")
+    except Exception as e:
+        logger.error(f"Audio loading failed: {e}")
+        raise
     finally:
+        # Clean up temp files
         if os.path.exists(tmp_in_path):
             os.unlink(tmp_in_path)
         if os.path.exists(tmp_out_path):

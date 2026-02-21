@@ -10,7 +10,8 @@ RUN yum install -y -q libsndfile ffmpeg && \
     yum clean all
 
 # Install Python dependencies for audio processing
-# Using soundfile + soxr for audio loading (librosa still needs audioread at import time)
+# Using ffmpeg for audio loading (handles all formats), soundfile for reading ffmpeg output
+# soxr for high-quality resampling, audioread required by librosa at import time
 RUN pip install --no-cache-dir --only-binary=:all: \
     'numpy==1.26.4' \
     'scipy==1.11.4' \
