@@ -4,9 +4,14 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
-# Download and extract ffmpeg using Python (no package manager needed)
-# Using johnvansickle static builds - reliable and self-contained
-RUN python3 -c "import urllib.request, tarfile, os, shutil; urllib.request.urlretrieve('https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz', '/tmp/ffmpeg.tar.xz'); tarfile.open('/tmp/ffmpeg.tar.xz', 'r:xz').extractall('/tmp'); [shutil.copy(f'/tmp/{n}/ffmpeg', '/usr/local/bin/ffmpeg') or shutil.copy(f'/tmp/{n}/ffprobe', '/usr/local/bin/ffprobe') for n in os.listdir('/tmp') if n.startswith('ffmpeg-') and os.path.isdir(f'/tmp/{n}')]; os.chmod('/usr/local/bin/ffmpeg', 0o755); os.chmod('/usr/local/bin/ffprobe', 0o755)" && rm -rf /tmp/ffmpeg* && /usr/local/bin/ffmpeg -version
+# Install requests for ffmpeg download script
+RUN pip install requests
+
+# Copy and run ffmpeg installation script
+COPY docker/feature_extraction/install_ffmpeg.py /tmp/install_ffmpeg.py
+RUN python3 /tmp/install_ffmpeg.py && \
+    rm -rf /tmp/ffmpeg* /tmp/install_ffmpeg.py && \
+    /usr/local/bin/ffmpeg -version
 
 # Install Python dependencies for audio processing
 # Using ffmpeg for audio loading (handles all formats), soundfile for reading ffmpeg output
