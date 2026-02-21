@@ -32,8 +32,8 @@ RUN pip install --no-cache-dir --only-binary=:all: \
     'soxr==0.3.7' \
     'audioread>=3.0.0' \
     'scikit-learn==1.3.2' \
-    'numba==0.58.1' \
-    'llvmlite==0.41.1' \
+    'numba==0.59.0' \
+    'llvmlite==0.42.0' \
     'joblib>=1.2.0' \
     'decorator>=5.0.0' \
     'lazy_loader>=0.1' \
