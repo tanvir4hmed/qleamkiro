@@ -5,9 +5,12 @@
 FROM public.ecr.aws/lambda/python:3.11
 
 # Install system dependencies for audio processing
-# ffmpeg is needed to decode WebM audio from browser recordings
-RUN yum install -y -q libsndfile ffmpeg && \
-    yum clean all
+# ffmpeg-free is the free version of ffmpeg available in Amazon Linux 2023
+# Create symlink so 'ffmpeg' command works (ffmpeg-free installs as ffmpeg-free)
+RUN dnf install -y libsndfile ffmpeg-free && \
+    ln -s /usr/bin/ffmpeg-free /usr/bin/ffmpeg && \
+    dnf clean all && \
+    ffmpeg -version
 
 # Install Python dependencies for audio processing
 # Using ffmpeg for audio loading (handles all formats), soundfile for reading ffmpeg output
