@@ -9,13 +9,16 @@ RUN yum install -y -q libsndfile && \
     yum clean all
 
 # Install Python dependencies for audio processing
-# Using specific versions to ensure compatibility
-RUN pip install --no-cache-dir \
-    'numpy>=1.24.0,<2' \
-    'scipy>=1.11.0' \
-    'librosa>=0.10.0' \
-    'soundfile>=0.12.1' \
-    'boto3>=1.28.0'
+# Using specific versions with pre-built wheels (no compilation required)
+# IMPORTANT: Only use versions that have manylinux wheels available
+RUN pip install --no-cache-dir --only-binary=:all: \
+    'numpy==1.26.4' \
+    'scipy==1.11.4' \
+    'librosa==0.10.1' \
+    'soundfile==0.12.1' \
+    'boto3==1.34.0' \
+    'numba==0.58.1' \
+    'llvmlite==0.41.1'
 
 # Copy shared utilities
 COPY shared/ /var/task/shared/

@@ -4,9 +4,9 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
-# Install Python dependencies
-RUN pip install --no-cache-dir \
-    'boto3>=1.28.0'
+# Install Python dependencies (pre-built wheels only)
+RUN pip install --no-cache-dir --only-binary=:all: \
+    'boto3==1.34.0'
 
 # Copy shared utilities
 COPY shared/ /var/task/shared/

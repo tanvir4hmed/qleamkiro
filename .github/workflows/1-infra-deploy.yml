@@ -164,26 +164,6 @@ jobs:
             -backend-config="encrypt=true"
 
       # ────────────────────────────────────────────────────────────────────────
-      # Cleanup orphaned resources that might conflict with Terraform
-      # ────────────────────────────────────────────────────────────────────────
-      - name: Cleanup orphaned CloudFront OACs
-        run: |
-          echo "🧹 Checking for orphaned CloudFront Origin Access Controls..."
-          
-          # Delete any OACs that match our project pattern but aren't tracked by Terraform
-          # This can happen if a previous deployment failed
-          OACS=$(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?starts_with(Name, 'qleam-dev')].Id" \
-            --output text 2>/dev/null || echo "")
-          
-          for OAC_ID in $OACS; do
-            echo "  → Found orphaned OAC: $OAC_ID"
-            aws cloudfront delete-origin-access-control --id "$OAC_ID" 2>/dev/null && \
-              echo "  ✅ Deleted orphaned OAC $OAC_ID" || \
-              echo "  ⚠️  Could not delete OAC $OAC_ID (may be in use)"
-          done
-
-      # ────────────────────────────────────────────────────────────────────────
       # Phase 1: Create ECR repositories first (Lambda needs images)
       # ────────────────────────────────────────────────────────────────────────
       - name: Terraform Apply - ECR Repositories
@@ -226,7 +206,7 @@ jobs:
             # Create a simple handler file
             printf 'def lambda_handler(event, context):\n    return {"statusCode": 200, "body": "Placeholder - run lambda-deploy workflow"}\n' > /tmp/placeholder_$FUNC/handler.py
             
-            # Create Dockerfile
+            # Create Dockerfile - minimal placeholder with no dependencies
             printf 'FROM public.ecr.aws/lambda/python:3.11\nCOPY handler.py /var/task/\nCMD ["handler.lambda_handler"]\n' > /tmp/placeholder_$FUNC/Dockerfile
             
             # Build placeholder image

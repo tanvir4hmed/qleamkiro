@@ -416,6 +416,62 @@ jobs:
           done
 
       # ════════════════════════════════════════════════════════════════════════
+      # PHASE 8.5: Delete CloudWatch Log Groups (BEFORE Terraform)
+      # These can cause "already exists" errors if not cleaned up first
+      # ════════════════════════════════════════════════════════════════════════
+      - name: PHASE 8.5 - Delete CloudWatch Log Groups
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "PHASE 8.5: Deleting CloudWatch Log Groups"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+
+          # Lambda log groups
+          echo "  Deleting Lambda log groups..."
+          LOG_GROUPS=$(aws logs describe-log-groups \
+            --log-group-name-prefix "/aws/lambda/${{ env.PROJECT }}-${{ env.ENV }}" \
+            --query 'logGroups[].logGroupName' --output text 2>/dev/null || echo "")
+          for LG in $LOG_GROUPS; do
+            echo "    Deleting: $LG"
+            aws logs delete-log-group --log-group-name "$LG" 2>/dev/null || true
+          done
+          echo "    ✅ Lambda log groups deleted"
+
+          # Step Functions log groups
+          echo "  Deleting Step Functions log groups..."
+          SFN_LOGS=$(aws logs describe-log-groups \
+            --log-group-name-prefix "/aws/states/${{ env.PROJECT }}-${{ env.ENV }}" \
+            --query 'logGroups[].logGroupName' --output text 2>/dev/null || echo "")
+          for LG in $SFN_LOGS; do
+            echo "    Deleting: $LG"
+            aws logs delete-log-group --log-group-name "$LG" 2>/dev/null || true
+          done
+          echo "    ✅ Step Functions log groups deleted"
+
+          # API Gateway log groups
+          echo "  Deleting API Gateway log groups..."
+          API_LOGS=$(aws logs describe-log-groups \
+            --log-group-name-prefix "/aws/apigateway/${{ env.PROJECT }}-${{ env.ENV }}" \
+            --query 'logGroups[].logGroupName' --output text 2>/dev/null || echo "")
+          for LG in $API_LOGS; do
+            echo "    Deleting: $LG"
+            aws logs delete-log-group --log-group-name "$LG" 2>/dev/null || true
+          done
+          echo "    ✅ API Gateway log groups deleted"
+
+          # Any other project-related log groups
+          echo "  Deleting any other project log groups..."
+          ALL_LOGS=$(aws logs describe-log-groups \
+            --query "logGroups[?contains(logGroupName, '${{ env.PROJECT }}-${{ env.ENV }}')].logGroupName" \
+            --output text 2>/dev/null || echo "")
+          for LG in $ALL_LOGS; do
+            echo "    Deleting: $LG"
+            aws logs delete-log-group --log-group-name "$LG" 2>/dev/null || true
+          done
+          echo "    ✅ All project log groups deleted"
+
+      # ════════════════════════════════════════════════════════════════════════
       # PHASE 9: Terraform Destroy
       # ════════════════════════════════════════════════════════════════════════
       - name: Setup Terraform
