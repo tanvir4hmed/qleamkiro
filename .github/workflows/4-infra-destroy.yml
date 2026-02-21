@@ -596,7 +596,26 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 19 — Delete ECR repositories
+      # STEP 19 — Delete CloudFront Origin Access Controls (OAC)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Force-delete remaining CloudFront OACs
+        run: |
+          echo "🗑️  Deleting CloudFront Origin Access Controls..."
+          
+          # List all OACs and delete those matching our project pattern
+          OACS=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?starts_with(Name, '${{ env.PROJECT }}-${{ env.ENV }}')].Id" \
+            --output text 2>/dev/null || echo "")
+          
+          for OAC_ID in $OACS; do
+            echo "  → Deleting CloudFront OAC $OAC_ID ..."
+            aws cloudfront delete-origin-access-control --id "$OAC_ID" 2>/dev/null && \
+              echo "  ✅ OAC $OAC_ID deleted." || \
+              echo "  ⚠️  Could not delete OAC $OAC_ID."
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
+      # STEP 20 — Delete ECR repositories
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining ECR repositories
         run: |

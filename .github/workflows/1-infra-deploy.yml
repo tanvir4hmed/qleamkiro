@@ -163,6 +163,26 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="encrypt=true"
 
+      # ────────────────────────────────────────────────────────────────────────
+      # Cleanup orphaned resources that might conflict with Terraform
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Cleanup orphaned CloudFront OACs
+        run: |
+          echo "🧹 Checking for orphaned CloudFront Origin Access Controls..."
+          
+          # Delete any OACs that match our project pattern but aren't tracked by Terraform
+          # This can happen if a previous deployment failed
+          OACS=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?starts_with(Name, 'qleam-dev')].Id" \
+            --output text 2>/dev/null || echo "")
+          
+          for OAC_ID in $OACS; do
+            echo "  → Found orphaned OAC: $OAC_ID"
+            aws cloudfront delete-origin-access-control --id "$OAC_ID" 2>/dev/null && \
+              echo "  ✅ Deleted orphaned OAC $OAC_ID" || \
+              echo "  ⚠️  Could not delete OAC $OAC_ID (may be in use)"
+          done
+
       - name: Terraform Apply
         run: |
           cd infrastructure/environments/dev
