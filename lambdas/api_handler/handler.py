@@ -83,10 +83,28 @@ def get_allowed_origin(event: Dict) -> str:
     if not ALLOWED_ORIGINS:
         return "*"  # If no allowed origins configured, allow all (backward compatibility)
     
-    origin = event.get("headers", {}).get("Origin") or event.get("headers", {}).get("origin", "")
-    if origin and origin in ALLOWED_ORIGINS:
+    # Check both Origin and origin header keys (API Gateway can use either)
+    headers = event.get("headers", {})
+    origin = headers.get("Origin") or headers.get("origin") or ""
+    
+    # Also check multi-value headers
+    multi_value_headers = event.get("multiValueHeaders", {})
+    if not origin and "Origin" in multi_value_headers:
+        origin = multi_value_headers["Origin"][0] if multi_value_headers["Origin"] else ""
+    
+    # Normalize origin for comparison (remove trailing slash)
+    origin = origin.rstrip("/")
+    
+    # Check if origin matches any allowed origin (with or without trailing slash)
+    for allowed in ALLOWED_ORIGINS:
+        if origin == allowed.rstrip("/"):
+            return origin
+    
+    # For development: allow localhost origins
+    if "localhost" in origin or "127.0.0.1" in origin:
         return origin
-    # Return '*' as fallback for untrusted origins (allows localhost and other dev origins)
+    
+    # Return '*' as fallback for untrusted origins
     return "*"
 
 

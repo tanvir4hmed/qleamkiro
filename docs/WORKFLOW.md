@@ -4,12 +4,20 @@
 
 ---
 
-## 1. CI/CD Pipeline Workflow (3 Separate Workflows)
+## 1. CI/CD Pipeline Workflow (4 Sequential Workflows)
 
-Qleam uses **3 independent workflows** to allow isolated deployments:
+Qleam uses **4 numbered workflows** to indicate deployment order and allow isolated deployments:
 
-### 1.1 Infrastructure Workflow (`infra-deploy.yml`)
-Triggers on changes to `infrastructure/**` (except Lambda module)
+### Deployment Order
+| Order | Workflow | Purpose | Trigger |
+|-------|----------|---------|---------|
+| **1** | `1-infra-deploy.yml` | Deploy infrastructure first | `infrastructure/**` changes |
+| **2** | `2-lambda-deploy.yml` | Deploy Lambda functions | `lambdas/**`, `shared/**`, `docker/**` changes |
+| **3** | `3-frontend-deploy.yml` | Deploy frontend | `frontend/**` changes |
+| **4** | `4-infra-destroy.yml` | Destroy all resources | Manual trigger only |
+
+### 1.1 Infrastructure Workflow (`1-infra-deploy.yml`)
+**Deploys FIRST** - Creates VPC, IAM, ECR, S3, DynamoDB, Cognito, API Gateway, Step Functions
 
 ```mermaid
 flowchart TD
@@ -40,8 +48,8 @@ flowchart TD
     style APPLY fill:#e8f5e9,stroke:#4CAF50
 ```
 
-### 1.2 Lambda Workflow (`lambda-deploy.yml`)
-Triggers on changes to `lambdas/**`, `shared/**`, or `docker/**`
+### 1.2 Lambda Workflow (`2-lambda-deploy.yml`)
+**Deploys SECOND** - Requires infrastructure (ECR repositories)
 
 ```mermaid
 flowchart TD
@@ -69,8 +77,8 @@ flowchart TD
     style BUILD fill:#e8f5e9,stroke:#4CAF50
 ```
 
-### 1.3 Frontend Workflow (`frontend-deploy.yml`)
-Triggers on changes to `frontend/**`
+### 1.3 Frontend Workflow (`3-frontend-deploy.yml`)
+**Deploys THIRD** - Requires infrastructure (Cognito, API Gateway)
 
 ```mermaid
 flowchart TD
@@ -97,6 +105,48 @@ flowchart TD
     
     style BUILD fill:#e3f2fd,stroke:#2196F3
     style DEPLOY fill:#e8f5e9,stroke:#4CAF50
+```
+
+### 1.4 Destroy Workflow (`4-infra-destroy.yml`)
+**Destroys LAST** - Manual trigger only, tears down all resources
+
+```mermaid
+flowchart TD
+    MANUAL["🔧 Manual Trigger\nType 'destroy' to confirm"]
+    
+    subgraph CLEANUP["Pre-Terraform Cleanup"]
+        C1["Delete Lambda functions\n(release ENIs)"]
+        C2["Delete Lambda layers"]
+        C3["Delete Cognito Identity Pools"]
+        C4["Empty S3 buckets"]
+        C5["Detach IAM policies"]
+        C6["Disable CloudFront"]
+    end
+    
+    subgraph TF["Terraform Destroy"]
+        TF1["terraform init"]
+        TF2["terraform destroy\n-auto-approve"]
+    end
+    
+    subgraph POST["Post-Terraform Cleanup"]
+        P1["Force-delete S3 buckets"]
+        P2["Delete CloudFront"]
+        P3["Delete IAM roles"]
+        P4["Delete DynamoDB tables"]
+        P5["Delete Cognito User Pools"]
+        P6["Delete IAM policies"]
+        P7["Delete API Gateway"]
+        P8["Delete CloudWatch Logs"]
+        P9["Delete Step Functions"]
+        P10["Delete VPC resources"]
+        P11["Delete ECR repositories"]
+    end
+    
+    MANUAL --> CLEANUP --> TF --> POST
+    
+    style CLEANUP fill:#fff3e0,stroke:#FF9800
+    style TF fill:#e3f2fd,stroke:#2196F3
+    style POST fill:#fce4ec,stroke:#E91E63
 ```
 
 ---

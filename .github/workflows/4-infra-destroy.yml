@@ -1,4 +1,4 @@
-name: infra destroy
+name: 4 - infra destroy
 
 on:
   workflow_dispatch:
@@ -150,7 +150,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 2 — Detach & delete IAM policies / roles created by Terraform
+      # STEP 5 — Detach & delete IAM policies / roles created by Terraform
       # (Terraform sometimes fails to delete roles that still have attachments)
       # ────────────────────────────────────────────────────────────────────────
       - name: Detach IAM policies from project roles
@@ -195,7 +195,7 @@ jobs:
           echo "✅ IAM policies detached."
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 3 — Disable CloudFront distributions (must be disabled before delete)
+      # STEP 6 — Disable CloudFront distributions (must be disabled before delete)
       # ────────────────────────────────────────────────────────────────────────
       - name: Disable CloudFront distributions
         run: |
@@ -222,7 +222,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 4 — Terraform destroy (handles all remaining resources)
+      # STEP 7 — Terraform destroy (handles all remaining resources)
       # ────────────────────────────────────────────────────────────────────────
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -253,7 +253,7 @@ jobs:
           echo "✅ Terraform destroy completed (errors above are non-fatal — manual cleanup follows)."
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 5 — Force-delete any S3 buckets Terraform missed
+      # STEP 8 — Force-delete any S3 buckets Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining project S3 buckets
         run: |
@@ -290,7 +290,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 6 — Force-delete CloudFront distributions Terraform missed
+      # STEP 9 — Force-delete CloudFront distributions Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining CloudFront distributions
         run: |
@@ -307,7 +307,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 7 — Force-delete IAM roles Terraform missed
+      # STEP 10 — Force-delete IAM roles Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining IAM roles
         run: |
@@ -335,7 +335,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 8 — Delete Lambda functions Terraform missed
+      # STEP 11 — Delete Lambda functions Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining Lambda functions
         run: |
@@ -350,7 +350,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 9 — Delete DynamoDB tables Terraform missed
+      # STEP 12 — Delete DynamoDB tables Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining DynamoDB tables
         run: |
@@ -365,7 +365,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 10 — Delete Cognito User Pools Terraform missed
+      # STEP 13 — Delete Cognito User Pools Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining Cognito User Pools
         run: |
@@ -401,7 +401,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 10.5 — Delete IAM policies created by Terraform
+      # STEP 14 — Delete IAM policies created by Terraform
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining IAM policies
         run: |
@@ -460,7 +460,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 11 — Delete API Gateway APIs Terraform missed
+      # STEP 15 — Delete API Gateway APIs Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining API Gateway APIs
         run: |
@@ -475,7 +475,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 12 — Delete CloudWatch Log Groups Terraform missed
+      # STEP 16 — Delete CloudWatch Log Groups Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining CloudWatch Log Groups
         run: |
@@ -499,7 +499,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 13 — Delete Step Functions state machines Terraform missed
+      # STEP 17 — Delete Step Functions state machines Terraform missed
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining Step Functions
         run: |
@@ -514,7 +514,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 14 — Delete VPC and all its dependencies
+      # STEP 18 — Delete VPC and all its dependencies
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining VPC resources
         run: |
@@ -574,7 +574,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 15 — Delete ECR repositories
+      # STEP 19 — Delete ECR repositories
       # ────────────────────────────────────────────────────────────────────────
       - name: Force-delete remaining ECR repositories
         run: |
@@ -591,7 +591,7 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 16 — Skip Terraform state bucket & lock table deletion
+      # STEP 20 — Skip Terraform state bucket & lock table deletion
       # State bucket is manually created and preserved across destroy/deploy cycles
       # ────────────────────────────────────────────────────────────────────────
       - name: Preserve Terraform state bucket
@@ -606,7 +606,7 @@ jobs:
           echo "   3. Delete the lock table: aws dynamodb delete-table --table-name ${{ env.TF_STATE_LOCK_TABLE }}"
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 16 — Final summary
+      # STEP 21 — Final summary
       # ────────────────────────────────────────────────────────────────────────
       - name: Destroy summary
         run: |
