@@ -4,6 +4,9 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
+# Disable numba JIT caching (Lambda has read-only filesystem for packages)
+ENV NUMBA_DISABLE_JIT=1
+
 # Install requests for ffmpeg download script
 RUN pip install requests
 
