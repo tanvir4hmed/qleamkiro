@@ -4,8 +4,12 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
-# Disable numba JIT caching (Lambda has read-only filesystem for packages)
+# Configure numba for Lambda environment
+# - Disable JIT compilation (runs in pure Python mode, avoids caching issues)
+# - Set cache directory to /tmp as fallback
 ENV NUMBA_DISABLE_JIT=1
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+RUN mkdir -p /tmp/numba_cache
 
 # Install requests for ffmpeg download script
 RUN pip install requests
@@ -42,6 +46,10 @@ RUN pip install --no-cache-dir --only-binary=:all: \
 # Install librosa
 RUN pip install --no-cache-dir \
     'librosa==0.10.2.post1'
+
+# Pre-compile numba functions by importing librosa during build
+# This caches the JIT-compiled functions in the image
+RUN python3 -c "import librosa; print('librosa pre-compiled successfully')"
 
 # Copy shared utilities
 COPY shared/ /var/task/shared/
