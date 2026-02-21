@@ -253,7 +253,7 @@ def upload_session(event: Dict) -> Dict:
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
-    s3_key = f"{child_id}/{session_id}/audio.wav"
+    s3_key = f"{child_id}/{session_id}/audio.webm"  # Browser MediaRecorder outputs WebM
 
     # Generate presigned URL for direct upload
     presigned_url = s3_client.generate_presigned_url(

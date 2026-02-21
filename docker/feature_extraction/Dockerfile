@@ -5,7 +5,8 @@
 FROM public.ecr.aws/lambda/python:3.11
 
 # Install system dependencies for audio processing
-RUN yum install -y -q libsndfile && \
+# ffmpeg is needed to decode WebM audio from browser recordings
+RUN yum install -y -q libsndfile ffmpeg && \
     yum clean all
 
 # Install Python dependencies for audio processing

@@ -58,7 +58,7 @@ function RecordButton({ childId, apiCall, onComplete }) {
       await fetch(uploadData.upload_url, {
         method: 'PUT',
         body: blob,
-        headers: { 'Content-Type': 'audio/wav' },
+        headers: { 'Content-Type': 'audio/webm' },
       });
 
       // 3. Start processing pipeline
