@@ -4,101 +4,150 @@
 
 ---
 
-## 1. CI/CD Pipeline Workflow
+## 1. CI/CD Pipeline Workflow (3 Separate Workflows)
+
+Qleam uses **3 independent workflows** to allow isolated deployments:
+
+### 1.1 Infrastructure Workflow (`infra-deploy.yml`)
+Triggers on changes to `infrastructure/**` (except Lambda module)
 
 ```mermaid
 flowchart TD
-    DEV_PUSH["👨‍💻 Developer pushes code\nto develop or main branch"]
-    PR["🔀 Pull Request\nto main"]
+    PUSH["👨‍💻 Push to develop branch\ninfrastructure/** changes"]
+    
+    subgraph PLAN["Job: Terraform Plan"]
+        P1["Checkout code"]
+        P2["Configure AWS credentials"]
+        P3["terraform init\n(S3 backend)"]
+        P4["terraform validate"]
+        P5["terraform plan"]
+        P6["Upload plan output"]
+        P1 --> P2 --> P3 --> P4 --> P5 --> P6
+    end
+    
+    subgraph APPLY["Job: Terraform Apply\n(requires approval)"]
+        A1["Checkout code"]
+        A2["Configure AWS credentials"]
+        A3["terraform init"]
+        A4["terraform apply -auto-approve"]
+        A5["Show outputs"]
+        A1 --> A2 --> A3 --> A4 --> A5
+    end
+    
+    PUSH --> PLAN --> APPLY
+    
+    style PLAN fill:#e3f2fd,stroke:#2196F3
+    style APPLY fill:#e8f5e9,stroke:#4CAF50
+```
 
-    DEV_PUSH --> TRIGGER
-    PR --> TRIGGER
+### 1.2 Lambda Workflow (`lambda-deploy.yml`)
+Triggers on changes to `lambdas/**`, `shared/**`, or `docker/**`
 
-    TRIGGER["GitHub Actions\nWorkflow Triggered"]
-
-    subgraph JOB1["Job 1: Test (parallel)"]
+```mermaid
+flowchart TD
+    PUSH["👨‍💻 Push to develop branch\nlambdas/**, shared/**, docker/**"]
+    
+    subgraph TEST["Job: Run Tests"]
         T1["Setup Python 3.11"]
         T2["pip install pytest moto boto3 numpy"]
         T3["pytest tests/ -v --cov"]
-        T4["Upload coverage report"]
-        T1 --> T2 --> T3 --> T4
+        T1 --> T2 --> T3
     end
-
-    subgraph JOB2["Job 2: Build Lambdas (parallel)"]
-        B1["Build shared_utils layer\n(cp shared/*.py → zip)"]
-        B2["Build audio_processing layer\n(pip install librosa numpy scipy\n--platform manylinux2014_x86_64)"]
-        B3["Zip each Lambda handler\n(6 functions)"]
-        B4["Upload artifacts\n(GitHub Actions store)"]
-        B1 --> B3
-        B2 --> B3
-        B3 --> B4
+    
+    subgraph BUILD["Job: Build & Push Lambda Images"]
+        B1["Login to Amazon ECR"]
+        B2["Fetch ECR repository URLs\nfrom Terraform state"]
+        B3["Build Docker images\n(6 Lambda functions)"]
+        B4["Push to ECR\n(commit SHA + latest tags)"]
+        B5["Update Lambda functions\nwith new image URIs"]
+        B1 --> B2 --> B3 --> B4 --> B5
     end
+    
+    PUSH --> TEST --> BUILD
+    
+    style TEST fill:#e3f2fd,stroke:#2196F3
+    style BUILD fill:#e8f5e9,stroke:#4CAF50
+```
 
-    subgraph JOB3["Job 3: Build Frontend (parallel)"]
-        F1["Setup Node.js 18"]
-        F2["npm ci"]
-        F3["npm run build\n(REACT_APP_* env vars)"]
-        F4["Upload build artifact"]
-        F1 --> F2 --> F3 --> F4
+### 1.3 Frontend Workflow (`frontend-deploy.yml`)
+Triggers on changes to `frontend/**`
+
+```mermaid
+flowchart TD
+    PUSH["👨‍💻 Push to develop branch\nfrontend/**"]
+    
+    subgraph BUILD["Job: Build Frontend"]
+        F1["Fetch Terraform outputs\n(Cognito IDs, API URL)"]
+        F2["Setup Node.js 18"]
+        F3["npm install"]
+        F4["npm run build\n(REACT_APP_* env vars)"]
+        F5["Upload build artifact"]
+        F1 --> F2 --> F3 --> F4 --> F5
     end
-
-    TRIGGER --> JOB1
-    TRIGGER --> JOB2
-    TRIGGER --> JOB3
-
-    subgraph JOB4["Job 4: Terraform Plan"]
-        P1["Download Lambda artifacts"]
-        P2["terraform init\n(S3 backend)"]
-        P3["terraform validate"]
-        P4["terraform plan -out=tfplan"]
-        P5{"PR?"}
-        P6["Comment plan on PR"]
-        P7["Upload tfplan artifact"]
-        P1 --> P2 --> P3 --> P4 --> P5
-        P5 -->|Yes| P6
-        P5 -->|No| P7
-        P6 --> P7
-    end
-
-    JOB1 --> JOB4
-    JOB2 --> JOB4
-    JOB3 --> JOB4
-
-    subgraph JOB5["Job 5: Deploy DEV"]
-        D1["terraform apply -auto-approve"]
-        D2["aws s3 sync build/ → S3"]
+    
+    subgraph DEPLOY["Job: Deploy Frontend"]
+        D1["Download build artifact"]
+        D2["S3 sync to frontend bucket"]
         D3["CloudFront invalidation"]
-        D1 --> D2 --> D3
+        D4["Display deployment URL"]
+        D1 --> D2 --> D3 --> D4
     end
-
-    JOB4 --> BRANCH_CHECK{"Branch?"}
-    BRANCH_CHECK -->|"develop or main"| JOB5
-    BRANCH_CHECK -->|"PR only"| STOP["✅ Plan only\n(no deploy)"]
-
-    subgraph JOB6["Job 6: Deploy PROD\n(main branch only)"]
-        APPROVAL["⏸️ Manual Approval\nRequired in GitHub\nEnvironments"]
-        PD1["terraform apply -auto-approve\n(prod tfvars)"]
-        PD2["aws s3 sync build/ → S3 (prod)"]
-        PD3["CloudFront invalidation (prod)"]
-        APPROVAL --> PD1 --> PD2 --> PD3
-    end
-
-    JOB5 --> MAIN_CHECK{"main branch?"}
-    MAIN_CHECK -->|Yes| JOB6
-    MAIN_CHECK -->|No| DONE_DEV["✅ DEV deployed"]
-    JOB6 --> DONE_PROD["✅ PROD deployed"]
-
-    style JOB1 fill:#e3f2fd,stroke:#2196F3
-    style JOB2 fill:#e8f5e9,stroke:#4CAF50
-    style JOB3 fill:#f3e5f5,stroke:#9C27B0
-    style JOB4 fill:#fff3e0,stroke:#FF9800
-    style JOB5 fill:#e0f2f1,stroke:#009688
-    style JOB6 fill:#fce4ec,stroke:#E91E63
+    
+    PUSH --> BUILD --> DEPLOY
+    
+    style BUILD fill:#e3f2fd,stroke:#2196F3
+    style DEPLOY fill:#e8f5e9,stroke:#4CAF50
 ```
 
 ---
 
-## 2. Audio Processing Pipeline (Step Functions)
+## 2. Lambda Container Image Architecture
+
+Lambda functions are deployed as **Docker container images** stored in ECR:
+
+```mermaid
+flowchart LR
+    subgraph SOURCE["Source Code"]
+        HANDLER["handler.py\n(Lambda code)"]
+        SHARED["shared/\n(common utilities)"]
+        DOCKER["Dockerfile\n(AWS Lambda Python 3.11)"]
+    end
+    
+    subgraph BUILD["Build Process"]
+        DOCKER_BUILD["docker build\n-t ecr-repo:sha"]
+        LIBROSA["librosa, scipy, numpy\n(audio processing)"]
+        BOTO3["boto3\n(AWS SDK)"]
+    end
+    
+    subgraph ECR["Amazon ECR"]
+        REPO_FE["qleam-dev-feature-extraction"]
+        REPO_CE["qleam-dev-cluster-engine"]
+        REPO_RE["qleam-dev-reinforcement-engine"]
+        REPO_IG["qleam-dev-insight-generator"]
+        REPO_FP["qleam-dev-feedback-processor"]
+        REPO_AH["qleam-dev-api-handler"]
+    end
+    
+    subgraph LAMBDA["AWS Lambda"]
+        L_FE["Feature Extraction\n(1024 MB)"]
+        L_CE["Cluster Engine\n(512 MB)"]
+        L_RE["Reinforcement Engine\n(512 MB)"]
+        L_IG["Insight Generator\n(512 MB)"]
+        L_FP["Feedback Processor\n(512 MB)"]
+        L_AH["API Handler\n(512 MB)"]
+    end
+    
+    SOURCE --> BUILD
+    BUILD --> ECR
+    ECR --> LAMBDA
+    
+    style ECR fill:#fff3e0,stroke:#FF9800
+    style LAMBDA fill:#e8f5e9,stroke:#4CAF50
+```
+
+---
+
+## 3. Audio Processing Pipeline (Step Functions)
 
 ```mermaid
 flowchart TD
@@ -122,14 +171,6 @@ flowchart TD
         FE1 --> FE2 --> FE3 --> FE4
         FE4 --> |"rhythm\nrepetition\nintensity\nflow"| FE5
         FE5 --> FE6 --> FE7 --> FE8 --> FE9 --> FE10 --> FE11
-
-        subgraph FEATURES["Feature Extraction Detail"]
-            R["Rhythm\nRMS energy peak\nregularity (CV⁻¹)"]
-            REP["Repetition\nMFCC self-similarity\noff-diagonal mean"]
-            INT["Emotional Intensity\nF0 variance +\nRMS energy variance"]
-            FLOW["Expressive Flow\nPause ratio +\ncontinuity ratio"]
-        end
-        FE4 --> FEATURES
     end
 
     INPUT --> STATE1
@@ -189,12 +230,96 @@ flowchart TD
     style STATE1 fill:#e3f2fd,stroke:#2196F3
     style STATE2 fill:#e8f5e9,stroke:#4CAF50
     style STATE3 fill:#f3e5f5,stroke:#9C27B0
-    style FEATURES fill:#fff8e1,stroke:#FFC107
 ```
 
 ---
 
-## 3. Parent Session Recording Workflow
+## 4. Bootstrap & First-Time Setup Workflow
+
+```mermaid
+flowchart TD
+    START(["🚀 Start: New Project Setup"])
+
+    START --> PREREQ["Install Prerequisites\nAWS CLI, Terraform, Docker, Python, Node, Git"]
+    PREREQ --> IAM_SETUP["Create IAM User: qleam-cicd\nAttach AdministratorAccess\nGenerate Access Keys"]
+    IAM_SETUP --> GITHUB_REPO["Create GitHub Repository\nPush qleam/ code"]
+    GITHUB_REPO --> SECRETS["Add GitHub Secrets:\n• AWS_ACCESS_KEY_ID\n• AWS_SECRET_ACCESS_KEY"]
+
+    SECRETS --> MANUAL_STATE["📦 Manually Create State Bucket\naws s3api create-bucket\n--bucket qleam-terraform-state"]
+    
+    MANUAL_STATE --> STATE_CONFIG["Configure State Bucket:\n• Enable versioning\n• Enable encryption\n• Block public access\n• Create DynamoDB lock table"]
+
+    STATE_CONFIG --> ENV_SETUP["Create GitHub Environments:\n• dev (no protection)\n• prod (required reviewers)"]
+
+    ENV_SETUP --> BEDROCK_CHECK{"Using Bedrock\nin PROD?"}
+    BEDROCK_CHECK -->|Yes| BEDROCK_ENABLE["Enable Bedrock Model Access\nAWS Console → Bedrock\n→ Claude 3 Haiku"]
+    BEDROCK_CHECK -->|No| PUSH_DEV
+
+    BEDROCK_ENABLE --> PUSH_DEV["git push origin develop\n→ Triggers infra-deploy"]
+
+    PUSH_DEV --> INFRA_DEPLOY["Infrastructure Deployed:\n• VPC, IAM, ECR\n• S3, DynamoDB\n• Cognito, API Gateway\n• Step Functions, CloudWatch"]
+
+    INFRA_DEPLOY --> LAMBDA_DEPLOY["Trigger lambda-deploy:\n• Build Docker images\n• Push to ECR\n• Update Lambda functions"]
+
+    LAMBDA_DEPLOY --> TEST_DEV["Test DEV Environment:\n• Sign up via CloudFront URL\n• Record test audio\n• Verify insight generated"]
+
+    TEST_DEV --> PROD_READY{"Ready for PROD?"}
+    PROD_READY -->|Yes| PUSH_MAIN["git push origin main\n→ Triggers PROD pipeline"]
+    PROD_READY -->|No| ITERATE["Iterate on DEV\nFix issues"]
+    ITERATE --> PUSH_DEV
+
+    PUSH_MAIN --> APPROVAL["⏸️ Manual Approval\nRequired in GitHub"]
+    APPROVAL --> PROD_DEPLOY["PROD Deployed ✅\nAll resources created"]
+    PROD_DEPLOY --> DONE(["🎉 Qleam MVP Live!"])
+
+    style START fill:#e8f5e9,stroke:#4CAF50
+    style DONE fill:#e8f5e9,stroke:#4CAF50
+    style MANUAL_STATE fill:#fff3e0,stroke:#FF9800
+    style APPROVAL fill:#fce4ec,stroke:#E91E63
+```
+
+---
+
+## 5. Terraform State Management
+
+The Terraform state is stored in a **manually created S3 bucket** that persists across destroy/deploy cycles:
+
+```mermaid
+flowchart TD
+    subgraph MANUAL["Manual Creation (One-time)"]
+        CREATE["aws s3api create-bucket\n--bucket qleam-terraform-state"]
+        VERSION["Enable versioning"]
+        ENCRYPT["Enable encryption (AES256)"]
+        BLOCK["Block public access"]
+        LOCK["Create DynamoDB table\nqleam-terraform-state-lock"]
+    end
+    
+    subgraph STATE["State Storage"]
+        DEV_STATE["s3://qleam-terraform-state/dev/terraform.tfstate"]
+        PROD_STATE["s3://qleam-terraform-state/prod/terraform.tfstate"]
+        LAMBDA_LAYER["s3://qleam-terraform-state/lambda-layers/"]
+    end
+    
+    subgraph TERRAFORM["Terraform Operations"]
+        INIT["terraform init\n-backend-config bucket"]
+        PLAN["terraform plan"]
+        APPLY["terraform apply"]
+        DESTROY["terraform destroy\n(preserves state bucket)"]
+    end
+    
+    MANUAL --> STATE
+    STATE --> TERRAFORM
+    
+    DESTROY --> PRESERVED["State bucket preserved\nfor next deployment"]
+    
+    style MANUAL fill:#fff3e0,stroke:#FF9800
+    style STATE fill:#e3f2fd,stroke:#2196F3
+    style PRESERVED fill:#e8f5e9,stroke:#4CAF50
+```
+
+---
+
+## 6. Parent Session Recording Workflow
 
 ```mermaid
 sequenceDiagram
@@ -265,255 +390,5 @@ sequenceDiagram
 
 ---
 
-## 4. Feedback & Reinforcement Learning Workflow
-
-```mermaid
-sequenceDiagram
-    actor Parent
-    participant App as React App
-    participant API as API Gateway
-    participant FP as Feedback Processor
-    participant RE as Reinforcement Engine
-    participant DB_FB as DynamoDB Feedback
-    participant DB_SC as DynamoDB SoundCluster
-    participant DB_SB as DynamoDB SemanticBridge
-
-    Parent->>App: Selects response tried\n(e.g. "Feeding")
-    Parent->>App: Selects effectiveness\n("Helpful" / "Neutral" / "Ineffective")
-    Parent->>App: (Optional) Types word heard\n(e.g. "mama")
-    Parent->>App: Clicks "Submit Feedback"
-
-    App->>API: POST /session/{id}/feedback\n{response_type, effectiveness, word_token}
-
-    API->>FP: Invoke (synchronous)
-    FP->>DB_FB: GetItem Session → get child_id, cluster_id
-    FP->>DB_FB: PutItem Feedback record\n{feedback_id, session_id, effectiveness...}
-    FP->>RE: Invoke Lambda (async Event)\n{child_id, cluster_id, effectiveness, word_token}
-    FP-->>API: {status: "feedback_processed", feedback_id}
-    API-->>App: 200 OK
-
-    App->>Parent: "✓ Thank you! Feedback recorded."
-
-    Note over RE: Async reinforcement update...
-
-    RE->>DB_SC: GetItem SoundCluster
-    DB_SC-->>RE: {reinforcement_weight: 0.5, probable_intents: {...}}
-
-    alt effectiveness = "helpful"
-        RE->>RE: new_weight = min(0.5 + 0.1, 1.0) = 0.6
-        RE->>RE: intents["hunger"] += 0.1 → normalize
-    else effectiveness = "neutral"
-        RE->>RE: new_weight = max(0.5 - 0.02, 0.0) = 0.48
-    else effectiveness = "ineffective"
-        RE->>RE: new_weight = max(0.5 - 0.05, 0.0) = 0.45
-        RE->>RE: intents["hunger"] -= 0.05 → normalize
-    end
-
-    RE->>DB_SC: UpdateItem SoundCluster\n{reinforcement_weight, probable_intents}
-
-    opt word_token provided
-        RE->>DB_SB: Query SemanticBridge by cluster_id
-        alt Bridge exists for word
-            RE->>DB_SB: UpdateItem\nco_occurrence_count += 1\nconfidence += 0.05
-        else New word
-            RE->>DB_SB: PutItem new SemanticBridge\n{word_token, confidence: 0.05}
-        end
-        RE->>DB_SC: UpdateItem semantic_alignment_score
-    end
-
-    Note over DB_SC: Next session for this child\nwill use updated weights
-```
-
----
-
-## 5. ML Learning Loop Over Time
-
-```mermaid
-flowchart LR
-    subgraph SESSION1["Session 1"]
-        S1_AUDIO["Audio\nRecorded"]
-        S1_FEAT["Features\nExtracted"]
-        S1_CLUSTER["New Cluster\nCreated\n(weight=0.5)"]
-        S1_INSIGHT["Insight:\nUnknown\n(confidence: low)"]
-        S1_AUDIO --> S1_FEAT --> S1_CLUSTER --> S1_INSIGHT
-    end
-
-    subgraph FEEDBACK1["Feedback 1"]
-        FB1["Parent tries feeding\n→ Helpful"]
-        FB1_UPDATE["Cluster weight: 0.5→0.6\nintents: {hunger: 0.1}"]
-        FB1 --> FB1_UPDATE
-    end
-
-    subgraph SESSION2["Session 2-3"]
-        S2_AUDIO["Similar Audio\nRecorded"]
-        S2_CLUSTER["Attached to\nSame Cluster\n(similarity ≥ 0.85)"]
-        S2_BASELINE["EMA Baseline\nUpdated (α=0.3)"]
-        S2_INSIGHT["Insight:\nHunger (low conf)"]
-        S2_AUDIO --> S2_CLUSTER --> S2_BASELINE --> S2_INSIGHT
-    end
-
-    subgraph FEEDBACK2["Feedback 2-3"]
-        FB2["Parent confirms\nfeeding works"]
-        FB2_UPDATE["Cluster weight: 0.6→0.7\nintents: {hunger: 0.3}"]
-        FB2 --> FB2_UPDATE
-    end
-
-    subgraph SESSION5["Session 5+"]
-        S5_AUDIO["Similar Audio"]
-        S5_CLUSTER["Cluster: emerging\nfrequency=5"]
-        S5_INSIGHT["Insight:\nHunger (medium conf ~45%)"]
-        S5_AUDIO --> S5_CLUSTER --> S5_INSIGHT
-    end
-
-    subgraph SESSION10["Session 10+"]
-        S10_AUDIO["Similar Audio"]
-        S10_CLUSTER["Cluster: stable\nfrequency=10+\nweight=0.9"]
-        S10_INSIGHT["Insight:\nHunger (high conf ~75%)"]
-        S10_AUDIO --> S10_CLUSTER --> S10_INSIGHT
-    end
-
-    subgraph SEMANTIC["Semantic Bridge"]
-        WORD["Parent hears 'mama'\nEnters in feedback"]
-        BRIDGE["SemanticBridge created\nword='mama'\nconfidence=0.05"]
-        BRIDGE_GROW["After 5 co-occurrences\nconfidence=0.25\nAlignment boosts insight"]
-        WORD --> BRIDGE --> BRIDGE_GROW
-    end
-
-    SESSION1 --> FEEDBACK1 --> SESSION2 --> FEEDBACK2 --> SESSION5 --> SESSION10
-    FEEDBACK2 --> SEMANTIC
-    SEMANTIC --> SESSION10
-
-    style SESSION1 fill:#e3f2fd,stroke:#2196F3
-    style SESSION2 fill:#e8f5e9,stroke:#4CAF50
-    style SESSION5 fill:#fff3e0,stroke:#FF9800
-    style SESSION10 fill:#e8f5e9,stroke:#4CAF50
-    style FEEDBACK1 fill:#fce4ec,stroke:#E91E63
-    style FEEDBACK2 fill:#fce4ec,stroke:#E91E63
-    style SEMANTIC fill:#f3e5f5,stroke:#9C27B0
-```
-
----
-
-## 6. Bootstrap & First-Time Setup Workflow
-
-```mermaid
-flowchart TD
-    START(["🚀 Start: New Project Setup"])
-
-    START --> PREREQ["Install Prerequisites\nAWS CLI, Terraform, Python, Node, Git"]
-    PREREQ --> IAM_SETUP["Create IAM User: qleam-cicd\nAttach AdministratorAccess\nGenerate Access Keys"]
-    IAM_SETUP --> GITHUB_REPO["Create GitHub Repository\nPush qleam/ code"]
-    GITHUB_REPO --> SECRETS1["Add GitHub Secrets:\n• AWS_ACCESS_KEY_ID\n• AWS_SECRET_ACCESS_KEY"]
-
-    SECRETS1 --> BOOTSTRAP["Run Bootstrap Workflow\n(GitHub Actions)\nType 'bootstrap' to confirm"]
-
-    BOOTSTRAP --> BOOTSTRAP_CREATES["Creates:\n• S3: qleam-terraform-state-XXXX\n• DynamoDB: qleam-terraform-state-lock"]
-
-    BOOTSTRAP_CREATES --> SECRETS2["Add GitHub Secrets:\n• TF_STATE_BUCKET\n• TF_STATE_LOCK_TABLE"]
-
-    SECRETS2 --> ENV_SETUP["Create GitHub Environments:\n• dev (no protection)\n• prod (required reviewers)"]
-
-    ENV_SETUP --> BEDROCK_CHECK{"Using Bedrock\nin PROD?"}
-    BEDROCK_CHECK -->|Yes| BEDROCK_ENABLE["Enable Bedrock Model Access\nAWS Console → Bedrock\n→ Claude 3 Haiku"]
-    BEDROCK_CHECK -->|No| PUSH_DEV
-
-    BEDROCK_ENABLE --> PUSH_DEV["git push origin develop\n→ Triggers CI/CD"]
-
-    PUSH_DEV --> PIPELINE_RUNS["Pipeline Runs:\n1. Tests ✅\n2. Build Lambdas ✅\n3. Build Frontend ✅\n4. TF Plan ✅\n5. TF Apply DEV ✅\n6. Deploy Frontend ✅"]
-
-    PIPELINE_RUNS --> GET_OUTPUTS["Get Terraform Outputs:\nterraform output\n(API URL, Cognito IDs, CloudFront)"]
-
-    GET_OUTPUTS --> FRONTEND_CONFIG["Add Frontend Secrets:\n• REACT_APP_COGNITO_USER_POOL_ID\n• REACT_APP_COGNITO_CLIENT_ID\n• REACT_APP_API_URL"]
-
-    FRONTEND_CONFIG --> TEST_DEV["Test DEV Environment:\n• Sign up via CloudFront URL\n• Record test audio\n• Verify insight generated"]
-
-    TEST_DEV --> PROD_READY{"Ready for PROD?"}
-    PROD_READY -->|Yes| PUSH_MAIN["git push origin main\n→ Triggers PROD pipeline"]
-    PROD_READY -->|No| ITERATE["Iterate on DEV\nFix issues"]
-    ITERATE --> PUSH_DEV
-
-    PUSH_MAIN --> APPROVAL["⏸️ Manual Approval\nRequired in GitHub"]
-    APPROVAL --> PROD_DEPLOY["PROD Deployed ✅\nAll resources created"]
-    PROD_DEPLOY --> DONE(["🎉 Qleam MVP Live!"])
-
-    style START fill:#e8f5e9,stroke:#4CAF50
-    style DONE fill:#e8f5e9,stroke:#4CAF50
-    style BOOTSTRAP fill:#fff3e0,stroke:#FF9800
-    style APPROVAL fill:#fce4ec,stroke:#E91E63
-```
-
----
-
-## 7. Data Flow: Audio → Insight
-
-```mermaid
-flowchart LR
-    subgraph INPUT["Input"]
-        WAV["WAV Audio\n5-30 seconds\n(baby vocalization)"]
-    end
-
-    subgraph PREPROCESSING["Pre-processing"]
-        LOAD["librosa.load()\n22050Hz mono"]
-        VAD["Voice Activity Detection\ntrim silence (top_db=20)"]
-        LOAD --> VAD
-    end
-
-    subgraph FEATURE_EXT["Feature Extraction"]
-        MFCC["MFCC\n13 coefficients\n(mean + std = 26-dim)"]
-        RHYTHM["Rhythm Score\nRMS peaks → CV⁻¹"]
-        REPET["Repetition Score\nSelf-similarity matrix"]
-        INTENS["Intensity Score\nF0 variance + RMS variance"]
-        FLOW["Flow Score\nPause ratio + continuity"]
-        EMBED["Embedding Vector\n26-dim L2-normalized"]
-    end
-
-    subgraph BASELINE["Baseline Update"]
-        EMA["EMA Update\nnew = 0.3×curr + 0.7×prev"]
-        DEV["Deviation Detection\n|curr - baseline| / baseline"]
-        READY["Readiness Score\n0.25×rhythm + 0.25×rep\n+ 0.30×intensity + 0.20×flow"]
-    end
-
-    subgraph CLUSTERING["Clustering"]
-        COS["Cosine Similarity\nvs all child clusters"]
-        THRESH{"≥ 0.85?"}
-        ATTACH["Attach to cluster\nUpdate centroid"]
-        CREATE["Create new cluster\nweight=0.5"]
-    end
-
-    subgraph INFERENCE["Intent Inference"]
-        INTENTS["probable_intents\n(from reinforcement history)"]
-        CONF["Confidence Score\nintent × weight × freq × semantic"]
-        LABEL["Intent Label\n(hunger/connection/etc.)"]
-    end
-
-    subgraph OUTPUT["Output to Parent"]
-        INSIGHT["Structured Insight:\n• Probable intent + confidence\n• Suggested response\n• Feature scores\n• Deviation level\n• Disclaimer"]
-    end
-
-    WAV --> PREPROCESSING
-    PREPROCESSING --> FEATURE_EXT
-    MFCC --> EMBED
-    FEATURE_EXT --> BASELINE
-    EMBED --> CLUSTERING
-    COS --> THRESH
-    THRESH -->|Yes| ATTACH
-    THRESH -->|No| CREATE
-    ATTACH --> INFERENCE
-    CREATE --> INFERENCE
-    BASELINE --> INFERENCE
-    INTENTS --> CONF --> LABEL
-    INFERENCE --> OUTPUT
-
-    style INPUT fill:#e3f2fd,stroke:#2196F3
-    style PREPROCESSING fill:#e8f5e9,stroke:#4CAF50
-    style FEATURE_EXT fill:#fff3e0,stroke:#FF9800
-    style BASELINE fill:#f3e5f5,stroke:#9C27B0
-    style CLUSTERING fill:#e0f2f1,stroke:#009688
-    style INFERENCE fill:#fce4ec,stroke:#E91E63
-    style OUTPUT fill:#e8f5e9,stroke:#4CAF50
-```
-
----
-
-*Workflow diagrams version: MVP 1.0 — February 2026*
+*Workflow diagrams version: MVP 2.0 — February 2026*
 *All diagrams use Mermaid syntax — render in GitHub, VS Code (Mermaid extension), or https://mermaid.live*

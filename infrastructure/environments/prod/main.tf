@@ -42,6 +42,9 @@ locals {
   frontend_bucket_name = "${var.project}-${var.environment}-frontend"
 }
 
+# -----------------------------------------------------------------------------
+# VPC
+# -----------------------------------------------------------------------------
 module "vpc" {
   source = "../../modules/vpc"
 
@@ -53,6 +56,9 @@ module "vpc" {
   enable_nat_gateway = var.enable_nat_gateway
 }
 
+# -----------------------------------------------------------------------------
+# IAM
+# -----------------------------------------------------------------------------
 module "iam" {
   source = "../../modules/iam"
 
@@ -61,6 +67,19 @@ module "iam" {
   audio_bucket_name = local.audio_bucket_name
 }
 
+# -----------------------------------------------------------------------------
+# ECR (Elastic Container Registry for Lambda images)
+# -----------------------------------------------------------------------------
+module "ecr" {
+  source = "../../modules/ecr"
+
+  project     = var.project
+  environment = var.environment
+}
+
+# -----------------------------------------------------------------------------
+# S3 (Audio Storage)
+# -----------------------------------------------------------------------------
 module "s3" {
   source = "../../modules/s3"
 
@@ -71,6 +90,9 @@ module "s3" {
   allowed_origins      = ["https://${module.frontend.cloudfront_domain_name}"]
 }
 
+# -----------------------------------------------------------------------------
+# DynamoDB
+# -----------------------------------------------------------------------------
 module "dynamodb" {
   source = "../../modules/dynamodb"
 
@@ -79,6 +101,20 @@ module "dynamodb" {
   enable_pitr = var.enable_pitr
 }
 
+# -----------------------------------------------------------------------------
+# Frontend (S3 + CloudFront) - Created early for CloudFront domain
+# -----------------------------------------------------------------------------
+module "frontend" {
+  source = "../../modules/frontend"
+
+  project              = var.project
+  environment          = var.environment
+  frontend_bucket_name = local.frontend_bucket_name
+}
+
+# -----------------------------------------------------------------------------
+# Cognito
+# -----------------------------------------------------------------------------
 module "cognito" {
   source = "../../modules/cognito"
 
@@ -90,6 +126,9 @@ module "cognito" {
   cognito_auth_role_arn = module.iam.lambda_execution_role_arn
 }
 
+# -----------------------------------------------------------------------------
+# Lambda Functions (Container Images from ECR)
+# -----------------------------------------------------------------------------
 module "lambda" {
   source = "../../modules/lambda"
 
@@ -113,18 +152,17 @@ module "lambda" {
   bedrock_model_id             = var.bedrock_model_id
   log_retention_days           = var.log_retention_days
 
-  audio_layer_zip_path          = var.audio_layer_zip_path
-  shared_utils_zip_path         = var.shared_utils_zip_path
-  feature_extraction_zip_path   = var.feature_extraction_zip_path
-  cluster_engine_zip_path       = var.cluster_engine_zip_path
-  reinforcement_engine_zip_path = var.reinforcement_engine_zip_path
-  insight_generator_zip_path    = var.insight_generator_zip_path
-  feedback_processor_zip_path   = var.feedback_processor_zip_path
-  api_handler_zip_path          = var.api_handler_zip_path
+  # ECR configuration
+  ecr_repository_urls = module.ecr.repository_urls
+  image_tag           = var.lambda_image_tag
+  allowed_origins     = ["https://${module.frontend.cloudfront_domain_name}"]
 
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3]
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr]
 }
 
+# -----------------------------------------------------------------------------
+# Step Functions
+# -----------------------------------------------------------------------------
 module "step_functions" {
   source = "../../modules/step_functions"
 
@@ -142,8 +180,6 @@ module "step_functions" {
 
 # -----------------------------------------------------------------------------
 # Update Lambda environment with Step Function ARN
-# This is needed because Step Functions depends on Lambda, but Lambda needs Step Function ARN
-# We update the Lambda function's environment variable after Step Functions is created
 # -----------------------------------------------------------------------------
 resource "null_resource" "update_lambda_step_function_arn" {
   triggers = {
@@ -166,7 +202,7 @@ resource "null_resource" "update_lambda_step_function_arn" {
           "ALPHA_VALUE": "${tostring(var.alpha_value)}",
           "CLUSTER_SIMILARITY_THRESHOLD": "${tostring(var.cluster_similarity_threshold)}",
           "STEP_FUNCTION_ARN": "${module.step_functions.state_machine_arn}",
-          "LOG_LEVEL": "${var.environment == "prod" ? "WARNING" : "DEBUG"}",
+          "LOG_LEVEL": "WARNING",
           "ALLOWED_ORIGINS": "https://${module.frontend.cloudfront_domain_name}"
         }
       }
@@ -181,6 +217,9 @@ resource "null_resource" "update_lambda_step_function_arn" {
   depends_on = [module.lambda, module.step_functions, module.frontend]
 }
 
+# -----------------------------------------------------------------------------
+# API Gateway
+# -----------------------------------------------------------------------------
 module "api_gateway" {
   source = "../../modules/api_gateway"
 
@@ -194,14 +233,9 @@ module "api_gateway" {
   depends_on = [module.lambda, module.cognito]
 }
 
-module "frontend" {
-  source = "../../modules/frontend"
-
-  project              = var.project
-  environment          = var.environment
-  frontend_bucket_name = local.frontend_bucket_name
-}
-
+# -----------------------------------------------------------------------------
+# CloudWatch Monitoring
+# -----------------------------------------------------------------------------
 module "cloudwatch" {
   source = "../../modules/cloudwatch"
 

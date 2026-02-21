@@ -1,0 +1,154 @@
+name: lambda deploy
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'lambdas/**'
+      - 'shared/**'
+      - 'docker/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  PYTHON_VERSION: '3.11'
+  TF_STATE_BUCKET: qleam-terraform-state
+  TF_STATE_LOCK_TABLE: qleam-terraform-state-lock
+
+jobs:
+  # ===========================================================================
+  # Job 1: Run Tests
+  # ===========================================================================
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-cov boto3 moto numpy
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v --cov=shared --cov=lambdas --cov-report=xml
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+
+  # ===========================================================================
+  # Job 2: Build and Push Docker Images to ECR
+  # ===========================================================================
+  build-and-push:
+    name: Build & Push Lambda Images
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.6'
+          terraform_wrapper: false
+
+      - name: Fetch ECR repository URLs
+        id: ecr-urls
+        run: |
+          cd infrastructure/environments/dev
+          terraform init \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ env.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -input=false
+          
+          # Get ECR URLs from Terraform outputs
+          ECR_URLS=$(terraform output -json ecr_repository_urls 2>/dev/null || echo "{}")
+          echo "ecr_urls=$ECR_URLS" >> $GITHUB_OUTPUT
+          echo "ECR URLs: $ECR_URLS"
+
+      - name: Build and push Lambda images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_URLS: ${{ steps.ecr-urls.outputs.ecr_urls }}
+        run: |
+          # Define Lambda functions
+          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
+          
+          # Generate image tag based on commit SHA
+          IMAGE_TAG="${{ github.sha }}"
+          
+          for fn in $LAMBDA_FUNCTIONS; do
+            echo "📦 Building $fn..."
+            
+            # Get ECR repository URL
+            ECR_URL=$(echo "$ECR_URLS" | jq -r ".\"$fn\"")
+            
+            if [ -z "$ECR_URL" ] || [ "$ECR_URL" = "null" ]; then
+              echo "❌ ECR URL not found for $fn. Make sure infrastructure is deployed first."
+              exit 1
+            fi
+            
+            # Build Docker image
+            docker build \
+              -f docker/$fn/Dockerfile \
+              -t $ECR_URL:$IMAGE_TAG \
+              -t $ECR_URL:latest \
+              .
+            
+            # Push both tags
+            docker push $ECR_URL:$IMAGE_TAG
+            docker push $ECR_URL:latest
+            
+            echo "✅ $fn pushed to $ECR_URL:$IMAGE_TAG"
+          done
+          
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Update Lambda functions with new images
+        env:
+          ECR_URLS: ${{ steps.ecr-urls.outputs.ecr_urls }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
+          
+          for fn in $LAMBDA_FUNCTIONS; do
+            ECR_URL=$(echo "$ECR_URLS" | jq -r ".\"$fn\"")
+            FUNCTION_NAME="qleam-dev-$fn"
+            
+            echo "🔄 Updating Lambda function $FUNCTION_NAME..."
+            
+            aws lambda update-function-code \
+              --function-name $FUNCTION_NAME \
+              --image-uri $ECR_URL:$IMAGE_TAG \
+              --no-cli-pager || echo "⚠️ Could not update $FUNCTION_NAME - may need manual update"
+          done
+
+      - name: Deployment summary
+        run: |
+          echo "══════════════════════════════════════════════════════"
+          echo "✅ Lambda functions deployed successfully!"
+          echo ""
+          echo "   Branch    : ${{ github.ref_name }}"
+          echo "   Commit    : ${{ github.sha }}"
+          echo "   Image Tag : ${{ github.sha }}"
+          echo "══════════════════════════════════════════════════════"

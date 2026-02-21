@@ -32,7 +32,86 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 1 — Empty all S3 buckets owned by this project
+      # STEP 1 — Delete Lambda functions FIRST (releases ENIs for VPC deletion)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Delete Lambda functions
+        run: |
+          echo "🗑️  Deleting Lambda functions first (to release ENIs)..."
+
+          FUNCTIONS=$(aws lambda list-functions \
+            --query "Functions[?starts_with(FunctionName, '${{ env.PROJECT }}-${{ env.ENV }}')].FunctionName" \
+            --output text)
+
+          for FN in $FUNCTIONS; do
+            echo "  → Deleting Lambda function $FN ..."
+            
+            # Wait for ENIs to be released by setting function to non-VPC config first
+            aws lambda update-function-configuration \
+              --function-name "$FN" \
+              --vpc-config SubnetIds=,SecurityGroupIds= 2>/dev/null || true
+            
+            # Wait a moment for ENI release
+            sleep 5
+            
+            aws lambda delete-function --function-name "$FN" && \
+              echo "  ✅ Lambda $FN deleted." || \
+              echo "  ⚠️  Could not delete Lambda $FN."
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
+      # STEP 2 — Delete Lambda Layers (from previous zip-based deployments)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Delete Lambda layers
+        run: |
+          echo "🗑️  Deleting Lambda layers..."
+
+          LAYERS=$(aws lambda list-layers \
+            --query "Layers[?starts_with(LayerName, '${{ env.PROJECT }}-${{ env.ENV }}')].LayerName" \
+            --output text 2>/dev/null || echo "")
+
+          for LAYER in $LAYERS; do
+            echo "  → Processing layer $LAYER ..."
+            
+            # Get all versions and delete them
+            VERSIONS=$(aws lambda list-layer-versions \
+              --layer-name "$LAYER" \
+              --query 'LayerVersions[].Version' \
+              --output text 2>/dev/null || echo "")
+            
+            for VER in $VERSIONS; do
+              aws lambda delete-layer-version \
+                --layer-name "$LAYER" \
+                --version-number "$VER" 2>/dev/null || true
+            done
+            
+            echo "  ✅ Layer $LAYER deleted."
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
+      # STEP 3 — Delete Cognito Identity Pool (separate from User Pool)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Delete Cognito Identity Pools
+        run: |
+          echo "🗑️  Deleting Cognito Identity Pools..."
+
+          # Get Identity Pool IDs by name pattern
+          IDENTITY_POOLS=$(aws cognito-identity list-identity-pools \
+            --max-results 60 \
+            --query "IdentityPools[?starts_with(IdentityPoolName, '${{ env.PROJECT }}-${{ env.ENV }}')].IdentityPoolId" \
+            --output text 2>/dev/null || echo "")
+
+          for POOL_ID in $IDENTITY_POOLS; do
+            echo "  → Deleting Identity Pool $POOL_ID ..."
+            
+            # Delete the pool
+            aws cognito-identity delete-identity-pool \
+              --identity-pool-id "$POOL_ID" 2>/dev/null && \
+              echo "  ✅ Identity Pool $POOL_ID deleted." || \
+              echo "  ⚠️  Could not delete Identity Pool $POOL_ID."
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
+      # STEP 4 — Empty all S3 buckets owned by this project
       # (S3 buckets must be empty before Terraform can delete them)
       # ────────────────────────────────────────────────────────────────────────
       - name: Empty all project S3 buckets
@@ -304,9 +383,80 @@ jobs:
                 --user-pool-id "$POOL_ID" --client-id "$CLIENT" 2>/dev/null || true
             done
 
+            # Delete User Pool domain first (required before deleting pool)
+            DOMAIN=$(aws cognito-idp describe-user-pool \
+              --user-pool-id "$POOL_ID" \
+              --query 'UserPool.Domain' --output text 2>/dev/null || echo "")
+            
+            if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "None" ] && [ "$DOMAIN" != "null" ]; then
+              echo "    Deleting User Pool domain: $DOMAIN"
+              aws cognito-idp delete-user-pool-domain \
+                --user-pool-id "$POOL_ID" \
+                --domain "$DOMAIN" 2>/dev/null || true
+            fi
+
             aws cognito-idp delete-user-pool --user-pool-id "$POOL_ID" && \
               echo "  ✅ Cognito pool $POOL_ID deleted." || \
               echo "  ⚠️  Could not delete Cognito pool $POOL_ID."
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
+      # STEP 10.5 — Delete IAM policies created by Terraform
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Force-delete remaining IAM policies
+        run: |
+          # Get all custom policies (not AWS managed) that match our project pattern
+          POLICIES=$(aws iam list-policies \
+            --scope Local \
+            --query "Policies[?starts_with(PolicyName, '${{ env.PROJECT }}-${{ env.ENV }}')].{Arn:Arn,Name:PolicyName}" \
+            --output json 2>/dev/null || echo "[]")
+
+          echo "$POLICIES" | jq -c '.[]' 2>/dev/null | while read -r POLICY; do
+            POLICY_ARN=$(echo "$POLICY" | jq -r '.Arn')
+            POLICY_NAME=$(echo "$POLICY" | jq -r '.Name')
+            
+            echo "  → Deleting IAM policy $POLICY_NAME ..."
+            
+            # Detach from all roles first
+            ATTACHED_ROLES=$(aws iam list-entities-for-policy \
+              --policy-arn "$POLICY_ARN" \
+              --query 'PolicyRoles[].RoleName' \
+              --output text 2>/dev/null || echo "")
+            
+            for ROLE in $ATTACHED_ROLES; do
+              aws iam detach-role-policy \
+                --role-name "$ROLE" \
+                --policy-arn "$POLICY_ARN" 2>/dev/null || true
+            done
+
+            # Detach from users
+            ATTACHED_USERS=$(aws iam list-entities-for-policy \
+              --policy-arn "$POLICY_ARN" \
+              --query 'PolicyUsers[].UserName' \
+              --output text 2>/dev/null || echo "")
+            
+            for USER in $ATTACHED_USERS; do
+              aws iam detach-user-policy \
+                --user-name "$USER" \
+                --policy-arn "$POLICY_ARN" 2>/dev/null || true
+            done
+
+            # Delete all policy versions except default
+            VERSIONS=$(aws iam list-policy-versions \
+              --policy-arn "$POLICY_ARN" \
+              --query 'Versions[?IsDefaultVersion==`false`].VersionId' \
+              --output text 2>/dev/null || echo "")
+            
+            for VER in $VERSIONS; do
+              aws iam delete-policy-version \
+                --policy-arn "$POLICY_ARN" \
+                --version-id "$VER" 2>/dev/null || true
+            done
+
+            # Delete the policy
+            aws iam delete-policy --policy-arn "$POLICY_ARN" 2>/dev/null && \
+              echo "  ✅ IAM policy $POLICY_NAME deleted." || \
+              echo "  ⚠️  Could not delete policy $POLICY_NAME."
           done
 
       # ────────────────────────────────────────────────────────────────────────
@@ -424,40 +574,36 @@ jobs:
           done
 
       # ────────────────────────────────────────────────────────────────────────
-      # STEP 15 — Delete Terraform state bucket & lock table (bootstrap cleanup)
+      # STEP 15 — Delete ECR repositories
       # ────────────────────────────────────────────────────────────────────────
-      - name: Delete Terraform state bucket and lock table
+      - name: Force-delete remaining ECR repositories
         run: |
-          BUCKET="${{ env.TF_STATE_BUCKET }}"
-          TABLE="${{ env.TF_STATE_LOCK_TABLE }}"
+          REPOS=$(aws ecr describe-repositories \
+            --query "repositories[?starts_with(repositoryName, '${{ env.PROJECT }}-${{ env.ENV }}')].repositoryName" \
+            --output text 2>/dev/null || echo "")
 
-          echo "🗑️  Emptying and deleting Terraform state bucket '$BUCKET'..."
-
-          # Empty all versions
-          aws s3api list-object-versions --bucket "$BUCKET" \
-            --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-            --output json 2>/dev/null | \
-          jq -c 'select(.Objects != null and (.Objects | length) > 0)' | \
-          while read -r batch; do
-            aws s3api delete-objects --bucket "$BUCKET" --delete "$batch" > /dev/null
+          for REPO in $REPOS; do
+            echo "  → Deleting ECR repository $REPO ..."
+            # Force delete even if images exist
+            aws ecr delete-repository --repository-name "$REPO" --force 2>/dev/null && \
+              echo "  ✅ ECR repository $REPO deleted." || \
+              echo "  ⚠️  Could not delete $REPO."
           done
 
-          aws s3api list-object-versions --bucket "$BUCKET" \
-            --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-            --output json 2>/dev/null | \
-          jq -c 'select(.Objects != null and (.Objects | length) > 0)' | \
-          while read -r batch; do
-            aws s3api delete-objects --bucket "$BUCKET" --delete "$batch" > /dev/null
-          done
-
-          aws s3 rb "s3://$BUCKET" --force 2>/dev/null && \
-            echo "✅ State bucket '$BUCKET' deleted." || \
-            echo "⚠️  Could not delete state bucket — may already be gone."
-
-          echo "🗑️  Deleting DynamoDB lock table '$TABLE'..."
-          aws dynamodb delete-table --table-name "$TABLE" 2>/dev/null && \
-            echo "✅ Lock table '$TABLE' deleted." || \
-            echo "⚠️  Could not delete lock table — may already be gone."
+      # ────────────────────────────────────────────────────────────────────────
+      # STEP 16 — Skip Terraform state bucket & lock table deletion
+      # State bucket is manually created and preserved across destroy/deploy cycles
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Preserve Terraform state bucket
+        run: |
+          echo "ℹ️  Terraform state bucket '${{ env.TF_STATE_BUCKET }}' is preserved."
+          echo "   This bucket is manually created and should not be destroyed."
+          echo "   State file location: s3://${{ env.TF_STATE_BUCKET }}/dev/"
+          echo ""
+          echo "   To manually delete the state bucket (not recommended):"
+          echo "   1. Empty the bucket: aws s3 rm s3://${{ env.TF_STATE_BUCKET }} --recursive"
+          echo "   2. Delete the bucket: aws s3 rb s3://${{ env.TF_STATE_BUCKET }}"
+          echo "   3. Delete the lock table: aws dynamodb delete-table --table-name ${{ env.TF_STATE_LOCK_TABLE }}"
 
       # ────────────────────────────────────────────────────────────────────────
       # STEP 16 — Final summary

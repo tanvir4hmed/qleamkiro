@@ -68,6 +68,16 @@ module "iam" {
 }
 
 # -----------------------------------------------------------------------------
+# ECR (Elastic Container Registry for Lambda images)
+# -----------------------------------------------------------------------------
+module "ecr" {
+  source = "../../modules/ecr"
+
+  project     = var.project
+  environment = var.environment
+}
+
+# -----------------------------------------------------------------------------
 # S3 (Audio Storage)
 # -----------------------------------------------------------------------------
 module "s3" {
@@ -106,8 +116,53 @@ module "cognito" {
 }
 
 # -----------------------------------------------------------------------------
+# Frontend (S3 + CloudFront) - Created early for CloudFront domain
+# -----------------------------------------------------------------------------
+module "frontend" {
+  source = "../../modules/frontend"
+
+  project              = var.project
+  environment          = var.environment
+  frontend_bucket_name = local.frontend_bucket_name
+}
+
+# -----------------------------------------------------------------------------
+# Lambda Functions (Container Images from ECR)
+# Initial deployment uses placeholder image; actual code deployed via CI/CD
+# -----------------------------------------------------------------------------
+module "lambda" {
+  source = "../../modules/lambda"
+
+  project                   = var.project
+  environment               = var.environment
+  lambda_execution_role_arn = module.iam.lambda_execution_role_arn
+  private_subnet_ids        = module.vpc.private_subnet_ids
+  lambda_security_group_id  = module.vpc.lambda_security_group_id
+
+  s3_bucket_name        = local.audio_bucket_name
+  child_profile_table   = module.dynamodb.child_profile_table_name
+  session_table         = module.dynamodb.session_table_name
+  sound_cluster_table   = module.dynamodb.sound_cluster_table_name
+  semantic_bridge_table = module.dynamodb.semantic_bridge_table_name
+  feedback_table        = module.dynamodb.feedback_table_name
+
+  alpha_value                  = var.alpha_value
+  cluster_similarity_threshold = var.cluster_similarity_threshold
+  step_function_arn            = ""
+  use_bedrock                  = var.use_bedrock
+  bedrock_model_id             = var.bedrock_model_id
+  log_retention_days           = var.log_retention_days
+
+  # ECR configuration
+  ecr_repository_urls = module.ecr.repository_urls
+  image_tag           = var.lambda_image_tag
+  allowed_origins     = ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"]
+
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr]
+}
+
+# -----------------------------------------------------------------------------
 # Step Functions (created before Lambda so we have the ARN)
-# Note: Lambda ARNs are passed after Lambda module runs — use depends_on
 # -----------------------------------------------------------------------------
 module "step_functions" {
   source = "../../modules/step_functions"
@@ -125,50 +180,8 @@ module "step_functions" {
 }
 
 # -----------------------------------------------------------------------------
-# Lambda Functions
-# -----------------------------------------------------------------------------
-module "lambda" {
-  source = "../../modules/lambda"
-
-  project                  = var.project
-  environment              = var.environment
-  tf_state_bucket          = "qleam-terraform-state"
-  lambda_execution_role_arn = module.iam.lambda_execution_role_arn
-  private_subnet_ids       = module.vpc.private_subnet_ids
-  lambda_security_group_id = module.vpc.lambda_security_group_id
-
-  s3_bucket_name        = local.audio_bucket_name
-  child_profile_table   = module.dynamodb.child_profile_table_name
-  session_table         = module.dynamodb.session_table_name
-  sound_cluster_table   = module.dynamodb.sound_cluster_table_name
-  semantic_bridge_table = module.dynamodb.semantic_bridge_table_name
-  feedback_table        = module.dynamodb.feedback_table_name
-
-  alpha_value                  = var.alpha_value
-  cluster_similarity_threshold = var.cluster_similarity_threshold
-  step_function_arn            = ""  # Updated after step_functions module
-  use_bedrock                  = var.use_bedrock
-  bedrock_model_id             = var.bedrock_model_id
-  log_retention_days           = var.log_retention_days
-
-  # Lambda package paths (built by GitHub Actions)
-  audio_layer_zip_path          = var.audio_layer_zip_path
-  shared_utils_zip_path         = var.shared_utils_zip_path
-  feature_extraction_zip_path   = var.feature_extraction_zip_path
-  cluster_engine_zip_path       = var.cluster_engine_zip_path
-  reinforcement_engine_zip_path = var.reinforcement_engine_zip_path
-  insight_generator_zip_path    = var.insight_generator_zip_path
-  feedback_processor_zip_path   = var.feedback_processor_zip_path
-  api_handler_zip_path          = var.api_handler_zip_path
-  allowed_origins               = ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"]
-
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.frontend]
-}
-
-# -----------------------------------------------------------------------------
 # Update Lambda environment with Step Function ARN
 # This is needed because Step Functions depends on Lambda, but Lambda needs Step Function ARN
-# We update the Lambda function's environment variable after Step Functions is created
 # -----------------------------------------------------------------------------
 resource "null_resource" "update_lambda_step_function_arn" {
   triggers = {
@@ -220,17 +233,6 @@ module "api_gateway" {
   log_retention_days        = var.log_retention_days
 
   depends_on = [module.lambda, module.cognito]
-}
-
-# -----------------------------------------------------------------------------
-# Frontend (S3 + CloudFront)
-# -----------------------------------------------------------------------------
-module "frontend" {
-  source = "../../modules/frontend"
-
-  project              = var.project
-  environment          = var.environment
-  frontend_bucket_name = local.frontend_bucket_name
 }
 
 # -----------------------------------------------------------------------------

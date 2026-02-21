@@ -166,3 +166,10 @@ variable "api_handler_zip_path" {
   type        = string
   default     = "../../../lambdas/api_handler/dist/api_handler.zip"
 }
+
+# Lambda container image configuration
+variable "lambda_image_tag" {
+  description = "Docker image tag for Lambda container images"
+  type        = string
+  default     = "latest"
+}

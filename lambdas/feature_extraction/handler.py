@@ -17,9 +17,9 @@ from typing import Any, Dict
 import boto3
 from boto3.dynamodb.conditions import Key
 
-# Add shared layer to path
-sys.path.insert(0, "/opt/python")
+# Add shared utilities to path (for container image deployment)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
+sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     ALPHA_VALUE,

@@ -1,69 +1,37 @@
 # =============================================================================
 # Module: Lambda
-# Deploys all Qleam Lambda functions with layers, env vars, VPC config
+# Deploys all Qleam Lambda functions as container images from ECR
 # =============================================================================
 
 locals {
   common_env_vars = {
-    ENVIRONMENT              = var.environment
-    S3_BUCKET_NAME           = var.s3_bucket_name
-    CHILD_PROFILE_TABLE      = var.child_profile_table
-    SESSION_TABLE            = var.session_table
-    SOUND_CLUSTER_TABLE      = var.sound_cluster_table
-    SEMANTIC_BRIDGE_TABLE    = var.semantic_bridge_table
-    FEEDBACK_TABLE           = var.feedback_table
-    ALPHA_VALUE              = tostring(var.alpha_value)
-    CLUSTER_SIMILARITY_THRESHOLD = tostring(var.cluster_similarity_threshold)
-    STEP_FUNCTION_ARN        = var.step_function_arn
-    LOG_LEVEL                = var.environment == "prod" ? "WARNING" : "DEBUG"
+    ENVIRONMENT                   = var.environment
+    S3_BUCKET_NAME                = var.s3_bucket_name
+    CHILD_PROFILE_TABLE           = var.child_profile_table
+    SESSION_TABLE                 = var.session_table
+    SOUND_CLUSTER_TABLE           = var.sound_cluster_table
+    SEMANTIC_BRIDGE_TABLE         = var.semantic_bridge_table
+    FEEDBACK_TABLE                = var.feedback_table
+    ALPHA_VALUE                   = tostring(var.alpha_value)
+    CLUSTER_SIMILARITY_THRESHOLD  = tostring(var.cluster_similarity_threshold)
+    STEP_FUNCTION_ARN             = var.step_function_arn
+    LOG_LEVEL                     = var.environment == "prod" ? "WARNING" : "DEBUG"
   }
-}
-
-# -----------------------------------------------------------------------------
-# Lambda Layer — Audio Processing (librosa, numpy, scipy)
-# Uploaded via S3 to bypass the 70 MB direct-upload limit.
-# The workflow uploads the zip to s3://<tf_state_bucket>/lambda-layers/audio_processing.zip
-# before running Terraform.
-# -----------------------------------------------------------------------------
-resource "aws_lambda_layer_version" "audio_processing" {
-  layer_name          = "${var.project}-${var.environment}-audio-processing"
-  description         = "librosa, numpy, scipy for audio feature extraction"
-  s3_bucket           = var.tf_state_bucket
-  s3_key              = "lambda-layers/${var.project}-${var.environment}-audio-processing.zip"
-  compatible_runtimes = ["python3.11"]
-  compatible_architectures = ["x86_64"]
-}
-
-# -----------------------------------------------------------------------------
-# Lambda Layer — Shared Utilities
-# -----------------------------------------------------------------------------
-resource "aws_lambda_layer_version" "shared_utils" {
-  layer_name          = "${var.project}-${var.environment}-shared-utils"
-  description         = "Qleam shared utilities (similarity, normalization, constants)"
-  filename            = var.shared_utils_zip_path
-  source_code_hash    = filebase64sha256(var.shared_utils_zip_path)
-  compatible_runtimes = ["python3.11"]
-  compatible_architectures = ["x86_64"]
 }
 
 # -----------------------------------------------------------------------------
 # Feature Extraction Lambda
 # -----------------------------------------------------------------------------
 resource "aws_lambda_function" "feature_extraction" {
-  function_name    = "${var.project}-${var.environment}-feature-extraction"
-  description      = "Extracts acoustic features from uploaded audio"
-  filename         = var.feature_extraction_zip_path
-  source_code_hash = filebase64sha256(var.feature_extraction_zip_path)
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.11"
-  role             = var.lambda_execution_role_arn
-  timeout          = 30
-  memory_size      = 512
+  function_name = "${var.project}-${var.environment}-feature-extraction"
+  description   = "Extracts acoustic features from uploaded audio"
 
-  layers = [
-    aws_lambda_layer_version.audio_processing.arn,
-    aws_lambda_layer_version.shared_utils.arn
-  ]
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["feature_extraction"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 60
+  memory_size   = 1024
 
   environment {
     variables = local.common_env_vars
@@ -93,19 +61,15 @@ resource "aws_cloudwatch_log_group" "feature_extraction" {
 # Cluster Engine Lambda
 # -----------------------------------------------------------------------------
 resource "aws_lambda_function" "cluster_engine" {
-  function_name    = "${var.project}-${var.environment}-cluster-engine"
-  description      = "Manages sound cluster formation and evolution"
-  filename         = var.cluster_engine_zip_path
-  source_code_hash = filebase64sha256(var.cluster_engine_zip_path)
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.11"
-  role             = var.lambda_execution_role_arn
-  timeout          = 30
-  memory_size      = 256
+  function_name = "${var.project}-${var.environment}-cluster-engine"
+  description   = "Manages sound cluster formation and evolution"
 
-  layers = [
-    aws_lambda_layer_version.shared_utils.arn
-  ]
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["cluster_engine"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 60
+  memory_size   = 512
 
   environment {
     variables = local.common_env_vars
@@ -135,19 +99,15 @@ resource "aws_cloudwatch_log_group" "cluster_engine" {
 # Reinforcement Engine Lambda
 # -----------------------------------------------------------------------------
 resource "aws_lambda_function" "reinforcement_engine" {
-  function_name    = "${var.project}-${var.environment}-reinforcement-engine"
-  description      = "Updates reinforcement weights and semantic bridges"
-  filename         = var.reinforcement_engine_zip_path
-  source_code_hash = filebase64sha256(var.reinforcement_engine_zip_path)
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.11"
-  role             = var.lambda_execution_role_arn
-  timeout          = 15
-  memory_size      = 256
+  function_name = "${var.project}-${var.environment}-reinforcement-engine"
+  description   = "Updates reinforcement weights and semantic bridges"
 
-  layers = [
-    aws_lambda_layer_version.shared_utils.arn
-  ]
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["reinforcement_engine"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 30
+  memory_size   = 512
 
   environment {
     variables = local.common_env_vars
@@ -177,19 +137,15 @@ resource "aws_cloudwatch_log_group" "reinforcement_engine" {
 # Insight Generator Lambda
 # -----------------------------------------------------------------------------
 resource "aws_lambda_function" "insight_generator" {
-  function_name    = "${var.project}-${var.environment}-insight-generator"
-  description      = "Generates structured insights from session data"
-  filename         = var.insight_generator_zip_path
-  source_code_hash = filebase64sha256(var.insight_generator_zip_path)
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.11"
-  role             = var.lambda_execution_role_arn
-  timeout          = 30
-  memory_size      = 256
+  function_name = "${var.project}-${var.environment}-insight-generator"
+  description   = "Generates structured insights from session data"
 
-  layers = [
-    aws_lambda_layer_version.shared_utils.arn
-  ]
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["insight_generator"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 60
+  memory_size   = 512
 
   environment {
     variables = merge(local.common_env_vars, {
@@ -222,19 +178,15 @@ resource "aws_cloudwatch_log_group" "insight_generator" {
 # Feedback Processor Lambda
 # -----------------------------------------------------------------------------
 resource "aws_lambda_function" "feedback_processor" {
-  function_name    = "${var.project}-${var.environment}-feedback-processor"
-  description      = "Processes parent feedback and triggers reinforcement"
-  filename         = var.feedback_processor_zip_path
-  source_code_hash = filebase64sha256(var.feedback_processor_zip_path)
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.11"
-  role             = var.lambda_execution_role_arn
-  timeout          = 15
-  memory_size      = 256
+  function_name = "${var.project}-${var.environment}-feedback-processor"
+  description   = "Processes parent feedback and triggers reinforcement"
 
-  layers = [
-    aws_lambda_layer_version.shared_utils.arn
-  ]
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["feedback_processor"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 30
+  memory_size   = 512
 
   environment {
     variables = local.common_env_vars
@@ -264,19 +216,15 @@ resource "aws_cloudwatch_log_group" "feedback_processor" {
 # API Handler Lambda (routes API Gateway requests)
 # -----------------------------------------------------------------------------
 resource "aws_lambda_function" "api_handler" {
-  function_name    = "${var.project}-${var.environment}-api-handler"
-  description      = "Handles API Gateway requests and routes to appropriate services"
-  filename         = var.api_handler_zip_path
-  source_code_hash = filebase64sha256(var.api_handler_zip_path)
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.11"
-  role             = var.lambda_execution_role_arn
-  timeout          = 30
-  memory_size      = 256
+  function_name = "${var.project}-${var.environment}-api-handler"
+  description   = "Handles API Gateway requests and routes to appropriate services"
 
-  layers = [
-    aws_lambda_layer_version.shared_utils.arn
-  ]
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["api_handler"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 30
+  memory_size   = 512
 
   environment {
     variables = merge(local.common_env_vars, {
@@ -303,3 +251,4 @@ resource "aws_cloudwatch_log_group" "api_handler" {
   name              = "/aws/lambda/${aws_lambda_function.api_handler.function_name}"
   retention_in_days = var.log_retention_days
 }
+

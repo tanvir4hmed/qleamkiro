@@ -1,0 +1,187 @@
+name: frontend deploy
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: '18'
+  TF_STATE_BUCKET: qleam-terraform-state
+  TF_STATE_LOCK_TABLE: qleam-terraform-state-lock
+
+jobs:
+  # ===========================================================================
+  # Job 1: Build Frontend
+  # ===========================================================================
+  build:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.6'
+          terraform_wrapper: false
+
+      - name: Fetch Terraform outputs for frontend build
+        id: terraform-outputs
+        run: |
+          cd infrastructure/environments/dev
+          terraform init \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ env.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -input=false
+          
+          # Fetch outputs
+          COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
+          COGNITO_CLIENT_ID=$(terraform output -raw cognito_client_id 2>/dev/null || echo "")
+          API_ENDPOINT=$(terraform output -raw api_endpoint 2>/dev/null || echo "")
+          
+          # Validate outputs
+          if [ -z "$COGNITO_USER_POOL_ID" ] || [ "$COGNITO_USER_POOL_ID" = "null" ]; then
+            echo "❌ Error: COGNITO_USER_POOL_ID is not set or is null"
+            exit 1
+          fi
+          
+          if [ -z "$COGNITO_CLIENT_ID" ] || [ "$COGNITO_CLIENT_ID" = "null" ]; then
+            echo "❌ Error: COGNITO_CLIENT_ID is not set or is null"
+            exit 1
+          fi
+          
+          if [ -z "$API_ENDPOINT" ] || [ "$API_ENDPOINT" = "null" ]; then
+            echo "❌ Error: API_ENDPOINT is not set or is null"
+            exit 1
+          fi
+          
+          echo "✅ Terraform outputs fetched successfully:"
+          echo "   COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID}"
+          echo "   COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID}"
+          echo "   API_ENDPOINT: ${API_ENDPOINT}"
+          
+          # Set outputs for use in build step
+          echo "cognito_user_pool_id=$COGNITO_USER_POOL_ID" >> $GITHUB_OUTPUT
+          echo "cognito_client_id=$COGNITO_CLIENT_ID" >> $GITHUB_OUTPUT
+          echo "api_endpoint=$API_ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm install
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+        env:
+          REACT_APP_ENVIRONMENT: dev
+          REACT_APP_COGNITO_USER_POOL_ID: ${{ steps.terraform-outputs.outputs.cognito_user_pool_id }}
+          REACT_APP_COGNITO_CLIENT_ID: ${{ steps.terraform-outputs.outputs.cognito_client_id }}
+          REACT_APP_API_URL: ${{ steps.terraform-outputs.outputs.api_endpoint }}
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+          retention-days: 7
+
+  # ===========================================================================
+  # Job 2: Deploy Frontend to S3
+  # ===========================================================================
+  deploy:
+    name: Deploy Frontend to DEV
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy frontend to S3 (DEV)
+        run: |
+          FRONTEND_BUCKET="qleam-dev-frontend"
+          aws s3 sync frontend/build/ s3://${FRONTEND_BUCKET}/ --delete
+          echo "✅ Frontend deployed to s3://${FRONTEND_BUCKET}"
+
+      - name: Invalidate CloudFront cache (DEV)
+        id: cloudfront
+        run: |
+          CF_DOMAIN=""
+          CF_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?contains(Origins.Items[0].DomainName,'qleam-dev-frontend')].Id" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$CF_ID" ] || [ "$CF_ID" = "None" ]; then
+            CF_ID=$(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?contains(Comment,'dev')].Id" \
+              --output text 2>/dev/null || echo "")
+          fi
+
+          if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
+            CF_DOMAIN=$(aws cloudfront list-distributions \
+              --query "DistributionList.Items[?Id=='${CF_ID}'].DomainName" \
+              --output text 2>/dev/null || echo "")
+            aws cloudfront create-invalidation \
+              --distribution-id "$CF_ID" \
+              --paths "/*" > /dev/null
+            echo "✅ CloudFront cache invalidated: $CF_ID"
+          else
+            echo "ℹ️  No CloudFront distribution found — skipping invalidation."
+          fi
+
+          echo "cf_domain=$CF_DOMAIN" >> $GITHUB_OUTPUT
+          echo "cf_id=$CF_ID"         >> $GITHUB_OUTPUT
+
+      - name: Deployment summary
+        run: |
+          CF_DOMAIN="${{ steps.cloudfront.outputs.cf_domain }}"
+          echo "══════════════════════════════════════════════════════"
+          echo "✅  Frontend deployed successfully!"
+          echo ""
+          echo "   Branch  : ${{ github.ref_name }}"
+          echo "   Commit  : ${{ github.sha }}"
+          if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
+            echo ""
+            echo "   🌐 App URL : https://${CF_DOMAIN}"
+            echo ""
+            echo "   Open in browser → https://${CF_DOMAIN}"
+          else
+            echo ""
+            echo "   ℹ️  CloudFront domain not found in this step."
+            echo "   Check AWS Console → CloudFront for the domain."
+          fi
+          echo "══════════════════════════════════════════════════════"

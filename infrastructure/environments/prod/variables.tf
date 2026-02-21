@@ -91,53 +91,11 @@ variable "log_retention_days" {
   default     = 90
 }
 
-# Lambda artifact paths (set by CI/CD)
-variable "audio_layer_zip_path" {
-  description = "Path to audio processing Lambda layer zip"
+# Lambda container image configuration
+variable "lambda_image_tag" {
+  description = "Docker image tag for Lambda container images"
   type        = string
-  default     = "../../../lambdas/layers/audio_processing.zip"
-}
-
-variable "shared_utils_zip_path" {
-  description = "Path to shared utils Lambda layer zip"
-  type        = string
-  default     = "../../../lambdas/layers/shared_utils.zip"
-}
-
-variable "feature_extraction_zip_path" {
-  description = "Path to feature extraction Lambda zip"
-  type        = string
-  default     = "../../../lambdas/feature_extraction/dist/feature_extraction.zip"
-}
-
-variable "cluster_engine_zip_path" {
-  description = "Path to cluster engine Lambda zip"
-  type        = string
-  default     = "../../../lambdas/cluster_engine/dist/cluster_engine.zip"
-}
-
-variable "reinforcement_engine_zip_path" {
-  description = "Path to reinforcement engine Lambda zip"
-  type        = string
-  default     = "../../../lambdas/reinforcement_engine/dist/reinforcement_engine.zip"
-}
-
-variable "insight_generator_zip_path" {
-  description = "Path to insight generator Lambda zip"
-  type        = string
-  default     = "../../../lambdas/insight_generator/dist/insight_generator.zip"
-}
-
-variable "feedback_processor_zip_path" {
-  description = "Path to feedback processor Lambda zip"
-  type        = string
-  default     = "../../../lambdas/feedback_processor/dist/feedback_processor.zip"
-}
-
-variable "api_handler_zip_path" {
-  description = "Path to API handler Lambda zip"
-  type        = string
-  default     = "../../../lambdas/api_handler/dist/api_handler.zip"
+  default     = "latest"
 }
 
 # Monitoring
