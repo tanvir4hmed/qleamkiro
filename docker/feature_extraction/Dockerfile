@@ -2,19 +2,30 @@
 # Feature Extraction Lambda - Docker Image
 # Includes librosa, scipy, numpy for audio feature extraction
 # =============================================================================
+# Use :3.11; install step below supports both yum (AL2) and dnf (AL2023) so base updates don't break the build.
 FROM public.ecr.aws/lambda/python:3.11
 
 # Install system dependencies for audio processing
-# libsndfile for soundfile library
-# Download static ffmpeg binary (ffmpeg not available in Amazon Linux repos)
-RUN yum install -y libsndfile curl xz && \
-    curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz -o /tmp/ffmpeg.tar.xz && \
-    tar -xf /tmp/ffmpeg.tar.xz -C /tmp && \
-    cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ && \
-    cp /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ && \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
-    rm -rf /tmp/ffmpeg* && \
-    yum clean all && \
+# libsndfile for soundfile; curl + xz for downloading and extracting FFmpeg.
+# Support both yum (Amazon Linux 2) and dnf (Amazon Linux 2023) so base changes don't break the build.
+RUN set -e; \
+    if command -v dnf >/dev/null 2>&1; then \
+      dnf install -y libsndfile curl xz && dnf clean all; \
+    else \
+      yum install -y libsndfile curl xz && yum clean all; \
+    fi
+
+# FFmpeg: use a fixed release tag and asset (BtbN no longer provides "latest" or ffmpeg-master-latest-*).
+# Static linux64-gpl 7.1 build; copy via wildcard so extracted dir name does not break the build.
+ARG FFMPEG_TAG=autobuild-2026-02-21-13-00
+ARG FFMPEG_ASSET=ffmpeg-n7.1.3-40-gcddd06f3b9-linux64-gpl-7.1.tar.xz
+RUN set -e; \
+    curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET}" -o /tmp/ffmpeg.tar.xz; \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp; \
+    cp /tmp/ffmpeg-*/bin/ffmpeg /usr/local/bin/; \
+    cp /tmp/ffmpeg-*/bin/ffprobe /usr/local/bin/; \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg*; \
     ffmpeg -version
 
 # Install Python dependencies for audio processing
