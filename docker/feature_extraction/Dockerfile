@@ -16,12 +16,14 @@ RUN python3 /tmp/install_ffmpeg.py && \
 # Install Python dependencies for audio processing
 # Using ffmpeg for audio loading (handles all formats), soundfile for reading ffmpeg output
 # soxr for high-quality resampling, audioread required by librosa at import time
+# scikit-learn required by librosa.effects.trim
 RUN pip install --no-cache-dir --only-binary=:all: \
     'numpy==1.26.4' \
     'scipy==1.11.4' \
     'soundfile==0.12.1' \
     'soxr==0.3.7' \
     'audioread>=3.0.0' \
+    'scikit-learn==1.3.2' \
     'joblib>=1.2.0' \
     'decorator>=5.0.0' \
     'lazy_loader>=0.1' \
