@@ -60,6 +60,9 @@ resource "aws_cloudfront_distribution" "frontend" {
   comment             = "Qleam ${var.environment} frontend"
   price_class         = "PriceClass_100"
 
+  # Add custom domain alias if configured
+  aliases = var.custom_domain != "" ? [var.custom_domain] : []
+
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = "S3-${aws_s3_bucket.frontend.bucket}"
@@ -106,8 +109,12 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  # Use custom certificate if provided, otherwise use default CloudFront certificate
   viewer_certificate {
-    cloudfront_default_certificate = true
+    acm_certificate_arn      = var.acm_certificate_arn != "" ? var.acm_certificate_arn : null
+    ssl_support_method       = var.acm_certificate_arn != "" ? "sni-only" : null
+    minimum_protocol_version = var.acm_certificate_arn != "" ? "TLSv1.2_2021" : null
+    cloudfront_default_certificate = var.acm_certificate_arn == ""
   }
 
   tags = {

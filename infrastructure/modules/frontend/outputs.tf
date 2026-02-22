@@ -22,3 +22,13 @@ output "frontend_url" {
   description = "Frontend URL (CloudFront)"
   value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
 }
+
+output "custom_domain_url" {
+  description = "Frontend URL using custom domain (if configured)"
+  value       = var.custom_domain != "" ? "https://${var.custom_domain}" : ""
+}
+
+output "primary_domain" {
+  description = "Primary domain name for the frontend (custom domain if configured, otherwise CloudFront domain)"
+  value       = var.custom_domain != "" ? var.custom_domain : aws_cloudfront_distribution.frontend.domain_name
+}

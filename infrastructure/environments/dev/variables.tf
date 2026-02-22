@@ -176,7 +176,13 @@ variable "lambda_image_tag" {
 
 # Domain Configuration
 variable "custom_domain" {
-  description = "Custom domain for the application (e.g., dev.ai.qleam.com)"
+  description = "Custom domain for the application (e.g., ai.qleam.com)"
+  type        = string
+  default     = ""
+}
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN for custom domain (must be in us-east-1)"
   type        = string
   default     = ""
 }
