@@ -176,3 +176,48 @@ resource "aws_vpc_endpoint" "dynamodb" {
     Name = "${var.project}-${var.environment}-dynamodb-endpoint"
   }
 }
+
+# SSM Parameter Store endpoint (required for Lambda to read Step Function ARN)
+resource "aws_vpc_endpoint" "ssm" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.ssm"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.private[*].id
+  security_group_ids = [aws_security_group.lambda.id]
+
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project}-${var.environment}-ssm-endpoint"
+  }
+}
+
+# Step Functions endpoint (required for Lambda to start executions)
+resource "aws_vpc_endpoint" "stepfunctions" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.states"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.private[*].id
+  security_group_ids = [aws_security_group.lambda.id]
+
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project}-${var.environment}-stepfunctions-endpoint"
+  }
+}
+
+# Lambda endpoint (required for Lambda-to-Lambda invocations)
+resource "aws_vpc_endpoint" "lambda" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.lambda"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.private[*].id
+  security_group_ids = [aws_security_group.lambda.id]
+
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${var.project}-${var.environment}-lambda-endpoint"
+  }
+}
