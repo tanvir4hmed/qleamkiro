@@ -50,6 +50,45 @@ dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
 sfn_client = boto3.client("stepfunctions")
 lambda_client = boto3.client("lambda")
+ssm_client = boto3.client("ssm")
+
+# Cache for Step Function ARN (to avoid repeated SSM calls)
+_cached_step_function_arn = None
+
+
+def get_step_function_arn() -> str:
+    """
+    Get Step Function ARN from SSM Parameter Store at runtime.
+    This resolves the circular dependency between Lambda and Step Functions.
+    """
+    global _cached_step_function_arn
+    
+    # Return cached value if available
+    if _cached_step_function_arn:
+        return _cached_step_function_arn
+    
+    # First try environment variable (for backward compatibility)
+    env_arn = os.environ.get("STEP_FUNCTION_ARN", "")
+    if env_arn and env_arn != "":
+        _cached_step_function_arn = env_arn
+        return env_arn
+    
+    # Fall back to SSM Parameter Store
+    ssm_param_name = os.environ.get("STEP_FUNCTION_ARN_PARAM_NAME", "")
+    if not ssm_param_name:
+        # Try default parameter name
+        environment = os.environ.get("ENVIRONMENT", "dev")
+        ssm_param_name = f"/qleam/{environment}/step-function-arn"
+    
+    try:
+        response = ssm_client.get_parameter(Name=ssm_param_name)
+        arn = response["Parameter"]["Value"]
+        _cached_step_function_arn = arn
+        logger.info(f"Retrieved Step Function ARN from SSM: {arn}")
+        return arn
+    except Exception as e:
+        logger.error(f"Failed to get Step Function ARN from SSM: {e}")
+        raise RuntimeError(f"Step Function ARN not configured. Check SSM parameter: {ssm_param_name}")
 
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
@@ -304,9 +343,12 @@ def start_processing(event: Dict) -> Dict:
     child_id = session["child_id"]
     s3_audio_path = session["s3_audio_path"]
 
-    sfn_arn = os.environ.get("STEP_FUNCTION_ARN", STEP_FUNCTION_ARN)
-    if not sfn_arn:
-        return response(500, {"error": "Step Function ARN not configured"}, event)
+    # Get Step Function ARN from SSM Parameter Store (resolves circular dependency)
+    try:
+        sfn_arn = get_step_function_arn()
+    except RuntimeError as e:
+        logger.error(str(e))
+        return response(500, {"error": str(e)}, event)
 
     sfn_input = {
         "child_id": child_id,

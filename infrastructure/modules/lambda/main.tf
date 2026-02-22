@@ -15,6 +15,7 @@ locals {
     ALPHA_VALUE                   = tostring(var.alpha_value)
     CLUSTER_SIMILARITY_THRESHOLD  = tostring(var.cluster_similarity_threshold)
     STEP_FUNCTION_ARN             = var.step_function_arn
+    STEP_FUNCTION_ARN_PARAM_NAME  = var.step_function_arn_param_name
     LOG_LEVEL                     = var.environment == "prod" ? "WARNING" : "DEBUG"
   }
 }

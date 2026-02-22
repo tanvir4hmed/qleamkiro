@@ -127,6 +127,21 @@ module "cognito" {
 }
 
 # -----------------------------------------------------------------------------
+# SSM Parameter for Step Function ARN (breaks circular dependency)
+# Lambda reads this at runtime instead of at deployment time
+# -----------------------------------------------------------------------------
+resource "aws_ssm_parameter" "step_function_arn" {
+  name        = "/${var.project}/${var.environment}/step-function-arn"
+  description = "ARN of the audio processing Step Function state machine"
+  type        = "String"
+  value       = "placeholder"  # Will be updated after Step Function is created
+
+  tags = {
+    Name = "${var.project}-${var.environment}-step-function-arn-param"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Lambda Functions (Container Images from ECR)
 # -----------------------------------------------------------------------------
 module "lambda" {
@@ -147,7 +162,8 @@ module "lambda" {
 
   alpha_value                  = var.alpha_value
   cluster_similarity_threshold = var.cluster_similarity_threshold
-  step_function_arn            = ""
+  step_function_arn            = ""  # Not used anymore - Lambda reads from SSM
+  step_function_arn_param_name = aws_ssm_parameter.step_function_arn.name
   use_bedrock                  = var.use_bedrock
   bedrock_model_id             = var.bedrock_model_id
   log_retention_days           = var.log_retention_days
@@ -179,42 +195,21 @@ module "step_functions" {
 }
 
 # -----------------------------------------------------------------------------
-# Update Lambda environment with Step Function ARN
+# Update SSM Parameter with Step Function ARN after creation
+# This breaks the circular dependency - Lambda reads ARN from SSM at runtime
 # -----------------------------------------------------------------------------
-resource "null_resource" "update_lambda_step_function_arn" {
-  triggers = {
-    step_function_arn    = module.step_functions.state_machine_arn
-    lambda_function_name = module.lambda.api_handler_function_name
+resource "aws_ssm_parameter" "update_step_function_arn" {
+  name        = "/${var.project}/${var.environment}/step-function-arn"
+  description = "ARN of the audio processing Step Function state machine"
+  type        = "String"
+  value       = module.step_functions.state_machine_arn
+  overwrite   = true
+
+  tags = {
+    Name = "${var.project}-${var.environment}-step-function-arn-param"
   }
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      ENV_VARS=$(cat <<EOF
-      {
-        "Variables": {
-          "ENVIRONMENT": "${var.environment}",
-          "S3_BUCKET_NAME": "${local.audio_bucket_name}",
-          "CHILD_PROFILE_TABLE": "${module.dynamodb.child_profile_table_name}",
-          "SESSION_TABLE": "${module.dynamodb.session_table_name}",
-          "SOUND_CLUSTER_TABLE": "${module.dynamodb.sound_cluster_table_name}",
-          "SEMANTIC_BRIDGE_TABLE": "${module.dynamodb.semantic_bridge_table_name}",
-          "FEEDBACK_TABLE": "${module.dynamodb.feedback_table_name}",
-          "ALPHA_VALUE": "${tostring(var.alpha_value)}",
-          "CLUSTER_SIMILARITY_THRESHOLD": "${tostring(var.cluster_similarity_threshold)}",
-          "STEP_FUNCTION_ARN": "${module.step_functions.state_machine_arn}",
-          "LOG_LEVEL": "WARNING",
-          "ALLOWED_ORIGINS": "https://${module.frontend.cloudfront_domain_name}"
-        }
-      }
-      EOF
-      )
-      aws lambda update-function-configuration \
-        --function-name ${module.lambda.api_handler_function_name} \
-        --environment "$ENV_VARS"
-    EOT
-  }
-
-  depends_on = [module.lambda, module.step_functions, module.frontend]
+  depends_on = [module.step_functions]
 }
 
 # -----------------------------------------------------------------------------
