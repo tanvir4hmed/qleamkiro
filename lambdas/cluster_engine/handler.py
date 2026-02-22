@@ -17,9 +17,9 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 
-# Add shared layer to path
-sys.path.insert(0, "/opt/python")
+# Add shared utilities to path (for container image deployment)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
+sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     CLUSTER_SIMILARITY_THRESHOLD,

@@ -17,8 +17,9 @@ from typing import Any, Dict, Optional
 
 import boto3
 
-sys.path.insert(0, "/opt/python")
+# Add shared utilities to path (for container image deployment)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
+sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     REINFORCEMENT_DECAY_INEFFECTIVE,
