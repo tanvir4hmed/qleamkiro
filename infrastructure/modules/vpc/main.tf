@@ -139,6 +139,7 @@ resource "aws_security_group" "lambda" {
   description = "Security group for Lambda functions"
   vpc_id      = aws_vpc.main.id
 
+  # Allow all outbound traffic
   egress {
     from_port   = 0
     to_port     = 0
@@ -149,6 +150,35 @@ resource "aws_security_group" "lambda" {
 
   tags = {
     Name = "${var.project}-${var.environment}-lambda-sg"
+  }
+}
+
+# Security Group for VPC Endpoints (allows HTTPS from Lambda)
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${var.project}-${var.environment}-vpc-endpoints-sg"
+  description = "Security group for VPC endpoints"
+  vpc_id      = aws_vpc.main.id
+
+  # Allow HTTPS inbound from Lambda security group
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lambda.id]
+    description     = "Allow HTTPS from Lambda"
+  }
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
+  }
+
+  tags = {
+    Name = "${var.project}-${var.environment}-vpc-endpoints-sg"
   }
 }
 
@@ -183,7 +213,7 @@ resource "aws_vpc_endpoint" "ssm" {
   service_name      = "com.amazonaws.${var.aws_region}.ssm"
   vpc_endpoint_type = "Interface"
   subnet_ids        = aws_subnet.private[*].id
-  security_group_ids = [aws_security_group.lambda.id]
+  security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   private_dns_enabled = true
 
@@ -198,7 +228,7 @@ resource "aws_vpc_endpoint" "stepfunctions" {
   service_name      = "com.amazonaws.${var.aws_region}.states"
   vpc_endpoint_type = "Interface"
   subnet_ids        = aws_subnet.private[*].id
-  security_group_ids = [aws_security_group.lambda.id]
+  security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   private_dns_enabled = true
 
@@ -213,7 +243,7 @@ resource "aws_vpc_endpoint" "lambda" {
   service_name      = "com.amazonaws.${var.aws_region}.lambda"
   vpc_endpoint_type = "Interface"
   subnet_ids        = aws_subnet.private[*].id
-  security_group_ids = [aws_security_group.lambda.id]
+  security_group_ids = [aws_security_group.vpc_endpoints.id]
 
   private_dns_enabled = true
 
