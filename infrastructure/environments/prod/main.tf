@@ -37,6 +37,8 @@ provider "aws" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
   audio_bucket_name    = "${var.project}-${var.environment}-audio-storage"
   frontend_bucket_name = "${var.project}-${var.environment}-frontend"
@@ -127,6 +129,25 @@ module "cognito" {
 }
 
 # -----------------------------------------------------------------------------
+# Step Functions (created before Lambda so we have the ARN)
+# Note: Lambda ARNs are passed as strings with known naming pattern
+# -----------------------------------------------------------------------------
+module "step_functions" {
+  source = "../../modules/step_functions"
+
+  project                       = var.project
+  environment                   = var.environment
+  step_functions_role_arn       = module.iam.step_functions_role_arn
+  feature_extraction_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
+  cluster_engine_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
+  insight_generator_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
+  audio_bucket_name             = local.audio_bucket_name
+  log_retention_days            = var.log_retention_days
+
+  depends_on = [module.iam]
+}
+
+# -----------------------------------------------------------------------------
 # Lambda Functions (Container Images from ECR)
 # -----------------------------------------------------------------------------
 module "lambda" {
@@ -147,7 +168,8 @@ module "lambda" {
 
   alpha_value                  = var.alpha_value
   cluster_similarity_threshold = var.cluster_similarity_threshold
-  step_function_arn            = ""
+  step_function_arn            = module.step_functions.state_machine_arn
+  step_function_arn_param_name = ""
   use_bedrock                  = var.use_bedrock
   bedrock_model_id             = var.bedrock_model_id
   log_retention_days           = var.log_retention_days
@@ -157,64 +179,23 @@ module "lambda" {
   image_tag           = var.lambda_image_tag
   allowed_origins     = ["https://${module.frontend.cloudfront_domain_name}"]
 
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr]
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions]
 }
 
 # -----------------------------------------------------------------------------
-# Step Functions
+# SSM Parameter for Step Function ARN (kept for reference, not used by Lambda)
 # -----------------------------------------------------------------------------
-module "step_functions" {
-  source = "../../modules/step_functions"
+resource "aws_ssm_parameter" "step_function_arn" {
+  name        = "/${var.project}/${var.environment}/step-function-arn"
+  description = "ARN of the audio processing Step Function state machine"
+  type        = "String"
+  value       = module.step_functions.state_machine_arn
 
-  project                       = var.project
-  environment                   = var.environment
-  step_functions_role_arn       = module.iam.step_functions_role_arn
-  feature_extraction_lambda_arn = module.lambda.feature_extraction_function_arn
-  cluster_engine_lambda_arn     = module.lambda.cluster_engine_function_arn
-  insight_generator_lambda_arn  = module.lambda.insight_generator_function_arn
-  audio_bucket_name             = local.audio_bucket_name
-  log_retention_days            = var.log_retention_days
-
-  depends_on = [module.lambda]
-}
-
-# -----------------------------------------------------------------------------
-# Update Lambda environment with Step Function ARN
-# -----------------------------------------------------------------------------
-resource "null_resource" "update_lambda_step_function_arn" {
-  triggers = {
-    step_function_arn    = module.step_functions.state_machine_arn
-    lambda_function_name = module.lambda.api_handler_function_name
+  tags = {
+    Name = "${var.project}-${var.environment}-step-function-arn-param"
   }
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      ENV_VARS=$(cat <<EOF
-      {
-        "Variables": {
-          "ENVIRONMENT": "${var.environment}",
-          "S3_BUCKET_NAME": "${local.audio_bucket_name}",
-          "CHILD_PROFILE_TABLE": "${module.dynamodb.child_profile_table_name}",
-          "SESSION_TABLE": "${module.dynamodb.session_table_name}",
-          "SOUND_CLUSTER_TABLE": "${module.dynamodb.sound_cluster_table_name}",
-          "SEMANTIC_BRIDGE_TABLE": "${module.dynamodb.semantic_bridge_table_name}",
-          "FEEDBACK_TABLE": "${module.dynamodb.feedback_table_name}",
-          "ALPHA_VALUE": "${tostring(var.alpha_value)}",
-          "CLUSTER_SIMILARITY_THRESHOLD": "${tostring(var.cluster_similarity_threshold)}",
-          "STEP_FUNCTION_ARN": "${module.step_functions.state_machine_arn}",
-          "LOG_LEVEL": "WARNING",
-          "ALLOWED_ORIGINS": "https://${module.frontend.cloudfront_domain_name}"
-        }
-      }
-      EOF
-      )
-      aws lambda update-function-configuration \
-        --function-name ${module.lambda.api_handler_function_name} \
-        --environment "$ENV_VARS"
-    EOT
-  }
-
-  depends_on = [module.lambda, module.step_functions, module.frontend]
+  depends_on = [module.step_functions]
 }
 
 # -----------------------------------------------------------------------------

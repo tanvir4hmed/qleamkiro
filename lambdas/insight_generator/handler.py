@@ -54,12 +54,57 @@ def _decimal_to_float(obj: Any) -> Any:
 
 
 def _float_to_decimal(obj: Any) -> Any:
+    """Convert floats to Decimal for DynamoDB. Handles numpy floats and edge cases."""
+    import math
+    
+    # Handle None
+    if obj is None:
+        return None
+    
+    # Handle Decimal (already converted)
+    if isinstance(obj, Decimal):
+        return obj
+    
+    # Handle numpy numeric types without requiring numpy import
+    if hasattr(obj, 'item'):
+        try:
+            obj = obj.item()
+        except (AttributeError, TypeError):
+            pass
+    
+    # Handle Python int (safe to convert directly)
+    if isinstance(obj, int) and not isinstance(obj, bool):
+        return Decimal(obj)
+    
+    # Handle Python float
     if isinstance(obj, float):
+        # Check for NaN, inf, -inf which Decimal can't handle
+        if math.isnan(obj):
+            return Decimal("0")
+        if math.isinf(obj):
+            return Decimal("0") if obj < 0 else Decimal("1")
         return Decimal(str(obj))
+    
+    # Handle boolean
+    if isinstance(obj, bool):
+        return Decimal("1") if obj else Decimal("0")
+    
+    # Handle string - try to convert if it looks like a number
+    if isinstance(obj, str):
+        try:
+            return Decimal(obj)
+        except:
+            return obj  # Return as-is if not a valid number string
+    
+    # Handle dict recursively
     if isinstance(obj, dict):
         return {k: _float_to_decimal(v) for k, v in obj.items()}
+    
+    # Handle list recursively
     if isinstance(obj, list):
         return [_float_to_decimal(i) for i in obj]
+    
+    # Return everything else as-is (strings, booleans, etc.)
     return obj
 
 

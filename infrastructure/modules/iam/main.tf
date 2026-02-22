@@ -164,6 +164,32 @@ resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
   policy_arn = aws_iam_policy.lambda_bedrock.arn
 }
 
+# Lambda SSM Parameter Store access (for Step Function ARN lookup)
+resource "aws_iam_policy" "lambda_ssm" {
+  name        = "${var.project}-${var.environment}-lambda-ssm-policy"
+  description = "Allow Lambda to read SSM parameters"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
+        ]
+        Resource = "arn:aws:ssm:${local.region}:${local.account_id}:parameter/${var.project}/${var.environment}/*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_ssm" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.lambda_ssm.arn
+}
+
 # -----------------------------------------------------------------------------
 # Step Functions Execution Role
 # -----------------------------------------------------------------------------

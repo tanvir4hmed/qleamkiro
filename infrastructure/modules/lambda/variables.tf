@@ -70,7 +70,13 @@ variable "cluster_similarity_threshold" {
 }
 
 variable "step_function_arn" {
-  description = "ARN of the processing Step Function state machine"
+  description = "ARN of the processing Step Function state machine (deprecated - use SSM parameter)"
+  type        = string
+  default     = ""
+}
+
+variable "step_function_arn_param_name" {
+  description = "SSM parameter name containing the Step Function ARN (for runtime lookup)"
   type        = string
   default     = ""
 }
