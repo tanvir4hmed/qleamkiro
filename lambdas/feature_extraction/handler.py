@@ -151,8 +151,8 @@ def update_child_profile(child_id: str, new_baselines: Dict, readiness_score: fl
         ),
         ExpressionAttributeValues={
             ":bf": _float_to_decimal(new_baselines),
-            ":rs": Decimal(str(readiness_score)),
-            ":sc": session_count,
+            ":rs": _float_to_decimal(readiness_score),
+            ":sc": _float_to_decimal(session_count),
             ":ua": now,
         }
     )
