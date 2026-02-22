@@ -37,6 +37,8 @@ provider "aws" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
   audio_bucket_name    = "${var.project}-${var.environment}-audio-storage"
   frontend_bucket_name = "${var.project}-${var.environment}-frontend"
@@ -127,18 +129,22 @@ module "cognito" {
 }
 
 # -----------------------------------------------------------------------------
-# SSM Parameter for Step Function ARN (breaks circular dependency)
-# Lambda reads this at runtime instead of at deployment time
+# Step Functions (created before Lambda so we have the ARN)
+# Note: Lambda ARNs are passed as strings with known naming pattern
 # -----------------------------------------------------------------------------
-resource "aws_ssm_parameter" "step_function_arn" {
-  name        = "/${var.project}/${var.environment}/step-function-arn"
-  description = "ARN of the audio processing Step Function state machine"
-  type        = "String"
-  value       = "placeholder"  # Will be updated after Step Function is created
+module "step_functions" {
+  source = "../../modules/step_functions"
 
-  tags = {
-    Name = "${var.project}-${var.environment}-step-function-arn-param"
-  }
+  project                       = var.project
+  environment                   = var.environment
+  step_functions_role_arn       = module.iam.step_functions_role_arn
+  feature_extraction_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
+  cluster_engine_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
+  insight_generator_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
+  audio_bucket_name             = local.audio_bucket_name
+  log_retention_days            = var.log_retention_days
+
+  depends_on = [module.iam]
 }
 
 # -----------------------------------------------------------------------------
@@ -162,8 +168,8 @@ module "lambda" {
 
   alpha_value                  = var.alpha_value
   cluster_similarity_threshold = var.cluster_similarity_threshold
-  step_function_arn            = ""  # Not used anymore - Lambda reads from SSM
-  step_function_arn_param_name = aws_ssm_parameter.step_function_arn.name
+  step_function_arn            = module.step_functions.state_machine_arn
+  step_function_arn_param_name = ""
   use_bedrock                  = var.use_bedrock
   bedrock_model_id             = var.bedrock_model_id
   log_retention_days           = var.log_retention_days
@@ -173,37 +179,17 @@ module "lambda" {
   image_tag           = var.lambda_image_tag
   allowed_origins     = ["https://${module.frontend.cloudfront_domain_name}"]
 
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr]
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions]
 }
 
 # -----------------------------------------------------------------------------
-# Step Functions
+# SSM Parameter for Step Function ARN (kept for reference, not used by Lambda)
 # -----------------------------------------------------------------------------
-module "step_functions" {
-  source = "../../modules/step_functions"
-
-  project                       = var.project
-  environment                   = var.environment
-  step_functions_role_arn       = module.iam.step_functions_role_arn
-  feature_extraction_lambda_arn = module.lambda.feature_extraction_function_arn
-  cluster_engine_lambda_arn     = module.lambda.cluster_engine_function_arn
-  insight_generator_lambda_arn  = module.lambda.insight_generator_function_arn
-  audio_bucket_name             = local.audio_bucket_name
-  log_retention_days            = var.log_retention_days
-
-  depends_on = [module.lambda]
-}
-
-# -----------------------------------------------------------------------------
-# Update SSM Parameter with Step Function ARN after creation
-# This breaks the circular dependency - Lambda reads ARN from SSM at runtime
-# -----------------------------------------------------------------------------
-resource "aws_ssm_parameter" "update_step_function_arn" {
+resource "aws_ssm_parameter" "step_function_arn" {
   name        = "/${var.project}/${var.environment}/step-function-arn"
   description = "ARN of the audio processing Step Function state machine"
   type        = "String"
   value       = module.step_functions.state_machine_arn
-  overwrite   = true
 
   tags = {
     Name = "${var.project}-${var.environment}-step-function-arn-param"
