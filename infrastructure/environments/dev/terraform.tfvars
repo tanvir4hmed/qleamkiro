@@ -29,3 +29,8 @@ lambda_error_threshold       = 5
 lambda_duration_threshold_ms = 25000
 api_error_threshold          = 10
 sfn_failure_threshold        = 3
+
+# Domain Configuration
+additional_allowed_origins = ["https://ai.qleam.com"]
+additional_callback_urls   = ["https://ai.qleam.com/callback"]
+additional_logout_urls     = ["https://ai.qleam.com/logout"]
