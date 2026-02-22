@@ -4,19 +4,36 @@
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
-# Install system dependencies for audio processing
-# ffmpeg is needed to decode WebM audio from browser recordings
-RUN yum install -y -q libsndfile ffmpeg && \
-    yum clean all
+# Configure numba for Lambda environment
+# - Disable JIT compilation (runs in pure Python mode, avoids caching issues)
+# - Set cache directory to /tmp as fallback
+ENV NUMBA_DISABLE_JIT=1
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+RUN mkdir -p /tmp/numba_cache
+
+# Install requests for ffmpeg download script
+RUN pip install requests
+
+# Copy and run ffmpeg installation script
+COPY docker/feature_extraction/install_ffmpeg.py /tmp/install_ffmpeg.py
+RUN python3 /tmp/install_ffmpeg.py && \
+    rm -rf /tmp/ffmpeg* /tmp/install_ffmpeg.py && \
+    /usr/local/bin/ffmpeg -version
 
 # Install Python dependencies for audio processing
-# Using soundfile + soxr for audio loading (librosa still needs audioread at import time)
+# Using ffmpeg for audio loading (handles all formats), soundfile for reading ffmpeg output
+# soxr for high-quality resampling, audioread required by librosa at import time
+# scikit-learn required by librosa.effects.trim
+# numba required by librosa.filters
 RUN pip install --no-cache-dir --only-binary=:all: \
-    'numpy==1.26.4' \
-    'scipy==1.11.4' \
+    'numpy==1.24.4' \
+    'scipy==1.10.1' \
     'soundfile==0.12.1' \
     'soxr==0.3.7' \
     'audioread>=3.0.0' \
+    'scikit-learn==1.3.0' \
+    'numba==0.58.1' \
+    'llvmlite==0.41.1' \
     'joblib>=1.2.0' \
     'decorator>=5.0.0' \
     'lazy_loader>=0.1' \
@@ -26,10 +43,13 @@ RUN pip install --no-cache-dir --only-binary=:all: \
     'typer>=0.10.0' \
     'boto3==1.34.0'
 
-# Install librosa without numba dependencies
+# Install librosa 0.9.2 (fewer numba dependencies, works better in Lambda)
 RUN pip install --no-cache-dir \
-    'librosa==0.10.2.post1' \
-    --no-deps
+    'librosa==0.9.2'
+
+# Pre-compile numba functions by importing librosa during build
+# This caches the JIT-compiled functions in the image
+RUN python3 -c "import librosa; print('librosa pre-compiled successfully')"
 
 # Copy shared utilities
 COPY shared/ /var/task/shared/

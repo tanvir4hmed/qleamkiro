@@ -256,12 +256,13 @@ def upload_session(event: Dict) -> Dict:
     s3_key = f"{child_id}/{session_id}/audio.webm"  # Browser MediaRecorder outputs WebM
 
     # Generate presigned URL for direct upload
+    # Content-Type must match what frontend sends (audio/webm from MediaRecorder)
     presigned_url = s3_client.generate_presigned_url(
         "put_object",
         Params={
             "Bucket": bucket,
             "Key": s3_key,
-            "ContentType": "audio/wav",
+            "ContentType": "audio/webm",
         },
         ExpiresIn=300,  # 5 minutes
     )
