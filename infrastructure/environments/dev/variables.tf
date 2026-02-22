@@ -173,3 +173,28 @@ variable "lambda_image_tag" {
   type        = string
   default     = "latest"
 }
+
+# Domain Configuration
+variable "custom_domain" {
+  description = "Custom domain for the application (e.g., dev.ai.qleam.com)"
+  type        = string
+  default     = ""
+}
+
+variable "additional_allowed_origins" {
+  description = "Additional CORS allowed origins (e.g., ['https://dev.ai.qleam.com'])"
+  type        = list(string)
+  default     = []
+}
+
+variable "additional_callback_urls" {
+  description = "Additional Cognito callback URLs"
+  type        = list(string)
+  default     = []
+}
+
+variable "additional_logout_urls" {
+  description = "Additional Cognito logout URLs"
+  type        = list(string)
+  default     = []
+}

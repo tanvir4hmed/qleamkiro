@@ -62,13 +62,15 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 
 /* Insight Panel */
 .insight-panel { border-left: 4px solid var(--primary); padding: 16px; border-radius: 0 var(--radius) var(--radius) 0; background: var(--bg); }
-.intent-section { margin-bottom: 12px; }
-.intent-badge { display: inline-block; padding: 6px 14px; border-radius: 20px; font-size: 14px; font-weight: 600; color: white; margin-bottom: 8px; }
-.confidence-bar-container { position: relative; background: var(--border); border-radius: 4px; height: 8px; margin-bottom: 4px; }
+.intent-section { margin-bottom: 16px; }
+.intent-badge { display: inline-block; padding: 6px 14px; border-radius: 20px; font-size: 14px; font-weight: 600; color: white; margin-bottom: 10px; }
+.confidence-bar-container { display: flex; flex-direction: column; gap: 4px; }
+.confidence-bar-wrapper { background: var(--border); border-radius: 4px; height: 8px; overflow: hidden; }
 .confidence-bar { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
-.confidence-label { font-size: 12px; color: var(--text-muted); }
-.suggested-response h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.suggested-response p { font-size: 15px; line-height: 1.6; }
+.confidence-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.suggested-response { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.suggested-response h3 { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.suggested-response p { font-size: 15px; line-height: 1.6; color: var(--text); }
 
 /* Session Cards */
 .sessions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
