@@ -39,8 +39,18 @@ session_table = dynamodb.Table(SESSION_TABLE)
 
 
 def _float_to_decimal(obj: Any) -> Any:
-    if isinstance(obj, float):
+    """Convert floats to Decimal for DynamoDB. Handles numpy floats too."""
+    # Handle all numeric types (float, numpy.float32, numpy.float64, int, etc.)
+    if isinstance(obj, (int, float)):
         return Decimal(str(obj))
+    # Handle numpy numeric types without requiring numpy import
+    if hasattr(obj, 'item'):  # numpy types have an 'item' method
+        try:
+            return Decimal(str(obj.item()))
+        except (AttributeError, TypeError):
+            pass
+    if isinstance(obj, Decimal):
+        return obj
     if isinstance(obj, dict):
         return {k: _float_to_decimal(v) for k, v in obj.items()}
     if isinstance(obj, list):
