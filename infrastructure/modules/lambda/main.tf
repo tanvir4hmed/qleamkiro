@@ -47,6 +47,12 @@ resource "aws_lambda_function" "feature_extraction" {
     mode = "Active"
   }
 
+  # image_uri is managed by 2-lambda-deploy (ECR push + update-function-code).
+  # Terraform must not revert it on infra deploys or it would load placeholder images.
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
   tags = {
     Name      = "${var.project}-${var.environment}-feature-extraction"
     Component = "feature-extraction"
@@ -85,6 +91,10 @@ resource "aws_lambda_function" "cluster_engine" {
     mode = "Active"
   }
 
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
   tags = {
     Name      = "${var.project}-${var.environment}-cluster-engine"
     Component = "cluster-engine"
@@ -121,6 +131,10 @@ resource "aws_lambda_function" "reinforcement_engine" {
 
   tracing_config {
     mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
   }
 
   tags = {
@@ -164,6 +178,10 @@ resource "aws_lambda_function" "insight_generator" {
     mode = "Active"
   }
 
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
   tags = {
     Name      = "${var.project}-${var.environment}-insight-generator"
     Component = "insight-generator"
@@ -200,6 +218,10 @@ resource "aws_lambda_function" "feedback_processor" {
 
   tracing_config {
     mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
   }
 
   tags = {
@@ -240,6 +262,10 @@ resource "aws_lambda_function" "api_handler" {
 
   tracing_config {
     mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
   }
 
   tags = {

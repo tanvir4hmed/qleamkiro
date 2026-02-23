@@ -13,6 +13,7 @@ function SessionDetail() {
   const [loading, setLoading] = useState(true);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [error, setError] = useState(null);
+  const [feedbackError, setFeedbackError] = useState(null);
 
   const getAuthHeaders = async () => {
     const s = await fetchAuthSession();
@@ -29,10 +30,19 @@ function SessionDetail() {
 
   useEffect(() => {
     let pollInterval;
+    let pollCount = 0;
+    const MAX_POLLS = 20; // 20 × 3s = 60s max wait
+
     const fetchInsight = async () => {
       try {
         const data = await apiCall(`/session/${sessionId}/insight`);
         if (data.status === 'processing') {
+          pollCount += 1;
+          if (pollCount >= MAX_POLLS) {
+            setError('Analysis is taking longer than expected. Please record a new session.');
+            setLoading(false);
+            return;
+          }
           // Still processing — poll every 3 seconds
           pollInterval = setTimeout(fetchInsight, 3000);
         } else {
@@ -40,7 +50,7 @@ function SessionDetail() {
           setLoading(false);
         }
       } catch (err) {
-        setError(err.message);
+        setError('Could not load session analysis. Please go back and try again.');
         setLoading(false);
       }
     };
@@ -49,6 +59,7 @@ function SessionDetail() {
   }, [sessionId, apiCall]);
 
   const handleFeedback = async (feedbackData) => {
+    setFeedbackError(null);
     try {
       await apiCall(`/session/${sessionId}/feedback`, {
         method: 'POST',
@@ -56,7 +67,7 @@ function SessionDetail() {
       });
       setFeedbackSubmitted(true);
     } catch (err) {
-      setError(err.message);
+      setFeedbackError('Could not submit feedback. Please try again.');
     }
   };
 
@@ -124,6 +135,9 @@ function SessionDetail() {
             <section className="feedback-section">
               <h2>Did this help?</h2>
               <p>Your feedback helps Qleam learn your baby's patterns</p>
+              {feedbackError && (
+                <p className="feedback-error">{feedbackError}</p>
+              )}
               <FeedbackForm onSubmit={handleFeedback} />
             </section>
           ) : (

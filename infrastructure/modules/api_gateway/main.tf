@@ -53,6 +53,24 @@ resource "aws_api_gateway_resource" "child" {
   path_part   = "child"
 }
 
+# GET /child
+resource "aws_api_gateway_method" "get_child" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.child.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "get_child" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.child.id
+  http_method             = aws_api_gateway_method.get_child.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
 # POST /child
 resource "aws_api_gateway_method" "post_child" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
@@ -355,6 +373,34 @@ resource "aws_api_gateway_integration" "options_child_sessions" {
 }
 
 # -----------------------------------------------------------------------------
+# CORS Gateway Responses
+# Ensures CORS headers are present on API Gateway's OWN error responses
+# (e.g. 403 auth failure, 404 missing route) — not just Lambda responses.
+# Without these, OPTIONS preflight requests blocked before Lambda get no headers.
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_gateway_response" "cors_4xx" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  response_type = "DEFAULT_4XX"
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = "'*'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization'"
+    "gatewayresponse.header.Access-Control-Allow-Methods" = "'GET,POST,DELETE,OPTIONS'"
+  }
+}
+
+resource "aws_api_gateway_gateway_response" "cors_5xx" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  response_type = "DEFAULT_5XX"
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = "'*'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization'"
+    "gatewayresponse.header.Access-Control-Allow-Methods" = "'GET,POST,DELETE,OPTIONS'"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Deployment and Stage
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_deployment" "main" {
@@ -362,7 +408,11 @@ resource "aws_api_gateway_deployment" "main" {
 
   triggers = {
     redeployment = sha1(jsonencode([
+      aws_api_gateway_gateway_response.cors_4xx.id,
+      aws_api_gateway_gateway_response.cors_5xx.id,
       aws_api_gateway_resource.child.id,
+      aws_api_gateway_method.get_child.id,
+      aws_api_gateway_integration.get_child.id,
       aws_api_gateway_method.post_child.id,
       aws_api_gateway_integration.post_child.id,
       aws_api_gateway_method.options_child.id,
@@ -394,6 +444,9 @@ resource "aws_api_gateway_deployment" "main" {
   }
 
   depends_on = [
+    aws_api_gateway_gateway_response.cors_4xx,
+    aws_api_gateway_gateway_response.cors_5xx,
+    aws_api_gateway_integration.get_child,
     aws_api_gateway_integration.post_child,
     aws_api_gateway_integration.options_child,
     aws_api_gateway_integration.delete_child,

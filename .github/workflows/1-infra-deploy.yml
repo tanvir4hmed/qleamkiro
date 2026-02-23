@@ -181,46 +181,48 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Push placeholder Lambda images
+      - name: Push placeholder Lambda images (first deploy only)
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          echo "📦 Phase 2: Pushing placeholder Lambda images to ECR..."
-          
-          # List of Lambda function names (matching ECR repo names)
+          echo "📦 Phase 2: Checking which Lambda functions need placeholder images..."
+
+          # List of Lambda function names (matching ECR repo names, underscores)
           LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
-          
-          # Create a minimal placeholder image using a simple approach
-          # Pull the base image first
-          docker pull public.ecr.aws/lambda/python:3.11
-          
-          # Build and push placeholder image to each ECR repo
+
+          PUSHED_ANY=false
+
           for FUNC in $LAMBDA_FUNCTIONS; do
             REPO_NAME="qleam-dev-${FUNC}"
-            
-            echo "  → Pushing placeholder to $REPO_NAME..."
-            
-            # Create temporary directory for this function
+            # Lambda function names use hyphens, ECR repo names use underscores
+            LAMBDA_NAME="qleam-dev-${FUNC//_/-}"
+
+            # Only push placeholder if Lambda function does not exist yet
+            if aws lambda get-function --function-name "$LAMBDA_NAME" 2>/dev/null; then
+              echo "  ✅ $LAMBDA_NAME already deployed — skipping placeholder push"
+              continue
+            fi
+
+            echo "  → $LAMBDA_NAME not found, pushing placeholder to $REPO_NAME..."
+
+            # Pull base image once
+            if [ "$PUSHED_ANY" = "false" ]; then
+              docker pull public.ecr.aws/lambda/python:3.11
+              PUSHED_ANY=true
+            fi
+
             mkdir -p /tmp/placeholder_$FUNC
-            
-            # Create a simple handler file
             printf 'def lambda_handler(event, context):\n    return {"statusCode": 200, "body": "Placeholder - run lambda-deploy workflow"}\n' > /tmp/placeholder_$FUNC/handler.py
-            
-            # Create Dockerfile - minimal placeholder with no dependencies
             printf 'FROM public.ecr.aws/lambda/python:3.11\nCOPY handler.py /var/task/\nCMD ["handler.lambda_handler"]\n' > /tmp/placeholder_$FUNC/Dockerfile
-            
-            # Build placeholder image
+
             docker build -t "$ECR_REGISTRY/$REPO_NAME:latest" /tmp/placeholder_$FUNC
-            
-            # Push to ECR
             docker push "$ECR_REGISTRY/$REPO_NAME:latest"
-            
             echo "  ✅ Placeholder pushed to $REPO_NAME"
           done
-          
+
           echo ""
           echo "══════════════════════════════════════════════════════"
-          echo "✅ Placeholder images ready for Lambda creation"
+          echo "✅ Phase 2 complete"
           echo "══════════════════════════════════════════════════════"
 
       # ────────────────────────────────────────────────────────────────────────

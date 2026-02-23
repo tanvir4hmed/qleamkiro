@@ -35,11 +35,19 @@ def dynamodb_tables(aws_credentials):
     with mock_aws():
         dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
-        # ChildProfile
+        # ChildProfile (with parent_id-index GSI matching production schema)
         dynamodb.create_table(
             TableName="test-ChildProfile",
             KeySchema=[{"AttributeName": "child_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "child_id", "AttributeType": "S"}],
+            AttributeDefinitions=[
+                {"AttributeName": "child_id", "AttributeType": "S"},
+                {"AttributeName": "parent_id", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[{
+                "IndexName": "parent_id-index",
+                "KeySchema": [{"AttributeName": "parent_id", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }],
             BillingMode="PAY_PER_REQUEST",
         )
 
