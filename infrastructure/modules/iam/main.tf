@@ -115,6 +115,30 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   policy_arn = aws_iam_policy.lambda_dynamodb.arn
 }
 
+# Lambda invoke permission (api_handler → feedback_processor, feedback_processor → reinforcement_engine)
+resource "aws_iam_policy" "lambda_invoke" {
+  name        = "${var.project}-${var.environment}-lambda-invoke-policy"
+  description = "Allow Lambda functions to invoke other Qleam Lambda functions"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = "arn:aws:lambda:${local.region}:${local.account_id}:function:${var.project}-${var.environment}-*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_invoke" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.lambda_invoke.arn
+}
+
 # Lambda Step Functions (to start executions from API trigger)
 resource "aws_iam_policy" "lambda_stepfunctions" {
   name        = "${var.project}-${var.environment}-lambda-sfn-policy"
