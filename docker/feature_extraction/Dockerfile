@@ -11,10 +11,10 @@ ENV NUMBA_DISABLE_JIT=1
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 RUN mkdir -p /tmp/numba_cache
 
-# Install ffmpeg using yum (Amazon Linux 2023 based image)
+# Install ffmpeg using yum (Amazon Linux 2 based image)
 # This is more reliable than downloading from external sources
-RUN dnf install -y ffmpeg && \
-    dnf clean all && \
+RUN yum install -y ffmpeg && \
+    yum clean all && \
     ffmpeg -version
 
 # Install Python dependencies for audio processing
