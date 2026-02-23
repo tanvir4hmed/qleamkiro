@@ -30,15 +30,28 @@ function Dashboard({ user }) {
     return res.json();
   }, []);
 
-  // Load children from localStorage (MVP: single child stored locally)
+  // Load children from API (server is source of truth, localStorage is fast-load cache)
   useEffect(() => {
-    const stored = localStorage.getItem('qleam_children');
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      setChildren(parsed);
-      if (parsed.length > 0) setSelectedChild(parsed[0]);
+    // Show cached data immediately while fetching
+    const cached = localStorage.getItem('qleam_children');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        setChildren(parsed);
+        if (parsed.length > 0) setSelectedChild(parsed[0]);
+      } catch (_) {}
     }
-  }, []);
+
+    // Always fetch fresh from server
+    apiCall('/child')
+      .then(data => {
+        const fetched = data.children || [];
+        setChildren(fetched);
+        localStorage.setItem('qleam_children', JSON.stringify(fetched));
+        if (fetched.length > 0) setSelectedChild(prev => prev || fetched[0]);
+      })
+      .catch(err => setError(err.message));
+  }, [apiCall]);
 
   // Load sessions when child selected
   useEffect(() => {
@@ -64,7 +77,7 @@ function Dashboard({ user }) {
       const newChild = { child_id: data.child_id, name: newChildName.trim() };
       const updated = [...children, newChild];
       setChildren(updated);
-      localStorage.setItem('qleam_children', JSON.stringify(updated));
+      localStorage.setItem('qleam_children', JSON.stringify(updated)); // keep cache in sync
       setSelectedChild(newChild);
       setNewChildName('');
       setShowAddChild(false);

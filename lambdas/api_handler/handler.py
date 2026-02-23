@@ -201,6 +201,31 @@ def get_user_id(event: Dict) -> str:
 
 
 # =============================================================================
+# GET /child — List all children for the authenticated parent
+# =============================================================================
+def list_children(event: Dict) -> Dict:
+    user_id = get_user_id(event)
+
+    result = child_profile_table.query(
+        IndexName="parent_id-index",
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("parent_id").eq(user_id),
+    )
+
+    children = [
+        {
+            "child_id": item["child_id"],
+            "name": item.get("name", ""),
+            "language_maturity_level": item.get("language_maturity_level", "pre-linguistic"),
+            "session_count": _decimal_to_float(item.get("session_count", 0)),
+            "created_at": item.get("created_at"),
+        }
+        for item in result.get("Items", [])
+    ]
+
+    return response(200, {"children": children, "count": len(children)}, event)
+
+
+# =============================================================================
 # POST /child — Create child profile
 # =============================================================================
 def create_child(event: Dict) -> Dict:
@@ -464,6 +489,7 @@ def submit_feedback(event: Dict) -> Dict:
 # Router
 # =============================================================================
 ROUTES = {
+    ("GET", "/child"): list_children,
     ("POST", "/child"): create_child,
     ("DELETE", "/child/{child_id}"): delete_child,
     ("GET", "/child/{child_id}/sessions"): list_sessions,

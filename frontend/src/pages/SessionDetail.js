@@ -13,6 +13,7 @@ function SessionDetail() {
   const [loading, setLoading] = useState(true);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [error, setError] = useState(null);
+  const [feedbackError, setFeedbackError] = useState(null);
 
   const getAuthHeaders = async () => {
     const s = await fetchAuthSession();
@@ -49,6 +50,7 @@ function SessionDetail() {
   }, [sessionId, apiCall]);
 
   const handleFeedback = async (feedbackData) => {
+    setFeedbackError(null);
     try {
       await apiCall(`/session/${sessionId}/feedback`, {
         method: 'POST',
@@ -56,7 +58,7 @@ function SessionDetail() {
       });
       setFeedbackSubmitted(true);
     } catch (err) {
-      setError(err.message);
+      setFeedbackError('Could not submit feedback. Please try again.');
     }
   };
 
@@ -124,6 +126,9 @@ function SessionDetail() {
             <section className="feedback-section">
               <h2>Did this help?</h2>
               <p>Your feedback helps Qleam learn your baby's patterns</p>
+              {feedbackError && (
+                <p className="feedback-error">{feedbackError}</p>
+              )}
               <FeedbackForm onSubmit={handleFeedback} />
             </section>
           ) : (

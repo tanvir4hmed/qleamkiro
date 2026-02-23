@@ -16,6 +16,17 @@ resource "aws_dynamodb_table" "child_profile" {
     type = "S"
   }
 
+  attribute {
+    name = "parent_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "parent_id-index"
+    hash_key        = "parent_id"
+    projection_type = "ALL"
+  }
+
   point_in_time_recovery {
     enabled = var.enable_pitr
   }
