@@ -11,14 +11,11 @@ ENV NUMBA_DISABLE_JIT=1
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 RUN mkdir -p /tmp/numba_cache
 
-# Install requests for ffmpeg download script
-RUN pip install requests
-
-# Copy and run ffmpeg installation script
-COPY docker/feature_extraction/install_ffmpeg.py /tmp/install_ffmpeg.py
-RUN python3 /tmp/install_ffmpeg.py && \
-    rm -rf /tmp/ffmpeg* /tmp/install_ffmpeg.py && \
-    /usr/local/bin/ffmpeg -version
+# Install ffmpeg using yum (Amazon Linux 2023 based image)
+# This is more reliable than downloading from external sources
+RUN dnf install -y ffmpeg && \
+    dnf clean all && \
+    ffmpeg -version
 
 # Install Python dependencies for audio processing
 # Using ffmpeg for audio loading (handles all formats), soundfile for reading ffmpeg output
