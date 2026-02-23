@@ -135,11 +135,11 @@ def attach_to_cluster(cluster_id: str, embedding_vector: List[float], session_id
             "embedding_vector = :ev, "
             "last_updated = :lu"
         ),
-        ExpressionAttributeValues={
+        ExpressionAttributeValues=_float_to_decimal({
             ":fc": new_count,
-            ":ev": _float_to_decimal(new_centroid),
+            ":ev": new_centroid,
             ":lu": now,
-        }
+        })
     )
     
     logger.info(f"Attached session {session_id} to cluster {cluster_id} (count: {new_count})")
