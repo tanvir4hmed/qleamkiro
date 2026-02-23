@@ -15,7 +15,9 @@ function ConfidenceBar({ confidence }) {
   const color = pct >= 60 ? '#4ECDC4' : pct >= 30 ? '#FFE66D' : '#C7C7C7';
   return (
     <div className="confidence-bar-container">
-      <div className="confidence-bar" style={{ width: `${pct}%`, backgroundColor: color }} />
+      <div className="confidence-bar-wrapper">
+        <div className="confidence-bar" style={{ width: `${pct}%`, backgroundColor: color }} />
+      </div>
       <span className="confidence-label">{pct}% confidence</span>
     </div>
   );

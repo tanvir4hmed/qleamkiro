@@ -42,6 +42,24 @@ data "aws_caller_identity" "current" {}
 locals {
   audio_bucket_name    = "${var.project}-${var.environment}-audio-storage"
   frontend_bucket_name = "${var.project}-${var.environment}-frontend"
+  
+  # Build allowed origins list
+  allowed_origins = concat(
+    ["https://${module.frontend.cloudfront_domain_name}"],
+    var.additional_allowed_origins
+  )
+  
+  # Build callback URLs for Cognito
+  callback_urls = concat(
+    ["https://${module.frontend.cloudfront_domain_name}/callback"],
+    var.additional_callback_urls
+  )
+  
+  # Build logout URLs for Cognito
+  logout_urls = concat(
+    ["https://${module.frontend.cloudfront_domain_name}/logout"],
+    var.additional_logout_urls
+  )
 }
 
 # -----------------------------------------------------------------------------
@@ -89,7 +107,7 @@ module "s3" {
   environment          = var.environment
   bucket_name          = local.audio_bucket_name
   audio_retention_days = var.audio_retention_days
-  allowed_origins      = ["https://${module.frontend.cloudfront_domain_name}"]
+  allowed_origins      = local.allowed_origins
 }
 
 # -----------------------------------------------------------------------------
@@ -123,8 +141,8 @@ module "cognito" {
   project               = var.project
   environment           = var.environment
   enable_mfa            = var.enable_mfa
-  callback_urls         = ["https://${module.frontend.cloudfront_domain_name}/callback"]
-  logout_urls           = ["https://${module.frontend.cloudfront_domain_name}/logout"]
+  callback_urls         = local.callback_urls
+  logout_urls           = local.logout_urls
   cognito_auth_role_arn = module.iam.lambda_execution_role_arn
 }
 
@@ -177,7 +195,7 @@ module "lambda" {
   # ECR configuration
   ecr_repository_urls = module.ecr.repository_urls
   image_tag           = var.lambda_image_tag
-  allowed_origins     = ["https://${module.frontend.cloudfront_domain_name}"]
+  allowed_origins     = local.allowed_origins
 
   depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions]
 }

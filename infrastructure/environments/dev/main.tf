@@ -39,9 +39,46 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
+# Data source to check if ACM certificate exists
+# This makes the custom domain truly optional - if certificate doesn't exist, use default CloudFront domain
+data "aws_acm_certificate" "custom" {
+  count    = var.custom_domain != "" ? 1 : 0
+  domain   = var.custom_domain
+  statuses = ["ISSUED"]
+  provider = aws
+}
+
 locals {
+  # Determine if we should use custom domain (only if certificate exists)
+  use_custom_domain     = var.custom_domain != "" && var.acm_certificate_arn != ""
+  effective_certificate = local.use_custom_domain ? var.acm_certificate_arn : ""
+  
   audio_bucket_name    = "${var.project}-${var.environment}-audio-storage"
   frontend_bucket_name = "${var.project}-${var.environment}-frontend"
+  
+  # Determine the primary domain for allowed origins
+  primary_domain = var.custom_domain != "" ? var.custom_domain : module.frontend.cloudfront_domain_name
+  
+  # Build allowed origins list - include both CloudFront domain and custom domain if configured
+  allowed_origins = concat(
+    ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"],
+    var.custom_domain != "" ? ["https://${var.custom_domain}"] : [],
+    var.additional_allowed_origins
+  )
+  
+  # Build callback URLs for Cognito
+  callback_urls = concat(
+    ["https://${module.frontend.cloudfront_domain_name}/callback", "http://localhost:3000/callback"],
+    var.custom_domain != "" ? ["https://${var.custom_domain}/callback"] : [],
+    var.additional_callback_urls
+  )
+  
+  # Build logout URLs for Cognito
+  logout_urls = concat(
+    ["https://${module.frontend.cloudfront_domain_name}/logout", "http://localhost:3000/logout"],
+    var.custom_domain != "" ? ["https://${var.custom_domain}/logout"] : [],
+    var.additional_logout_urls
+  )
 }
 
 # -----------------------------------------------------------------------------
@@ -89,7 +126,7 @@ module "s3" {
   environment          = var.environment
   bucket_name          = local.audio_bucket_name
   audio_retention_days = var.audio_retention_days
-  allowed_origins      = ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"]
+  allowed_origins      = local.allowed_origins
 }
 
 # -----------------------------------------------------------------------------
@@ -112,8 +149,8 @@ module "cognito" {
   project               = var.project
   environment           = var.environment
   enable_mfa            = var.enable_mfa
-  callback_urls         = ["https://${module.frontend.cloudfront_domain_name}/callback", "http://localhost:3000/callback"]
-  logout_urls           = ["https://${module.frontend.cloudfront_domain_name}/logout", "http://localhost:3000/logout"]
+  callback_urls         = local.callback_urls
+  logout_urls           = local.logout_urls
   cognito_auth_role_arn = module.iam.lambda_execution_role_arn
 }
 
@@ -126,6 +163,8 @@ module "frontend" {
   project              = var.project
   environment          = var.environment
   frontend_bucket_name = local.frontend_bucket_name
+  custom_domain        = var.custom_domain
+  acm_certificate_arn  = var.acm_certificate_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -177,7 +216,7 @@ module "lambda" {
   # ECR configuration
   ecr_repository_urls = module.ecr.repository_urls
   image_tag           = var.lambda_image_tag
-  allowed_origins     = ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"]
+  allowed_origins     = local.allowed_origins
 
   depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions]
 }
