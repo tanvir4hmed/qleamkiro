@@ -2,6 +2,23 @@
 # Feature Extraction Lambda - Docker Image
 # Includes librosa, scipy, numpy for audio feature extraction
 # =============================================================================
+
+# Stage 1: Download ffmpeg using a full image with curl
+FROM alpine:3.19 AS ffmpeg-downloader
+
+# Install curl for downloading
+RUN apk add --no-cache curl xz
+
+# Download ffmpeg static build with retry
+RUN curl -L --retry 5 --retry-delay 3 --max-time 300 \
+    -o /tmp/ffmpeg.tar.xz \
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" && \
+    cd /tmp && \
+    tar -xf ffmpeg.tar.xz && \
+    mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /tmp/ffmpeg && \
+    mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /tmp/ffprobe
+
+# Stage 2: Main Lambda image
 FROM public.ecr.aws/lambda/python:3.11
 
 # Configure numba for Lambda environment
@@ -11,10 +28,10 @@ ENV NUMBA_DISABLE_JIT=1
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 RUN mkdir -p /tmp/numba_cache
 
-# Install ffmpeg using yum (Amazon Linux 2 based image)
-# This is more reliable than downloading from external sources
-RUN yum install -y ffmpeg && \
-    yum clean all && \
+# Copy ffmpeg from the downloader stage
+COPY --from=ffmpeg-downloader /tmp/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg-downloader /tmp/ffprobe /usr/local/bin/ffprobe
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
     ffmpeg -version
 
 # Install Python dependencies for audio processing
