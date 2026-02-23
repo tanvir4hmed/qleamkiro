@@ -1,26 +1,20 @@
 # =============================================================================
 # Feature Extraction Lambda - Docker Image
-# Uses Amazon Linux 2023 (has native ffmpeg and newer glibc)
 # Includes librosa, scipy, numpy for audio feature extraction
 # =============================================================================
 FROM public.ecr.aws/lambda/python:3.11
 
-# Install ffmpeg from EPEL repo
-# Amazon Linux 2 requires EPEL for ffmpeg
-RUN curl -L --retry 5 --retry-delay 2 -o /tmp/epel.rpm \
-    "https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm" && \
-    yum install -y /tmp/epel.rpm && \
-    yum install -y ffmpeg && \
-    yum clean all && \
-    rm -f /tmp/epel.rpm && \
-    ffmpeg -version
-
 # Configure numba for Lambda environment
-# - Disable JIT compilation (runs in pure Python mode, avoids caching issues)
-# - Set cache directory to /tmp as fallback
 ENV NUMBA_DISABLE_JIT=1
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 RUN mkdir -p /tmp/numba_cache
+
+# Install imageio-ffmpeg which bundles a compatible ffmpeg binary
+# This is the most reliable way to get ffmpeg in Lambda
+RUN pip install --no-cache-dir imageio-ffmpeg && \
+    python3 -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" && \
+    ln -s $(python3 -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())") /usr/local/bin/ffmpeg && \
+    ffmpeg -version
 
 # Install Python dependencies for audio processing
 RUN pip install --no-cache-dir --only-binary=:all: \
@@ -41,11 +35,10 @@ RUN pip install --no-cache-dir --only-binary=:all: \
     'typer>=0.10.0' \
     'boto3==1.34.0'
 
-# Install librosa 0.9.2 (fewer numba dependencies, works better in Lambda)
-RUN pip install --no-cache-dir \
-    'librosa==0.9.2'
+# Install librosa 0.9.2
+RUN pip install --no-cache-dir 'librosa==0.9.2'
 
-# Pre-compile numba functions by importing librosa during build
+# Pre-compile numba functions
 RUN python3 -c "import librosa; print('librosa pre-compiled successfully')"
 
 # Copy shared utilities
