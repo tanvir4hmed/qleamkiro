@@ -443,7 +443,7 @@ def get_insight(event: Dict) -> Dict:
 
     insight = session.get("insight")
     if not insight:
-        return response(404, {"error": "Insight not yet generated"}, event)
+        return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
 
     return response(200, {
         "session_id": session_id,

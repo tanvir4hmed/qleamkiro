@@ -30,10 +30,19 @@ function SessionDetail() {
 
   useEffect(() => {
     let pollInterval;
+    let pollCount = 0;
+    const MAX_POLLS = 20; // 20 × 3s = 60s max wait
+
     const fetchInsight = async () => {
       try {
         const data = await apiCall(`/session/${sessionId}/insight`);
         if (data.status === 'processing') {
+          pollCount += 1;
+          if (pollCount >= MAX_POLLS) {
+            setError('Analysis is taking longer than expected. Please record a new session.');
+            setLoading(false);
+            return;
+          }
           // Still processing — poll every 3 seconds
           pollInterval = setTimeout(fetchInsight, 3000);
         } else {
@@ -41,7 +50,7 @@ function SessionDetail() {
           setLoading(false);
         }
       } catch (err) {
-        setError(err.message);
+        setError('Could not load session analysis. Please go back and try again.');
         setLoading(false);
       }
     };
