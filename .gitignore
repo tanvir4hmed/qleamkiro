@@ -3,6 +3,9 @@
 # Covers: Python, Node.js, Terraform, build artifacts, secrets, OS/IDE files
 # =============================================================================
 
+# ── Design / Planning docs (local only) ──────────────────────────────────────
+AIdeas/
+
 # ── Python ────────────────────────────────────────────────────────────────────
 # Virtual environments
 .venv/
@@ -108,6 +111,16 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ── Planning / Design documents ──────────────────────────────────────────────
+# Word docs used for ideation/design; not part of the codebase
+AIdeas/
+
+# ── Planning / Design documents ───────────────────────────────────────────────
+AIdeas/
+
+# ── Planning / idea documents ─────────────────────────────────────────────────
+AIdeas/
 
 # ── Misc build / temp ─────────────────────────────────────────────────────────
 .cache/
