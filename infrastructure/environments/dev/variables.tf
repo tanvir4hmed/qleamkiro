@@ -188,7 +188,7 @@ variable "acm_certificate_arn" {
 }
 
 variable "additional_allowed_origins" {
-  description = "Additional CORS allowed origins (e.g., ['https://dev.ai.qleam.com'])"
+  description = "Additional CORS allowed origins"
   type        = list(string)
   default     = []
 }
