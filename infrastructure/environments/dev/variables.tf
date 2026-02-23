@@ -72,13 +72,13 @@ variable "cluster_similarity_threshold" {
 variable "use_bedrock" {
   description = "Use Amazon Bedrock for insights"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "bedrock_model_id" {
   description = "Bedrock model ID"
   type        = string
-  default     = "anthropic.claude-3-haiku-20240307-v1:0"
+  default     = "anthropic.claude-3-5-haiku-20241022-v1:0"
 }
 
 variable "log_retention_days" {

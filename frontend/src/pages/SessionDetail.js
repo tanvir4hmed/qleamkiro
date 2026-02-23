@@ -111,10 +111,7 @@ function SessionDetail() {
 
           {/* Insight Panel */}
           <section className="insight-section">
-            <InsightPanel insight={{
-              probable_intent: insight.probable_intent,
-              suggested_response: insight.suggested_response,
-            }} />
+            <InsightPanel insight={insight} />
           </section>
 
           {/* Semantic Alignment */}
