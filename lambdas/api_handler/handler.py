@@ -133,10 +133,13 @@ def _float_to_decimal(obj: Any) -> Any:
 
 
 def get_allowed_origin(event: Dict) -> str:
-    """Get the allowed origin from request headers if trusted, otherwise return '*'."""
-    if not ALLOWED_ORIGINS:
-        return "*"  # If no allowed origins configured, allow all (backward compatibility)
+    """Get the allowed origin from request headers if trusted.
     
+    Returns the specific origin if it's in the allowed list, otherwise returns
+    the first allowed origin as fallback. This is required because when
+    Access-Control-Allow-Credentials is true, Access-Control-Allow-Origin
+    cannot be '*' - it must be a specific origin.
+    """
     # Check both Origin and origin header keys (API Gateway can use either)
     headers = event.get("headers", {})
     origin = headers.get("Origin") or headers.get("origin") or ""
@@ -149,17 +152,29 @@ def get_allowed_origin(event: Dict) -> str:
     # Normalize origin for comparison (remove trailing slash)
     origin = origin.rstrip("/")
     
+    # Log for debugging
+    logger.debug(f"Request origin: {origin}, Allowed origins: {ALLOWED_ORIGINS}")
+    
     # Check if origin matches any allowed origin (with or without trailing slash)
     for allowed in ALLOWED_ORIGINS:
         if origin == allowed.rstrip("/"):
+            logger.debug(f"Origin {origin} matched allowed origin {allowed}")
             return origin
     
     # For development: allow localhost origins
     if "localhost" in origin or "127.0.0.1" in origin:
+        logger.debug(f"Allowing localhost origin: {origin}")
         return origin
     
-    # Return '*' as fallback for untrusted origins
-    return "*"
+    # If no match but we have allowed origins configured, return the first one
+    # This handles cases where the origin header might be missing or different
+    if ALLOWED_ORIGINS:
+        logger.warning(f"Origin {origin} not in allowed list, using first allowed: {ALLOWED_ORIGINS[0]}")
+        return ALLOWED_ORIGINS[0].rstrip("/")
+    
+    # Last resort fallback (should not happen in production)
+    logger.warning("No allowed origins configured, returning request origin")
+    return origin if origin else "*"
 
 
 def response(status_code: int, body: Any, event: Optional[Dict] = None) -> Dict:
@@ -170,6 +185,7 @@ def response(status_code: int, body: Any, event: Optional[Dict] = None) -> Dict:
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Headers": "Content-Type,Authorization",
         "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+        "Access-Control-Allow-Credentials": "true",
     }
     return {
         "statusCode": status_code,
