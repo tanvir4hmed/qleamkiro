@@ -100,12 +100,18 @@ jobs:
           REACT_APP_COGNITO_CLIENT_ID: ${{ steps.terraform-outputs.outputs.cognito_client_id }}
           REACT_APP_API_URL: ${{ steps.terraform-outputs.outputs.api_endpoint }}
 
-      - name: Upload frontend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-build
-          path: frontend/build/
-          retention-days: 7
+      - name: Upload frontend build to S3
+        run: |
+          echo "📤 Uploading frontend build to S3..."
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          S3_PATH="s3://${{ env.TF_STATE_BUCKET }}/frontend-builds/${TIMESTAMP}"
+          aws s3 sync frontend/build/ "$S3_PATH/"
+          echo "build_s3_path=$S3_PATH" >> $GITHUB_OUTPUT
+          echo ""
+          echo "══════════════════════════════════════════════════════"
+          echo "✅ Frontend build uploaded to: $S3_PATH"
+          echo "══════════════════════════════════════════════════════"
+        id: upload-build
 
   # ===========================================================================
   # Job 2: Deploy Frontend to S3
@@ -116,20 +122,27 @@ jobs:
     needs: build
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download frontend artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-build
-          path: frontend/build/
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download latest frontend build from S3
+        run: |
+          echo "📥 Downloading latest frontend build from S3..."
+          # Get the latest build folder
+          LATEST_BUILD=$(aws s3 ls s3://${{ env.TF_STATE_BUCKET }}/frontend-builds/ | sort -r | head -1 | awk '{print $2}' | tr -d '/')
+          if [ -z "$LATEST_BUILD" ]; then
+            echo "❌ Error: No frontend build found in S3"
+            exit 1
+          fi
+          S3_PATH="s3://${{ env.TF_STATE_BUCKET }}/frontend-builds/${LATEST_BUILD}/"
+          echo "   Latest build: $LATEST_BUILD"
+          mkdir -p frontend/build
+          aws s3 sync "$S3_PATH" frontend/build/
+          echo "✅ Frontend build downloaded successfully"
 
       - name: Deploy frontend to S3 (DEV)
         run: |
