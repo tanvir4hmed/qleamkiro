@@ -123,12 +123,16 @@ jobs:
           echo "  'apply' job in GitHub Actions to deploy."
           echo "══════════════════════════════════════════════════════"
 
-      - name: Upload plan output
-        uses: actions/upload-artifact@v4
-        with:
-          name: tf-plan-output
-          path: infrastructure/environments/dev/plan_output.txt
-          retention-days: 1
+      - name: Upload plan output to S3
+        run: |
+          echo "📤 Uploading Terraform plan to S3..."
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          S3_PATH="s3://${{ env.TF_STATE_BUCKET }}/dev-plans/${TIMESTAMP}-plan_output.txt"
+          aws s3 cp infrastructure/environments/dev/plan_output.txt "$S3_PATH"
+          echo ""
+          echo "══════════════════════════════════════════════════════"
+          echo "✅ Plan uploaded to: $S3_PATH"
+          echo "══════════════════════════════════════════════════════"
 
   # ============================================================
   # Terraform Apply — requires manual approval via
