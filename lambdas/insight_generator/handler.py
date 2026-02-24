@@ -327,7 +327,7 @@ def describe_features_in_words(feature_scores: Dict[str, float], deviation_level
 
 
 # =============================================================================
-# Hybrid Intent Determination: 70% acoustic + 30% feedback history
+# [Phase 4] Three-Source Evidence Model — replaces 70/30 two-source model
 # =============================================================================
 
 def determine_cluster_stability(cluster: Dict) -> str:
@@ -340,69 +340,6 @@ def determine_cluster_stability(cluster: Dict) -> str:
         return "emerging"
     else:
         return "forming"
-
-
-def determine_probable_intent(cluster: Dict, feature_scores: Dict) -> Dict:
-    """
-    Hybrid intent determination: 70% acoustic features + 30% feedback history.
-
-    The acoustic signal is the primary truth source — it's derived directly from
-    the audio recording and is immune to incorrect parent feedback.
-    Parent feedback (via reinforcement_engine) fine-tunes over many sessions
-    but contributes only 30% so a wrong single feedback doesn't mislead results.
-    """
-    ACOUSTIC_WEIGHT = 0.70
-    FEEDBACK_WEIGHT = 0.30
-
-    # Primary: acoustic classification from this session's audio
-    acoustic_intents = classify_intent_from_features(feature_scores)
-
-    # Secondary: learned intent distribution from parent feedback history
-    feedback_intents = cluster.get("probable_intents", {})
-
-    # Blend both distributions
-    all_keys = set(acoustic_intents.keys()) | set(feedback_intents.keys())
-    blended = {}
-    for key in all_keys:
-        a = acoustic_intents.get(key, 0.0)
-        f = feedback_intents.get(key, 0.0)
-        blended[key] = ACOUSTIC_WEIGHT * a + FEEDBACK_WEIGHT * f
-
-    blended = normalize_probability_distribution(blended)
-
-    best_key = max(blended, key=blended.get)
-    best_weight = blended[best_key]
-
-    # Confidence grows with pattern history and semantic alignment
-    frequency_count = cluster.get("frequency_count", 1)
-    reinforcement_weight = cluster.get("reinforcement_weight", 0.5)
-    semantic_alignment = cluster.get("semantic_alignment_score", 0.0)
-
-    frequency_factor = min(frequency_count / 10.0, 1.0)
-    semantic_factor = 1.0 + (semantic_alignment * 0.2)
-
-    # Confidence: acoustic signal strength x history factor
-    confidence = best_weight * (0.55 + reinforcement_weight * 0.25 * frequency_factor) * semantic_factor
-    confidence = min(confidence, 0.92)  # Never claim certainty
-
-    label = INTENT_LABELS.get(best_key, best_key.replace("_", " ").title())
-
-    # Top 3 intents for transparency
-    top_intents = sorted(blended.items(), key=lambda x: -x[1])[:3]
-
-    return {
-        "label": label,
-        "key": best_key,
-        "confidence": round(confidence, 3),
-        "top_intents": [
-            {
-                "key": k,
-                "label": INTENT_LABELS.get(k, k.replace("_", " ").title()),
-                "weight": round(v, 3),
-            }
-            for k, v in top_intents
-        ],
-    }
 
 
 # =============================================================================
@@ -444,6 +381,8 @@ def generate_insight_with_bedrock(
     probable_intent: Dict,
     feature_narrative: Dict,
     semantic_bridge: Optional[Dict],
+    developmental_stage: str = "UNKNOWN",
+    session_context: Optional[Dict] = None,
 ) -> Dict:
     """
     Generate structured 3-section parent insight using Amazon Bedrock Claude.
@@ -470,6 +409,22 @@ def generate_insight_with_bedrock(
                 f"near this pattern {semantic_bridge.get('co_occurrence_count', 1)} time(s)"
             )
 
+        # Context note for Bedrock
+        ctx_notes = []
+        if session_context:
+            fma = session_context.get("feeding_minutes_ago")
+            if isinstance(fma, (int, float)):
+                ctx_notes.append(f"last feeding approximately {int(fma)} minutes ago")
+            health = session_context.get("health_state", "")
+            if health and health not in ("unknown", ""):
+                ctx_notes.append(f"health state: {health}")
+        context_note = (
+            "\nSESSION CONTEXT:\n- " + "\n- ".join(ctx_notes)
+            if ctx_notes else ""
+        )
+
+        stage_label = developmental_stage.replace("_", " ").title()
+
         prompt = f"""You are Qleam, a supportive baby communication assistant helping parents understand their infant's sounds.
 
 AUDIO ANALYSIS FROM THIS SESSION:
@@ -479,10 +434,12 @@ AUDIO ANALYSIS FROM THIS SESSION:
 - Continuity: {feature_narrative['continuity']}
 - Compared to baby's usual: {feature_narrative['vs_baseline']}
 
+BABY'S DEVELOPMENTAL STAGE: {stage_label}{context_note}
+
 PATTERN HISTORY:
 - This sound pattern has been recorded {cluster_count} time(s) for this baby
 - Pattern maturity: {stability} (forming -> emerging -> stable)
-- Primary acoustic signal: {intent_label} ({confidence_pct}% confidence){word_note}
+- Primary signal: {intent_label} ({confidence_pct}% confidence){word_note}
 
 Alternative possibilities:
 {alt_text}
@@ -541,24 +498,43 @@ def build_insight(
     cluster: Dict,
     semantic_bridge: Optional[Dict],
 ) -> Dict:
-    """Build the enhanced structured insight output."""
+    """Build the enhanced structured insight output (Phase 4 — Three-Source Evidence Model)."""
 
-    feature_scores = session.get("feature_scores", {})
+    feature_scores  = session.get("feature_scores", {})
     deviation_level = session.get("deviation_level", "none")
     deviation_score = session.get("deviation_score", 0.0)
+
+    # Phase 3 data stored in session by feature_extraction Lambda
+    rich_features     = session.get("rich_features") or {}
+    session_context   = session.get("session_context") or {}
+
+    # Developmental stage: prefer session-level (recorded at analysis time), fall back to profile
+    developmental_stage = (
+        session.get("developmental_stage")
+        or profile.get("developmental_stage")
+        or "UNKNOWN"
+    )
 
     # 1. Feature narrative — always computed from audio data, no feedback involved
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
 
-    # 2. Hybrid intent: 70% acoustic signal + 30% feedback history
-    probable_intent = determine_probable_intent(cluster, feature_scores)
+    # 2. [Phase 4] Three-source evidence model: 60% acoustic + 15% research + 25% feedback
+    probable_intent = determine_probable_intent_v2(
+        cluster=cluster,
+        feature_scores=feature_scores,
+        rich_features=rich_features,
+        developmental_stage=developmental_stage,
+        session_context=session_context,
+    )
     cluster_stability = determine_cluster_stability(cluster)
 
     # 3. Generate insight sections (Bedrock or rule-based)
     use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
     if use_bedrock:
         insight_sections = generate_insight_with_bedrock(
-            cluster, probable_intent, feature_narrative, semantic_bridge
+            cluster, probable_intent, feature_narrative, semantic_bridge,
+            developmental_stage=developmental_stage,
+            session_context=session_context,
         )
     else:
         insight_sections = get_rule_based_sections(probable_intent["key"])
