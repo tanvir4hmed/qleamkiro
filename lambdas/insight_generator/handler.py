@@ -2,12 +2,12 @@
 Qleam — Insight Generator Lambda
 Translates system state into structured, non-diagnostic parent guidance.
 
-Enhancement v2:
-- Acoustic-first intent classification (70% audio signal, 30% feedback history)
-  → Parent feedback fine-tunes over time but cannot override the audio data
-- Structured Bedrock insight with 3 clear sections parents can act on
-- Feature narrative: translate scores into plain-English audio descriptions
-- Top-3 intent transparency for parent awareness
+Phase 4 — Three-Source Evidence Model:
+- 60% Acoustic signal    — real-time audio features (summary + Phase 3 rich features)
+- 15% Research priors    — developmental stage norms + session context (feeding, health)
+- 25% Feedback history   — parent reinforcement over time
+  → Acoustic is ground truth; feedback personalises without dominating early sessions.
+- Insight now includes evidence breakdown for transparency.
 
 Trigger: Step Function third state
 Input:  { child_id, session_id, cluster_id }
@@ -39,6 +39,7 @@ from constants import (
     USE_BEDROCK,
 )
 from normalization import normalize_probability_distribution
+from evidence_model import determine_probable_intent_v2
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))

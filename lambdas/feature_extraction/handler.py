@@ -3,8 +3,8 @@ Qleam — Feature Extraction Lambda
 Extracts acoustic features from uploaded audio and updates child baseline.
 
 Trigger: Step Function first state (after S3 upload)
-Input:  { child_id, session_id, s3_audio_path }
-Output: { status, session_id, feature_scores, embedding_vector, deviation }
+Input:  { child_id, session_id, s3_audio_path, session_context? }
+Output: { status, session_id, feature_scores, rich_features, embedding_vector, deviation }
 """
 import json
 import logging
@@ -42,6 +42,13 @@ from audio_utils import (
     download_audio_from_s3,
     extract_all_features,
 )
+
+# Phase 2 imports
+from diarization import diarize
+from speaker_identity import determine_routing, verify_enrolled_baby
+
+# Phase 3 imports
+from rich_features import extract_rich_features
 
 # Configure logging
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -143,25 +150,67 @@ def get_or_create_child_profile(child_id: str) -> Dict:
     return new_profile
 
 
-def update_child_profile(child_id: str, new_baselines: Dict, readiness_score: float, session_count: int):
-    """Update child profile with new baselines and readiness score."""
+def update_child_profile(
+    child_id: str,
+    new_baselines: Dict,
+    readiness_score: float,
+    session_count: int,
+    developmental_stage: str = "UNKNOWN",
+    developmental_mode: str = "PRE_LINGUISTIC",
+):
+    """Update child profile with new baselines, readiness, and current developmental stage."""
     now = datetime.now(timezone.utc).isoformat()
-    
+
     child_profile_table.update_item(
         Key={"child_id": child_id},
         UpdateExpression=(
             "SET baseline_features = :bf, "
             "readiness_score = :rs, "
             "session_count = :sc, "
+            "developmental_stage = :ds, "
+            "developmental_mode = :dm, "
             "updated_at = :ua"
         ),
         ExpressionAttributeValues={
             ":bf": _float_to_decimal(new_baselines),
             ":rs": _float_to_decimal(readiness_score),
             ":sc": _float_to_decimal(session_count),
+            ":ds": developmental_stage,
+            ":dm": developmental_mode,
             ":ua": now,
-        }
+        },
     )
+
+
+def load_historical_embeddings(
+    child_id: str,
+    current_session_id: str,
+    limit: int = 10,
+) -> list:
+    """
+    Load embedding vectors from the most recent sessions for this child.
+    Excludes the current session (which has no embedding yet when this runs).
+
+    Returns:
+        List of embedding vectors (each a List[float])
+    """
+    response = session_table.query(
+        IndexName="child_id-timestamp-index",
+        KeyConditionExpression=Key("child_id").eq(child_id),
+        ScanIndexForward=False,  # Most recent first
+        Limit=limit + 1,
+        ProjectionExpression="session_id, embedding_vector",
+    )
+
+    embeddings = []
+    for item in response.get("Items", []):
+        if item.get("session_id") == current_session_id:
+            continue  # Skip current session (shouldn't have embedding yet anyway)
+        raw = item.get("embedding_vector")
+        if raw:
+            embeddings.append([float(v) for v in raw])
+
+    return embeddings[:limit]
 
 
 def compute_age_days(birth_date_str: Optional[str]) -> Optional[int]:
@@ -189,8 +238,13 @@ def save_session(
     age_days_at_recording: Optional[int] = None,
     developmental_stage: str = "UNKNOWN",
     developmental_mode: str = "PRE_LINGUISTIC",
+    diarization: Optional[Dict] = None,
+    enrollment: Optional[Dict] = None,
+    routing: Optional[Dict] = None,
+    rich_features: Optional[Dict] = None,
+    session_context: Optional[Dict] = None,
 ):
-    """Save session record to DynamoDB with Phase 1 quality and bio fields."""
+    """Save session record to DynamoDB with Phase 1 + Phase 2 + Phase 3 metadata."""
     now = datetime.now(timezone.utc).isoformat()
 
     session_item = {
@@ -205,12 +259,19 @@ def save_session(
         "duration_seconds": duration_seconds,
         "processed": True,
         "timestamp": now,
-        # Phase 1 additions
+        # Phase 1
         "quality_gate": quality_gate or {},
         "biological": biological or {},
         "age_days_at_recording": age_days_at_recording,
         "developmental_stage": developmental_stage,
         "developmental_mode": developmental_mode,
+        # Phase 2
+        "diarization": diarization or {},
+        "enrollment": enrollment or {},
+        "routing": routing or {},
+        # Phase 3
+        "rich_features": rich_features or {},
+        "session_context": session_context or {},
     }
 
     session_table.put_item(Item=_float_to_decimal(session_item))
@@ -219,31 +280,43 @@ def save_session(
 
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
-    Feature Extraction Lambda handler — Phase 1 updated.
+    Feature Extraction Lambda handler — Phase 1 + Phase 2 + Phase 3.
 
     Pipeline:
       0. Download audio from S3
-      1. [Phase 1] Audio quality gate (SNR, clipping, silence, duration, Lombard)
-      2. Extract acoustic features (4 scores + embedding)
+      1. Extract acoustic features (4 scores + embedding + audio_array)
+      2. [Phase 1] Audio quality gate (SNR, clipping, silence, Lombard)
       3. [Phase 1] Biological validation (formants, VTL, infant/adult classifier)
-      4. Get child profile → compute age + developmental stage from birth_date
-      5. Update EMA baselines, deviation, readiness
-      6. Save session (with all Phase 1 metadata)
+      3b.[Phase 3] Rich feature extraction (~65 features, reuses formants from step 3)
+      4. [Phase 2] Diarization — segment by speaker, label each segment
+      5. [Phase 2] Load historical embeddings → verify enrolled baby identity
+      6. Get child profile → compute age + developmental stage from birth_date
+      7. [Phase 2] Determine analysis routing (PRE_LINGUISTIC / TRANSITION / LINGUISTIC)
+      8. Update EMA baselines, deviation, readiness score
+      9. Update child profile (with developmental stage)
+     10. Save session with all Phase 1 + Phase 2 + Phase 3 metadata
 
     Args:
-        event: { "child_id": str, "session_id": str, "s3_audio_path": str }
+        event: {
+            "child_id": str,
+            "session_id": str,
+            "s3_audio_path": str,
+            "session_context": dict  # optional (Phase 3)
+        }
     """
     logger.info(f"Feature extraction started: {json.dumps({k: v for k, v in event.items() if k != 'embedding_vector'})}")
 
     child_id = event["child_id"]
     session_id = event["session_id"]
     s3_audio_path = event["s3_audio_path"]
+    # [Phase 3] Session context provided by parent at upload time (may be absent)
+    session_context = event.get("session_context") or {}
 
     # 0. Download audio from S3
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     audio_bytes = download_audio_from_s3(bucket, s3_audio_path)
 
-    # 1. Extract features (includes loading + VAD)
+    # 1. Extract features (includes audio loading + VAD trimming)
     extraction_result = extract_all_features(audio_bytes)
     feature_scores = extraction_result["feature_scores"]
     embedding_vector = extraction_result["embedding_vector"]
@@ -259,9 +332,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         try:
             quality_gate_result = audio_quality_gate(audio_array, sample_rate, duration_seconds)
             if not quality_gate_result["passed"]:
-                logger.warning(f"Quality gate failed for session {session_id}: {quality_gate_result['issues']}")
+                logger.warning(f"Quality gate FAILED session {session_id}: {quality_gate_result['issues']}")
             else:
-                logger.info(f"Quality gate passed: SNR={quality_gate_result['snr_db']}dB, silence={quality_gate_result['silence_ratio']:.0%}")
+                logger.info(f"Quality gate passed: SNR={quality_gate_result['snr_db']}dB silence={quality_gate_result['silence_ratio']:.0%}")
         except Exception as e:
             logger.warning(f"Quality gate error (non-blocking): {e}")
 
@@ -273,11 +346,55 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             if bio_result.get("mimicry_suspected"):
                 logger.warning(f"Adult mimicry suspected for session {session_id}: {bio_result['evidence']}")
             else:
-                logger.info(f"Bio validation: is_infant={bio_result.get('is_infant')}, VTL={bio_result.get('vtl_cm')}cm, F0={bio_result.get('f0_hz')}Hz")
+                logger.info(f"Bio: is_infant={bio_result.get('is_infant')} VTL={bio_result.get('vtl_cm')}cm F0={bio_result.get('f0_hz')}Hz")
         except Exception as e:
             logger.warning(f"Biological validation error (non-blocking): {e}")
 
-    # 4. Get child profile → age + developmental stage
+    # 3b. [Phase 3] Rich feature extraction (~65 features)
+    # Formants from bio validation are reused to avoid a second LPC pass.
+    rich_features_result = {}
+    if audio_array is not None:
+        try:
+            formants_for_rich = bio_result.get("formants") if bio_result else None
+            rich_features_result = extract_rich_features(
+                audio_array, sample_rate, formants=formants_for_rich
+            )
+            logger.info(f"Rich features extracted: {len(rich_features_result)} features")
+        except Exception as e:
+            logger.warning(f"Rich feature extraction error (non-blocking): {e}")
+
+    # 4. [Phase 2] Diarization — who spoke when
+    diarization_result = {}
+    if audio_array is not None:
+        try:
+            diarization_result = diarize(audio_array, sample_rate)
+            logger.info(
+                f"Diarization: {diarization_result['total_segments']} segments, "
+                f"baby_fraction={diarization_result['baby_audio_fraction']:.0%}, "
+                f"adult_segments={diarization_result['adult_segments_detected']}"
+            )
+        except Exception as e:
+            logger.warning(f"Diarization error (non-blocking): {e}")
+
+    # 5. [Phase 2] Load historical embeddings → enrolled baby verification
+    enrollment_result = {}
+    try:
+        historical_embeddings = load_historical_embeddings(child_id, session_id, limit=10)
+        session_count_for_enrollment = len(historical_embeddings) + 1
+        enrollment_result = verify_enrolled_baby(
+            new_embedding=embedding_vector,
+            historical_embeddings=historical_embeddings,
+            session_count=session_count_for_enrollment,
+        )
+        logger.info(
+            f"Enrollment: status={enrollment_result.get('enrollment_status')} "
+            f"similarity={enrollment_result.get('similarity_score')} "
+            f"sessions_used={enrollment_result.get('sessions_used')}"
+        )
+    except Exception as e:
+        logger.warning(f"Enrollment verification error (non-blocking): {e}")
+
+    # 6. Get child profile → age + developmental stage
     profile = get_or_create_child_profile(child_id)
     previous_baselines = profile.get("baseline_features", {})
     session_count = profile.get("session_count", 0) + 1
@@ -288,13 +405,22 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     developmental_stage = stage_info["stage"]
     developmental_mode = stage_info["mode"]
 
-    logger.info(f"Child age: {age_days} days → stage={developmental_stage}, mode={developmental_mode}")
+    logger.info(f"Child: age={age_days}d stage={developmental_stage} mode={developmental_mode}")
 
-    # 5. Update EMA baselines
+    # 7. [Phase 2] Determine analysis routing
+    routing_result = determine_routing(
+        developmental_stage=developmental_stage,
+        developmental_mode=developmental_mode,
+        bio_result=bio_result,
+        enrollment_result=enrollment_result,
+    )
+    logger.info(f"Routing: {routing_result['analysis_type']}")
+
+    # 8. Update EMA baselines
     alpha = float(os.environ.get("ALPHA_VALUE", str(ALPHA_VALUE)))
     new_baselines = update_feature_baselines(previous_baselines, feature_scores, alpha)
 
-    # 6. Compute deviation
+    # 9. Compute deviation
     deviation = compute_deviation_level(
         feature_scores,
         previous_baselines,
@@ -302,13 +428,20 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         MIN_SESSIONS_FOR_DEVIATION,
     )
 
-    # 7. Compute readiness score
+    # 10. Compute readiness score
     readiness_score = compute_readiness_score(feature_scores)
 
-    # 8. Update child profile (also store developmental_stage)
-    update_child_profile(child_id, new_baselines, readiness_score, session_count)
+    # 11. Update child profile with developmental stage
+    update_child_profile(
+        child_id=child_id,
+        new_baselines=new_baselines,
+        readiness_score=readiness_score,
+        session_count=session_count,
+        developmental_stage=developmental_stage,
+        developmental_mode=developmental_mode,
+    )
 
-    # 9. Save session record with Phase 1 metadata
+    # 12. Save session with all Phase 1 + Phase 2 + Phase 3 metadata
     save_session(
         session_id=session_id,
         child_id=child_id,
@@ -322,6 +455,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         age_days_at_recording=age_days,
         developmental_stage=developmental_stage,
         developmental_mode=developmental_mode,
+        diarization=diarization_result,
+        enrollment=enrollment_result,
+        routing=routing_result,
+        rich_features=rich_features_result,
+        session_context=session_context,
     )
 
     logger.info(f"Feature extraction complete for session {session_id}")
@@ -331,12 +469,17 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "session_id": session_id,
         "child_id": child_id,
         "feature_scores": feature_scores,
+        "rich_features": rich_features_result,
         "embedding_vector": embedding_vector,
         "deviation": deviation,
         "readiness_score": readiness_score,
         "duration_seconds": duration_seconds,
         "quality_gate": quality_gate_result,
         "biological": bio_result,
+        "diarization": diarization_result,
+        "enrollment": enrollment_result,
+        "routing": routing_result,
         "developmental_stage": developmental_stage,
         "developmental_mode": developmental_mode,
+        "session_context": session_context,
     }

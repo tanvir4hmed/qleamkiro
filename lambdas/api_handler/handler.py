@@ -351,6 +351,52 @@ def list_sessions(event: Dict) -> Dict:
 # =============================================================================
 # POST /session/upload — Get presigned URL and create session record
 # =============================================================================
+
+_VALID_HEALTH_STATES = {"healthy", "sick", "teething", "other", "unknown"}
+_VALID_ENVIRONMENTS = {"home_quiet", "home_noisy", "outdoor", "car", "other", "unknown"}
+
+
+def _validate_context(raw: Any) -> Dict:
+    """
+    Validate and sanitize optional session context provided by the parent.
+
+    Accepted fields:
+        feeding_minutes_ago  — int 0-999, minutes since last feeding
+        health_state         — str: healthy|sick|teething|other|unknown
+        environment          — str: home_quiet|home_noisy|outdoor|car|other|unknown
+        notes                — str, max 500 chars (free text)
+
+    Unknown keys are silently dropped.  Invalid values are replaced with None.
+    Returns a clean dict (may be empty if raw is missing/invalid).
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    ctx: Dict = {}
+
+    # feeding_minutes_ago
+    fma = raw.get("feeding_minutes_ago")
+    if isinstance(fma, (int, float)) and 0 <= int(fma) <= 999:
+        ctx["feeding_minutes_ago"] = int(fma)
+
+    # health_state
+    hs = raw.get("health_state", "")
+    if isinstance(hs, str) and hs.strip().lower() in _VALID_HEALTH_STATES:
+        ctx["health_state"] = hs.strip().lower()
+
+    # environment
+    env = raw.get("environment", "")
+    if isinstance(env, str) and env.strip().lower() in _VALID_ENVIRONMENTS:
+        ctx["environment"] = env.strip().lower()
+
+    # notes (free text, capped at 500 chars)
+    notes = raw.get("notes", "")
+    if isinstance(notes, str) and notes.strip():
+        ctx["notes"] = notes.strip()[:500]
+
+    return ctx
+
+
 def upload_session(event: Dict) -> Dict:
     user_id = get_user_id(event)
     body = json.loads(event.get("body") or "{}")
@@ -358,6 +404,9 @@ def upload_session(event: Dict) -> Dict:
 
     if not child_id:
         return response(400, {"error": "child_id is required"}, event)
+
+    # [Phase 3] Optional session context (feeding time, health, environment)
+    session_context = _validate_context(body.get("context"))
 
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -376,7 +425,7 @@ def upload_session(event: Dict) -> Dict:
         ExpiresIn=300,  # 5 minutes
     )
 
-    # Create pending session record
+    # Create pending session record (includes context if provided)
     session_item = {
         "session_id": session_id,
         "child_id": child_id,
@@ -385,16 +434,22 @@ def upload_session(event: Dict) -> Dict:
         "processed": False,
         "timestamp": now,
     }
+    if session_context:
+        session_item["session_context"] = session_context
+
     session_table.put_item(Item=session_item)
 
-    logger.info(f"Created upload session {session_id} for child {child_id}")
+    logger.info(
+        f"Created upload session {session_id} for child {child_id}"
+        f"{' with context' if session_context else ''}"
+    )
 
     return response(200, {
         "session_id": session_id,
         "upload_url": presigned_url,
         "s3_key": s3_key,
         "expires_in": 300,
-        "instructions": "PUT audio/wav file to upload_url, then call start_processing",
+        "instructions": "PUT audio/webm file to upload_url, then call start_processing",
     }, event)
 
 
@@ -424,6 +479,8 @@ def start_processing(event: Dict) -> Dict:
         "child_id": child_id,
         "session_id": session_id,
         "s3_audio_path": s3_audio_path,
+        # [Phase 3] Session context (feeding time, health, environment) — may be absent
+        "session_context": session.get("session_context") or {},
     }
 
     sfn_client.start_execution(
