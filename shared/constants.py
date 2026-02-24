@@ -61,8 +61,8 @@ STEP_FUNCTION_ARN: str = os.environ.get("STEP_FUNCTION_ARN", "")
 # =============================================================================
 # Bedrock
 # =============================================================================
-BEDROCK_MODEL_ID: str = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
-USE_BEDROCK: bool = os.environ.get("USE_BEDROCK", "false").lower() == "true"
+BEDROCK_MODEL_ID: str = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-5-haiku-20241022-v1:0")
+USE_BEDROCK: bool = os.environ.get("USE_BEDROCK", "true").lower() == "true"
 
 # =============================================================================
 # Environment
