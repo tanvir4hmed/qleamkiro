@@ -215,6 +215,7 @@ def list_children(event: Dict) -> Dict:
         {
             "child_id": item["child_id"],
             "name": item.get("name", ""),
+            "birth_date": item.get("birth_date", ""),
             "language_maturity_level": item.get("language_maturity_level", "pre-linguistic"),
             "session_count": _decimal_to_float(item.get("session_count", 0)),
             "created_at": item.get("created_at"),
@@ -231,7 +232,19 @@ def list_children(event: Dict) -> Dict:
 def create_child(event: Dict) -> Dict:
     user_id = get_user_id(event)
     body = json.loads(event.get("body") or "{}")
-    child_name = body.get("name", "")
+    child_name = body.get("name", "").strip()
+    birth_date = body.get("birth_date", "").strip()  # Expected: "YYYY-MM-DD"
+
+    if not child_name:
+        return response(400, {"error": "name is required"}, event)
+
+    # Validate birth_date format if provided
+    if birth_date:
+        try:
+            from datetime import date as _date
+            _date.fromisoformat(birth_date)
+        except ValueError:
+            return response(400, {"error": "birth_date must be a valid date in YYYY-MM-DD format"}, event)
 
     child_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -240,6 +253,7 @@ def create_child(event: Dict) -> Dict:
         "child_id": child_id,
         "parent_id": user_id,
         "name": child_name,
+        "birth_date": birth_date,
         "baseline_features": {},
         "readiness_score": 0.5,
         "language_maturity_level": "pre-linguistic",
@@ -249,7 +263,7 @@ def create_child(event: Dict) -> Dict:
     }
 
     child_profile_table.put_item(Item=_float_to_decimal(profile))
-    logger.info(f"Created child profile {child_id} for user {user_id}")
+    logger.info(f"Created child profile {child_id} for user {user_id} (birth_date={'set' if birth_date else 'not set'})")
 
     return response(201, {"child_id": child_id, "message": "Child profile created"}, event)
 

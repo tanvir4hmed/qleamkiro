@@ -183,3 +183,35 @@ def compute_readiness_score(feature_scores: Dict[str, float]) -> float:
 def clamp(value: float, min_val: float = 0.0, max_val: float = 1.0) -> float:
     """Clamp value to [min_val, max_val]."""
     return max(min_val, min(max_val, value))
+
+
+def developmental_stage_from_age(age_days) -> Dict:
+    """
+    Map age in days to developmental stage name and mode.
+
+    Args:
+        age_days: int or None
+
+    Returns:
+        {"stage": str, "mode": str}
+        mode is one of: PRE_LINGUISTIC | TRANSITION | LINGUISTIC
+    """
+    # Inline stage map to avoid circular imports
+    _STAGE_MAP = [
+        (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
+        (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
+        (181,  270,  "CANONICAL_BABBLE",  "TRANSITION"),
+        (271,  365,  "PROTO_WORDS",       "TRANSITION"),
+        (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
+        (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
+        (731,  99999, "EARLY_SENTENCES",  "LINGUISTIC"),
+    ]
+
+    if age_days is None or not isinstance(age_days, (int, float)) or age_days < 0:
+        return {"stage": "UNKNOWN", "mode": "PRE_LINGUISTIC"}
+
+    for min_d, max_d, stage, mode in _STAGE_MAP:
+        if min_d <= int(age_days) <= max_d:
+            return {"stage": stage, "mode": mode}
+
+    return {"stage": "EARLY_SENTENCES", "mode": "LINGUISTIC"}

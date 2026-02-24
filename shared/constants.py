@@ -104,3 +104,36 @@ DISCLAIMER = (
     "Qleam provides probabilistic interpretations to support parental awareness. "
     "Always consult a healthcare professional for medical concerns."
 )
+
+# =============================================================================
+# Developmental Stages (Phase 1)
+# Each entry: (min_days_inclusive, max_days_inclusive, stage_name, mode)
+# mode: PRE_LINGUISTIC | TRANSITION | LINGUISTIC
+# =============================================================================
+DEVELOPMENTAL_STAGE_MAP = [
+    (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
+    (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
+    (181,  270,  "CANONICAL_BABBLE",  "TRANSITION"),
+    (271,  365,  "PROTO_WORDS",       "TRANSITION"),
+    (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
+    (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
+    (731,  99999, "EARLY_SENTENCES",  "LINGUISTIC"),
+]
+
+# =============================================================================
+# Audio Quality Gate Thresholds (Phase 1 — Layer 0)
+# =============================================================================
+QUALITY_MIN_DURATION_SECONDS: float = 2.0
+QUALITY_MAX_DURATION_SECONDS: float = 60.0
+QUALITY_MIN_SNR_DB: float = 5.0
+QUALITY_MAX_SILENCE_RATIO: float = 0.85
+QUALITY_MAX_CLIPPING_RATIO: float = 0.05
+LOMBARD_NOISE_FLOOR_DB: float = -30.0  # Above this → Lombard effect warning
+
+# =============================================================================
+# Biological Validation Thresholds (Phase 1 — Layer 1)
+# =============================================================================
+VTL_INFANT_MAX_CM: float = 12.0       # Above this → likely adult vocal tract
+VTL_SPEED_OF_SOUND_CM_S: float = 34300.0
+INFANT_F0_MIN_HZ: float = 200.0       # Below this → likely adult fundamental freq
+STRONG_INFANT_F0_HZ: float = 300.0    # Above this → strong infant signal

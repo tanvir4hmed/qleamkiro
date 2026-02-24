@@ -10,9 +10,9 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -31,11 +31,17 @@ from constants import (
 from normalization import (
     compute_deviation_level,
     compute_readiness_score,
+    developmental_stage_from_age,
     update_feature_baselines,
 )
 
 # Audio utils imported lazily (requires librosa layer)
-from audio_utils import download_audio_from_s3, extract_all_features
+from audio_utils import (
+    audio_quality_gate,
+    biological_validation,
+    download_audio_from_s3,
+    extract_all_features,
+)
 
 # Configure logging
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -158,6 +164,18 @@ def update_child_profile(child_id: str, new_baselines: Dict, readiness_score: fl
     )
 
 
+def compute_age_days(birth_date_str: Optional[str]) -> Optional[int]:
+    """Compute age in days from birth_date ISO string to today (UTC)."""
+    if not birth_date_str:
+        return None
+    try:
+        birth = date.fromisoformat(birth_date_str)
+        today = datetime.now(timezone.utc).date()
+        return max(0, (today - birth).days)
+    except (ValueError, TypeError):
+        return None
+
+
 def save_session(
     session_id: str,
     child_id: str,
@@ -166,10 +184,15 @@ def save_session(
     embedding_vector: list,
     deviation: Dict,
     duration_seconds: float,
+    quality_gate: Optional[Dict] = None,
+    biological: Optional[Dict] = None,
+    age_days_at_recording: Optional[int] = None,
+    developmental_stage: str = "UNKNOWN",
+    developmental_mode: str = "PRE_LINGUISTIC",
 ):
-    """Save session record to DynamoDB."""
+    """Save session record to DynamoDB with Phase 1 quality and bio fields."""
     now = datetime.now(timezone.utc).isoformat()
-    
+
     session_item = {
         "session_id": session_id,
         "child_id": child_id,
@@ -182,75 +205,110 @@ def save_session(
         "duration_seconds": duration_seconds,
         "processed": True,
         "timestamp": now,
+        # Phase 1 additions
+        "quality_gate": quality_gate or {},
+        "biological": biological or {},
+        "age_days_at_recording": age_days_at_recording,
+        "developmental_stage": developmental_stage,
+        "developmental_mode": developmental_mode,
     }
-    
+
     session_table.put_item(Item=_float_to_decimal(session_item))
     logger.info(f"Saved session {session_id}")
 
 
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
-    Feature Extraction Lambda handler.
-    
+    Feature Extraction Lambda handler — Phase 1 updated.
+
+    Pipeline:
+      0. Download audio from S3
+      1. [Phase 1] Audio quality gate (SNR, clipping, silence, duration, Lombard)
+      2. Extract acoustic features (4 scores + embedding)
+      3. [Phase 1] Biological validation (formants, VTL, infant/adult classifier)
+      4. Get child profile → compute age + developmental stage from birth_date
+      5. Update EMA baselines, deviation, readiness
+      6. Save session (with all Phase 1 metadata)
+
     Args:
-        event: {
-            "child_id": str,
-            "session_id": str,
-            "s3_audio_path": str
-        }
-    
-    Returns:
-        {
-            "status": "features_extracted",
-            "session_id": str,
-            "child_id": str,
-            "feature_scores": dict,
-            "embedding_vector": list,
-            "deviation": dict
-        }
+        event: { "child_id": str, "session_id": str, "s3_audio_path": str }
     """
     logger.info(f"Feature extraction started: {json.dumps({k: v for k, v in event.items() if k != 'embedding_vector'})}")
-    
+
     child_id = event["child_id"]
     session_id = event["session_id"]
     s3_audio_path = event["s3_audio_path"]
-    
-    # 1. Download audio from S3
+
+    # 0. Download audio from S3
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     audio_bytes = download_audio_from_s3(bucket, s3_audio_path)
-    
-    # 2. Extract features
+
+    # 1. Extract features (includes loading + VAD)
     extraction_result = extract_all_features(audio_bytes)
     feature_scores = extraction_result["feature_scores"]
     embedding_vector = extraction_result["embedding_vector"]
     duration_seconds = extraction_result["duration_seconds"]
-    
+    audio_array = extraction_result.get("audio_array")
+    sample_rate = extraction_result.get("sample_rate", 22050)
+
     logger.info(f"Extracted features: {feature_scores}")
-    
-    # 3. Get or create child profile
+
+    # 2. [Phase 1] Audio quality gate
+    quality_gate_result = {}
+    if audio_array is not None:
+        try:
+            quality_gate_result = audio_quality_gate(audio_array, sample_rate, duration_seconds)
+            if not quality_gate_result["passed"]:
+                logger.warning(f"Quality gate failed for session {session_id}: {quality_gate_result['issues']}")
+            else:
+                logger.info(f"Quality gate passed: SNR={quality_gate_result['snr_db']}dB, silence={quality_gate_result['silence_ratio']:.0%}")
+        except Exception as e:
+            logger.warning(f"Quality gate error (non-blocking): {e}")
+
+    # 3. [Phase 1] Biological validation
+    bio_result = {}
+    if audio_array is not None:
+        try:
+            bio_result = biological_validation(audio_array, sample_rate)
+            if bio_result.get("mimicry_suspected"):
+                logger.warning(f"Adult mimicry suspected for session {session_id}: {bio_result['evidence']}")
+            else:
+                logger.info(f"Bio validation: is_infant={bio_result.get('is_infant')}, VTL={bio_result.get('vtl_cm')}cm, F0={bio_result.get('f0_hz')}Hz")
+        except Exception as e:
+            logger.warning(f"Biological validation error (non-blocking): {e}")
+
+    # 4. Get child profile → age + developmental stage
     profile = get_or_create_child_profile(child_id)
     previous_baselines = profile.get("baseline_features", {})
     session_count = profile.get("session_count", 0) + 1
-    
-    # 4. Update EMA baselines
+
+    birth_date_str = profile.get("birth_date")
+    age_days = compute_age_days(birth_date_str)
+    stage_info = developmental_stage_from_age(age_days)
+    developmental_stage = stage_info["stage"]
+    developmental_mode = stage_info["mode"]
+
+    logger.info(f"Child age: {age_days} days → stage={developmental_stage}, mode={developmental_mode}")
+
+    # 5. Update EMA baselines
     alpha = float(os.environ.get("ALPHA_VALUE", str(ALPHA_VALUE)))
     new_baselines = update_feature_baselines(previous_baselines, feature_scores, alpha)
-    
-    # 5. Compute deviation
+
+    # 6. Compute deviation
     deviation = compute_deviation_level(
         feature_scores,
         previous_baselines,
         session_count,
-        MIN_SESSIONS_FOR_DEVIATION
+        MIN_SESSIONS_FOR_DEVIATION,
     )
-    
-    # 6. Compute readiness score
+
+    # 7. Compute readiness score
     readiness_score = compute_readiness_score(feature_scores)
-    
-    # 7. Update child profile
+
+    # 8. Update child profile (also store developmental_stage)
     update_child_profile(child_id, new_baselines, readiness_score, session_count)
-    
-    # 8. Save session record
+
+    # 9. Save session record with Phase 1 metadata
     save_session(
         session_id=session_id,
         child_id=child_id,
@@ -259,10 +317,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         embedding_vector=embedding_vector,
         deviation=deviation,
         duration_seconds=duration_seconds,
+        quality_gate=quality_gate_result,
+        biological=bio_result,
+        age_days_at_recording=age_days,
+        developmental_stage=developmental_stage,
+        developmental_mode=developmental_mode,
     )
-    
+
     logger.info(f"Feature extraction complete for session {session_id}")
-    
+
     return {
         "status": "features_extracted",
         "session_id": session_id,
@@ -272,4 +335,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "deviation": deviation,
         "readiness_score": readiness_score,
         "duration_seconds": duration_seconds,
+        "quality_gate": quality_gate_result,
+        "biological": bio_result,
+        "developmental_stage": developmental_stage,
+        "developmental_mode": developmental_mode,
     }

@@ -360,6 +360,291 @@ def extract_embedding_vector(y: np.ndarray, sr: int, n_mfcc: int = 13) -> List[f
     return embedding.tolist()
 
 
+# =============================================================================
+# Phase 1 — Layer 0: Audio Quality Gate
+# =============================================================================
+
+def _compute_snr(rms: np.ndarray) -> float:
+    """Estimate SNR from RMS energy frames (signal top 20% vs noise bottom 20%)."""
+    if len(rms) < 4:
+        return 0.0
+    rms_sorted = np.sort(rms)
+    n = len(rms_sorted)
+    noise_mean = float(np.mean(rms_sorted[: max(1, n // 5)])) + 1e-10
+    signal_mean = float(np.mean(rms_sorted[n - max(1, n // 5) :])) + 1e-10
+    snr_db = 10.0 * np.log10(signal_mean / noise_mean)
+    return float(np.clip(snr_db, -20.0, 80.0))
+
+
+def _compute_clipping_ratio(y: np.ndarray, threshold: float = 0.99) -> float:
+    """Fraction of samples at or near the clipping boundary."""
+    if len(y) == 0:
+        return 0.0
+    return float(np.sum(np.abs(y) >= threshold) / len(y))
+
+
+def _compute_noise_floor_db(rms: np.ndarray) -> float:
+    """Estimate background noise floor in dBFS from the quietest 10% of frames."""
+    if len(rms) == 0:
+        return -60.0
+    n = max(1, len(rms) // 10)
+    noise_rms = float(np.mean(np.sort(rms)[:n])) + 1e-10
+    return float(10.0 * np.log10(noise_rms ** 2 + 1e-10))
+
+
+def audio_quality_gate(
+    y: np.ndarray,
+    sr: int,
+    duration_seconds: float,
+    min_duration: float = 2.0,
+    max_duration: float = 60.0,
+    min_snr_db: float = 5.0,
+    max_silence_ratio: float = 0.85,
+    max_clipping_ratio: float = 0.05,
+    lombard_floor_db: float = -30.0,
+) -> Dict:
+    """
+    Layer 0: Audio quality gate — run before any feature extraction.
+
+    Checks duration, SNR, silence ratio, clipping, and Lombard noise flag.
+    Lombard flag is a warning only and does not fail the gate.
+
+    Returns:
+        {
+            "passed": bool,
+            "issues": List[str],
+            "snr_db": float,
+            "silence_ratio": float,
+            "duration_seconds": float,
+            "clipping_ratio": float,
+            "lombard_flag": bool,
+            "noise_floor_db": float,
+        }
+    """
+    librosa = _get_librosa()
+    issues = []
+
+    # --- Duration ---
+    if duration_seconds < min_duration:
+        issues.append(f"too_short:{duration_seconds:.1f}s")
+    if duration_seconds > max_duration:
+        issues.append(f"too_long:{duration_seconds:.1f}s")
+
+    # --- RMS energy ---
+    rms = librosa.feature.rms(y=y)[0]
+    max_rms = float(np.max(rms)) if len(rms) > 0 else 0.0
+
+    # --- SNR ---
+    snr_db = _compute_snr(rms)
+    if snr_db < min_snr_db:
+        issues.append(f"low_snr:{snr_db:.1f}dB")
+
+    # --- Silence ratio ---
+    if max_rms > 0:
+        silence_threshold = 0.05 * max_rms
+        silence_ratio = float(np.sum(rms < silence_threshold) / max(len(rms), 1))
+    else:
+        silence_ratio = 1.0
+        issues.append("no_signal")
+
+    if silence_ratio > max_silence_ratio:
+        issues.append(f"too_silent:{silence_ratio:.0%}")
+
+    # --- Clipping ---
+    clipping_ratio = _compute_clipping_ratio(y)
+    if clipping_ratio > max_clipping_ratio:
+        issues.append(f"clipping:{clipping_ratio:.1%}")
+
+    # --- Lombard flag (warning only — does not fail gate) ---
+    noise_floor_db = _compute_noise_floor_db(rms)
+    lombard_flag = noise_floor_db > lombard_floor_db
+
+    passed = len(issues) == 0
+
+    return {
+        "passed": passed,
+        "issues": issues,
+        "snr_db": round(snr_db, 2),
+        "silence_ratio": round(silence_ratio, 4),
+        "duration_seconds": round(duration_seconds, 2),
+        "clipping_ratio": round(clipping_ratio, 6),
+        "lombard_flag": lombard_flag,
+        "noise_floor_db": round(noise_floor_db, 2),
+    }
+
+
+# =============================================================================
+# Phase 1 — Layer 1: Biological Validation (Formants, VTL, Infant Classifier)
+# =============================================================================
+
+def extract_formants_lpc(y: np.ndarray, sr: int) -> Dict[str, float]:
+    """
+    Extract F1, F2, F3 formant frequencies via LPC analysis.
+
+    Uses librosa.lpc (librosa >= 0.8) on a 25ms windowed frame
+    from the middle of the audio. Falls back to zeros on failure.
+
+    Returns:
+        {"F1": Hz, "F2": Hz, "F3": Hz}
+    """
+    librosa = _get_librosa()
+
+    try:
+        frame_len = int(0.025 * sr)
+        mid = len(y) // 2
+        frame = y[max(0, mid - frame_len // 2): mid + frame_len // 2]
+
+        if len(frame) < 64:
+            return {"F1": 0.0, "F2": 0.0, "F3": 0.0}
+
+        # Hamming window + pre-emphasis
+        frame = frame * np.hamming(len(frame))
+        frame = np.append(frame[0], frame[1:] - 0.97 * frame[:-1])
+
+        # LPC order (rule of thumb: 2 + sr/1000)
+        order = min(2 + sr // 1000, len(frame) - 2)
+
+        # LPC coefficients
+        A = librosa.lpc(frame, order=order)
+
+        # Roots of LPC polynomial
+        roots = np.roots(A)
+
+        # Keep roots with positive imaginary part (inside unit circle)
+        roots = roots[(np.imag(roots) >= 0.01) & (np.abs(roots) < 1.0)]
+
+        # Convert angular frequency to Hz
+        freqs = np.angle(roots) * sr / (2.0 * np.pi)
+        freqs = np.sort(freqs[(freqs > 90) & (freqs < sr / 2.0 - 100)])
+
+        return {
+            "F1": round(float(freqs[0]), 1) if len(freqs) > 0 else 0.0,
+            "F2": round(float(freqs[1]), 1) if len(freqs) > 1 else 0.0,
+            "F3": round(float(freqs[2]), 1) if len(freqs) > 2 else 0.0,
+        }
+
+    except Exception as e:
+        logger.warning(f"Formant extraction failed: {e}")
+        return {"F1": 0.0, "F2": 0.0, "F3": 0.0}
+
+
+def estimate_vtl_from_formants(formants: Dict[str, float]) -> float:
+    """
+    Estimate Vocal Tract Length (VTL) in cm from formant frequencies.
+
+    Uniform tube model (closed glottis, open lips):
+        F_n = (2n - 1) * c / (4 * VTL)
+        VTL = (2n - 1) * c / (4 * F_n)
+
+    Uses F3 (n=3) as primary estimator, falls back to F2 (n=2).
+
+    Reference ranges:
+        Infant 0-6m:   6-8 cm   (F3 ≈ 5360-4025 Hz)
+        Infant 6-18m:  8-11 cm  (F3 ≈ 4025-2936 Hz)
+        Infant 18-24m: 10-12 cm (F3 ≈ 3217-2679 Hz)
+        Adult female:  14-17 cm (F3 ≈ 2278-1879 Hz)
+        Adult male:    16-18 cm (F3 ≈ 1994-1772 Hz)
+    """
+    C = 34300.0  # cm/s at body temperature
+    f3 = formants.get("F3", 0.0)
+    f2 = formants.get("F2", 0.0)
+
+    if f3 > 500:
+        return round(5.0 * C / (4.0 * f3), 2)
+    if f2 > 500:
+        return round(3.0 * C / (4.0 * f2), 2)
+    return 0.0
+
+
+def biological_validation(
+    y: np.ndarray,
+    sr: int,
+    vtl_infant_max_cm: float = 12.0,
+    infant_f0_min_hz: float = 200.0,
+    strong_infant_f0_hz: float = 300.0,
+) -> Dict:
+    """
+    Layer 1: Biological validation — classify infant vs adult speaker.
+
+    Evidence sources:
+      1. F0 (fundamental frequency) via YIN estimator
+      2. Formants (F1, F2, F3) via LPC analysis
+      3. VTL estimate from F3
+
+    Scoring:
+      +2: F0 > 300 Hz         (strong infant signal)
+      +1: F0 200-300 Hz       (moderate infant signal)
+      -2: F0 < 180 Hz         (adult range)
+      +2: VTL < 12 cm         (infant vocal tract)
+      +1: VTL 12-14 cm        (child/toddler vocal tract)
+      -2: VTL > 14 cm         (adult vocal tract)
+
+    is_infant:         score >= 1
+    mimicry_suspected: score <= -2 (strong adult signal in a baby session)
+
+    Returns:
+        {
+            "vtl_cm": float,
+            "f0_hz": float,
+            "formants": {"F1": Hz, "F2": Hz, "F3": Hz},
+            "is_infant": bool,
+            "mimicry_suspected": bool,
+            "bio_confidence": float,   # 0-1
+            "evidence": List[str],
+        }
+    """
+    librosa = _get_librosa()
+    evidence = []
+    infant_score = 0
+
+    # --- F0 estimation ---
+    try:
+        f0 = librosa.yin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"))
+        f0_voiced = f0[~np.isnan(f0)] if f0 is not None else np.array([])
+        f0_hz = float(np.median(f0_voiced)) if len(f0_voiced) > 0 else 0.0
+    except Exception:
+        f0_hz = 0.0
+
+    if f0_hz > strong_infant_f0_hz:
+        infant_score += 2
+        evidence.append(f"f0_strong_infant:{f0_hz:.0f}Hz")
+    elif f0_hz > infant_f0_min_hz:
+        infant_score += 1
+        evidence.append(f"f0_infant:{f0_hz:.0f}Hz")
+    elif 0 < f0_hz < 180:
+        infant_score -= 2
+        evidence.append(f"f0_adult:{f0_hz:.0f}Hz")
+
+    # --- Formants + VTL ---
+    formants = extract_formants_lpc(y, sr)
+    vtl_cm = estimate_vtl_from_formants(formants)
+
+    if vtl_cm > 0:
+        if vtl_cm < vtl_infant_max_cm:
+            infant_score += 2
+            evidence.append(f"vtl_infant:{vtl_cm:.1f}cm")
+        elif vtl_cm < 14.0:
+            infant_score += 1
+            evidence.append(f"vtl_child:{vtl_cm:.1f}cm")
+        else:
+            infant_score -= 2
+            evidence.append(f"vtl_adult:{vtl_cm:.1f}cm")
+
+    is_infant = infant_score >= 1
+    mimicry_suspected = infant_score <= -2
+    bio_confidence = round(min(abs(infant_score) / 4.0, 1.0), 3)
+
+    return {
+        "vtl_cm": vtl_cm,
+        "f0_hz": round(f0_hz, 1),
+        "formants": formants,
+        "is_infant": is_infant,
+        "mimicry_suspected": mimicry_suspected,
+        "bio_confidence": bio_confidence,
+        "evidence": evidence,
+    }
+
+
 def extract_all_features(audio_bytes: bytes, sr: int = 22050) -> Dict:
     """
     Full feature extraction pipeline.
@@ -410,4 +695,7 @@ def extract_all_features(audio_bytes: bytes, sr: int = 22050) -> Dict:
         "embedding_vector": embedding,
         "duration_seconds": round(duration, 2),
         "sample_rate": sr,
+        # Trimmed audio array for Phase 1 quality gate + bio validation.
+        # Stays in Lambda memory only — not serialised or persisted.
+        "audio_array": y_trimmed,
     }

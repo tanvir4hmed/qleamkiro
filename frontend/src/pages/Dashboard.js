@@ -16,6 +16,7 @@ function Dashboard({ user }) {
   const [error, setError] = useState(null);
   const [showAddChild, setShowAddChild] = useState(false);
   const [newChildName, setNewChildName] = useState('');
+  const [newChildBirthDate, setNewChildBirthDate] = useState('');
 
   const getAuthHeaders = async () => {
     const session = await fetchAuthSession();
@@ -72,14 +73,22 @@ function Dashboard({ user }) {
     try {
       const data = await apiCall('/child', {
         method: 'POST',
-        body: JSON.stringify({ name: newChildName.trim() }),
+        body: JSON.stringify({
+          name: newChildName.trim(),
+          birth_date: newChildBirthDate || '',
+        }),
       });
-      const newChild = { child_id: data.child_id, name: newChildName.trim() };
+      const newChild = {
+        child_id: data.child_id,
+        name: newChildName.trim(),
+        birth_date: newChildBirthDate || '',
+      };
       const updated = [...children, newChild];
       setChildren(updated);
-      localStorage.setItem('qleam_children', JSON.stringify(updated)); // keep cache in sync
+      localStorage.setItem('qleam_children', JSON.stringify(updated));
       setSelectedChild(newChild);
       setNewChildName('');
+      setNewChildBirthDate('');
       setShowAddChild(false);
     } catch (err) {
       setError(err.message);
@@ -118,14 +127,23 @@ function Dashboard({ user }) {
           <div className="add-child-form">
             <input
               type="text"
-              placeholder="Child's name"
+              placeholder="Child's name (required)"
               value={newChildName}
               onChange={e => setNewChildName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleAddChild()}
               autoFocus
             />
-            <button onClick={handleAddChild}>Add</button>
-            <button onClick={() => setShowAddChild(false)}>Cancel</button>
+            <label className="birth-date-label">
+              Date of birth
+              <input
+                type="date"
+                value={newChildBirthDate}
+                onChange={e => setNewChildBirthDate(e.target.value)}
+                max={new Date().toISOString().split('T')[0]}
+              />
+            </label>
+            <button onClick={handleAddChild} disabled={!newChildName.trim()}>Add</button>
+            <button onClick={() => { setShowAddChild(false); setNewChildBirthDate(''); }}>Cancel</button>
           </div>
         )}
       </section>
