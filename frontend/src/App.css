@@ -211,3 +211,80 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .concept-chip { padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
 .concept-chip:hover { border-color: var(--primary); color: var(--primary); }
 .concept-chip.selected { border-color: var(--primary); background: rgba(78,205,196,0.12); color: var(--primary); font-weight: 600; }
+
+/* ── Developmental View (Phase 6) ── */
+.developmental-section { padding: 0; background: none; box-shadow: none; }
+.developmental-view { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.developmental-toggle { width: 100%; display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: none; border: none; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-muted); text-align: left; transition: background 0.15s; }
+.developmental-toggle:hover { background: var(--bg); }
+.developmental-toggle-label { flex: 1; }
+.developmental-toggle-arrow { font-size: 11px; }
+.milestone-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.developmental-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--border); }
+.developmental-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.developmental-key { font-size: 12px; color: var(--text-muted); width: 120px; flex-shrink: 0; }
+.stage-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; background: rgba(78,205,196,0.12); color: var(--primary); font-size: 12px; font-weight: 600; }
+.cbr-bar-wrap { display: flex; align-items: center; gap: 10px; flex: 1; }
+.cbr-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; min-width: 80px; }
+.cbr-bar-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.4s ease; }
+.cbr-bar-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.phi-indicator { font-size: 13px; color: var(--text); font-style: italic; }
+.milestone-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.milestone-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; background: rgba(255,107,107,0.10); color: var(--accent); font-size: 12px; font-weight: 500; }
+
+/* ── Concept Decode Section (Phase 6) ── */
+.concept-decode-section h2 { font-size: 16px; }
+.concept-decode-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.concept-decode-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 13px; color: var(--text); }
+.concept-conf { font-size: 11px; color: var(--text-muted); }
+.unknown-cluster-msg { margin-top: 10px; font-size: 13px; color: var(--text-muted); font-style: italic; }
+
+/* ── Journey button (Dashboard child selector) ── */
+.child-btn.journey-btn { border-color: var(--primary); color: var(--primary); }
+.child-btn.journey-btn:hover { background: var(--primary); color: white; }
+
+/* ── Progress Page ── */
+.progress-page { display: flex; flex-direction: column; gap: 20px; }
+.progress-page h1 { font-size: 22px; font-weight: 700; }
+.progress-empty { font-size: 14px; color: var(--text-muted); font-style: italic; }
+
+/* Snapshot */
+.progress-snapshot { display: flex; flex-direction: column; gap: 10px; }
+.progress-snapshot-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cbr-snapshot-label { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.cbr-snapshot-pct { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+
+/* CBR history chart */
+.cbr-history-chart h2 { font-size: 16px; margin-bottom: 12px; }
+.cbr-history-rows { display: flex; flex-direction: column; gap: 8px; }
+.cbr-history-row { display: flex; align-items: center; gap: 10px; }
+.cbr-history-label { font-size: 12px; color: var(--text-muted); width: 90px; flex-shrink: 0; text-align: right; }
+.cbr-history-bar-wrap { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.cbr-history-bar-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width 0.4s ease; }
+.cbr-history-pct { font-size: 12px; color: var(--text-muted); width: 34px; flex-shrink: 0; }
+
+/* Milestone log */
+.milestone-log-section h2 { font-size: 16px; margin-bottom: 12px; }
+.milestone-log { display: flex; flex-direction: column; gap: 10px; }
+.milestone-log-item { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.milestone-log-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.milestone-log-date { font-size: 12px; color: var(--text-muted); }
+.milestone-log-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+/* ── Speech Analysis Panel (Phase 7) ── */
+.speech-analysis-section { padding: 0; background: none; box-shadow: none; }
+.speech-analysis-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 12px; }
+.speech-analysis-panel h2 { font-size: 16px; font-weight: 600; }
+.speech-mlu-row { display: flex; align-items: center; gap: 10px; }
+.speech-mlu-label { font-size: 13px; color: var(--text-muted); width: 160px; flex-shrink: 0; }
+.speech-mlu-value { font-size: 14px; font-weight: 600; color: var(--text); }
+.speech-mlu-delta { font-size: 12px; color: var(--primary); font-weight: 500; }
+.pragmatic-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; color: white; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.fluency-row { display: flex; align-items: center; gap: 10px; }
+.fluency-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.fluency-bar-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.4s ease; }
+.fluency-pct { font-size: 12px; color: var(--text-muted); width: 34px; flex-shrink: 0; }
+.speech-milestones { border-top: 1px solid var(--border); padding-top: 10px; }
+.speech-milestones-title { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.speech-milestone-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.speech-milestone-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; background: rgba(255,107,107,0.10); color: var(--accent); font-size: 12px; font-weight: 500; }

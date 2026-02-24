@@ -5,6 +5,8 @@ import { API_BASE_URL } from '../aws-config';
 import InsightPanel from '../components/InsightPanel';
 import FeedbackForm from '../components/FeedbackForm';
 import FeatureChart from '../components/FeatureChart';
+import DevelopmentalView from '../components/DevelopmentalView';
+import SpeechAnalysisPanel from '../components/SpeechAnalysisPanel';
 
 function SessionDetail() {
   const { sessionId } = useParams();
@@ -116,6 +118,42 @@ function SessionDetail() {
           <section className="insight-section">
             <InsightPanel insight={insight} />
           </section>
+
+          {/* Developmental snapshot (Phase 6) */}
+          {session?.developmental_view && (
+            <section className="developmental-section">
+              <DevelopmentalView data={session.developmental_view} />
+            </section>
+          )}
+
+          {/* Speech analysis (Phase 7 — LINGUISTIC mode only) */}
+          {session?.speech_analysis && (
+            <section className="speech-analysis-section">
+              <SpeechAnalysisPanel data={session.speech_analysis} />
+            </section>
+          )}
+
+          {/* Concept chips (Phase 6) */}
+          {session?.concept_decode?.top_concepts?.length > 0 && (
+            <section className="concept-decode-section">
+              <h2>Top Concepts Detected</h2>
+              <div className="concept-decode-chips">
+                {session.concept_decode.top_concepts.map(c => (
+                  <span key={c.label} className="concept-decode-chip">
+                    {c.label}
+                    <span className="concept-conf">
+                      {(c.confidence * 100).toFixed(0)}%
+                    </span>
+                  </span>
+                ))}
+              </div>
+              {session.concept_decode.is_unknown_cluster && (
+                <p className="unknown-cluster-msg">
+                  {session.concept_decode.unknown_flag_message}
+                </p>
+              )}
+            </section>
+          )}
 
           {/* Semantic Alignment */}
           {insight.semantic_alignment && (

@@ -29,6 +29,7 @@ from constants import (
     CHILD_PROFILE_TABLE,
     CONCEPT_GRAPH_TABLE,
     FEEDBACK_TABLE,
+    MILESTONES_TABLE,
     S3_BUCKET_NAME,
     SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
@@ -68,6 +69,7 @@ sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
+milestones_table = dynamodb.Table(MILESTONES_TABLE)
 
 
 def _decimal_to_float(obj: Any) -> Any:
@@ -588,6 +590,33 @@ def list_concepts(event: Dict) -> Dict:
 
 
 # =============================================================================
+# GET /child/{child_id}/milestones — List developmental milestones for a child
+# =============================================================================
+def list_milestones(event: Dict) -> Dict:
+    user_id = get_user_id(event)
+    child_id = event["pathParameters"]["child_id"]
+
+    # Verify ownership
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    if profile_resp["Item"].get("parent_id") != user_id:
+        return response(403, {"error": "Forbidden"}, event)
+
+    try:
+        resp = milestones_table.query(
+            IndexName="child_id-first_date-index",
+            KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id),
+            ScanIndexForward=False,  # Most recent first
+        )
+        milestones = [_decimal_to_float(item) for item in resp.get("Items", [])]
+        return response(200, {"milestones": milestones, "count": len(milestones)}, event)
+    except Exception as e:
+        logger.error(f"Failed to list milestones for child {child_id}: {e}")
+        return response(500, {"error": "Failed to retrieve milestones"}, event)
+
+
+# =============================================================================
 # Router
 # =============================================================================
 ROUTES = {
@@ -596,6 +625,7 @@ ROUTES = {
     ("DELETE", "/child/{child_id}"): delete_child,
     ("GET", "/child/{child_id}/sessions"): list_sessions,
     ("GET", "/child/{child_id}/concepts"): list_concepts,
+    ("GET", "/child/{child_id}/milestones"): list_milestones,
     ("POST", "/session/upload"): upload_session,
     ("POST", "/session/{session_id}/start"): start_processing,
     ("GET", "/session/{session_id}/insight"): get_insight,

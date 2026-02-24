@@ -13,6 +13,7 @@ locals {
     SEMANTIC_BRIDGE_TABLE         = var.semantic_bridge_table
     FEEDBACK_TABLE                = var.feedback_table
     CONCEPT_GRAPH_TABLE           = var.concept_graph_table
+    MILESTONES_TABLE              = var.milestones_table
     ALPHA_VALUE                   = tostring(var.alpha_value)
     CLUSTER_SIMILARITY_THRESHOLD  = tostring(var.cluster_similarity_threshold)
     STEP_FUNCTION_ARN             = var.step_function_arn
@@ -324,3 +325,128 @@ resource "aws_cloudwatch_log_group" "nlp_processor" {
   retention_in_days = var.log_retention_days
 }
 
+# -----------------------------------------------------------------------------
+# Developmental Tracker Lambda (Layer 7 — CBR trend, VTL growth, milestone logging)
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "developmental_tracker" {
+  function_name = "${var.project}-${var.environment}-developmental-tracker"
+  description   = "Tracks developmental milestones, CBR trend, and φ order parameter"
+
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["developmental_tracker"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 30
+  memory_size   = 512
+
+  environment {
+    variables = local.common_env_vars
+  }
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.lambda_security_group_id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  tags = {
+    Name      = "${var.project}-${var.environment}-developmental-tracker"
+    Component = "developmental-tracker"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "developmental_tracker" {
+  name              = "/aws/lambda/${aws_lambda_function.developmental_tracker.function_name}"
+  retention_in_days = var.log_retention_days
+}
+
+# -----------------------------------------------------------------------------
+# Concept Decoder Lambda (Layer 8 — per-session concept graph lookup, proto-word check)
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "concept_decoder" {
+  function_name = "${var.project}-${var.environment}-concept-decoder"
+  description   = "Decodes concept graph for session, checks proto-word crystallization"
+
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["concept_decoder"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 30
+  memory_size   = 512
+
+  environment {
+    variables = local.common_env_vars
+  }
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.lambda_security_group_id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  tags = {
+    Name      = "${var.project}-${var.environment}-concept-decoder"
+    Component = "concept-decoder"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "concept_decoder" {
+  name              = "/aws/lambda/${aws_lambda_function.concept_decoder.function_name}"
+  retention_in_days = var.log_retention_days
+}
+
+# -----------------------------------------------------------------------------
+# speech_analyzer — Layer 9 (LINGUISTIC mode language development analysis)
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "speech_analyzer" {
+  function_name = "${var.project}-${var.environment}-speech-analyzer"
+  description   = "Language development analysis for LINGUISTIC-mode sessions"
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["speech_analyzer"]}:latest"
+  role          = var.lambda_execution_role_arn
+  timeout       = 60
+  memory_size   = 512
+
+  environment {
+    variables = merge(local.common_env_vars, {
+      BEDROCK_MODEL_ID = var.bedrock_model_id
+    })
+  }
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.lambda_security_group_id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  tags = {
+    Name      = "${var.project}-${var.environment}-speech-analyzer"
+    Component = "speech-analyzer"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "speech_analyzer" {
+  name              = "/aws/lambda/${aws_lambda_function.speech_analyzer.function_name}"
+  retention_in_days = var.log_retention_days
+}

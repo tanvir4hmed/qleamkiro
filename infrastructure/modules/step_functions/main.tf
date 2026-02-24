@@ -8,7 +8,7 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
   role_arn = var.step_functions_role_arn
 
   definition = jsonencode({
-    Comment = "Qleam audio processing pipeline: Feature Extraction → Cluster Engine → Semantic Bridge → Insight Generator"
+    Comment = "Qleam audio processing pipeline: Feature Extraction → Cluster Engine → Insight Generator → Developmental Tracker → Concept Decoder"
     StartAt = "FeatureExtraction"
 
     States = {
@@ -91,6 +91,66 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
             ErrorEquals = ["States.ALL"]
             Next        = "ProcessingFailed"
             ResultPath  = "$.error"
+          }
+        ]
+        Next = "DevelopmentalTracker"
+      }
+
+      DevelopmentalTracker = {
+        Type     = "Task"
+        Resource = var.developmental_tracker_lambda_arn
+        Comment  = "Track CBR trend, VTL growth, φ order parameter, and milestone logging"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
+        }
+        ResultPath = "$.developmental_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "ConceptDecoder"
+            ResultPath  = "$.developmental_error"
+          }
+        ]
+        Next = "ConceptDecoder"
+      }
+
+      ConceptDecoder = {
+        Type     = "Task"
+        Resource = var.concept_decoder_lambda_arn
+        Comment  = "Decode concept graph for session and check proto-word crystallization"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
+        }
+        ResultPath = "$.concept_decode_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "SpeechAnalyzer"
+            ResultPath  = "$.concept_decode_error"
+          }
+        ]
+        Next = "SpeechAnalyzer"
+      }
+
+      SpeechAnalyzer = {
+        Type     = "Task"
+        Resource = var.speech_analyzer_lambda_arn
+        Comment  = "Language development analysis for LINGUISTIC-mode sessions (non-fatal)"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
+        }
+        ResultPath = "$.speech_analysis_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "ProcessingComplete"
+            ResultPath  = "$.speech_analysis_error"
           }
         ]
         Next = "ProcessingComplete"

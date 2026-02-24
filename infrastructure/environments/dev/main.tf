@@ -179,9 +179,12 @@ module "step_functions" {
   step_functions_role_arn       = module.iam.step_functions_role_arn
   feature_extraction_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
   cluster_engine_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
-  insight_generator_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
-  audio_bucket_name             = local.audio_bucket_name
-  log_retention_days            = var.log_retention_days
+  insight_generator_lambda_arn      = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
+  developmental_tracker_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-developmental-tracker"
+  concept_decoder_lambda_arn        = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-concept-decoder"
+  speech_analyzer_lambda_arn        = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-speech-analyzer"
+  audio_bucket_name                 = local.audio_bucket_name
+  log_retention_days                = var.log_retention_days
 
   depends_on = [module.iam]
 }
@@ -205,6 +208,7 @@ module "lambda" {
   semantic_bridge_table = module.dynamodb.semantic_bridge_table_name
   feedback_table        = module.dynamodb.feedback_table_name
   concept_graph_table   = module.dynamodb.concept_graph_table_name
+  milestones_table      = module.dynamodb.milestones_table_name
 
   alpha_value                  = var.alpha_value
   cluster_similarity_threshold = var.cluster_similarity_threshold
@@ -273,6 +277,9 @@ module "cloudwatch" {
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,
     module.lambda.nlp_processor_function_name,
+    module.lambda.developmental_tracker_function_name,
+    module.lambda.concept_decoder_function_name,
+    module.lambda.speech_analyzer_function_name,
   ]
 
   state_machine_arn            = module.step_functions.state_machine_arn

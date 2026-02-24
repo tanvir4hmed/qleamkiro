@@ -256,3 +256,51 @@ resource "aws_dynamodb_table" "concept_graph" {
     Table = "ConceptGraph"
   }
 }
+
+# -----------------------------------------------------------------------------
+# Milestones Table
+# Tracks developmental milestone events per child
+# PK: child_id, SK: milestone_id
+# GSI: child_id-first_date-index (chronological milestone queries)
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "milestones" {
+  name         = "${var.project}-${var.environment}-Milestones"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "child_id"
+  range_key    = "milestone_id"
+
+  attribute {
+    name = "child_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "milestone_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "first_date"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "child_id-first_date-index"
+    hash_key        = "child_id"
+    range_key       = "first_date"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-Milestones"
+    Table = "Milestones"
+  }
+}

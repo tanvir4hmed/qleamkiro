@@ -48,6 +48,7 @@ SOUND_CLUSTER_TABLE: str = os.environ.get("SOUND_CLUSTER_TABLE", "qleam-dev-Soun
 SEMANTIC_BRIDGE_TABLE: str = os.environ.get("SEMANTIC_BRIDGE_TABLE", "qleam-dev-SemanticBridge")
 FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
 CONCEPT_GRAPH_TABLE: str = os.environ.get("CONCEPT_GRAPH_TABLE", "qleam-dev-ConceptGraph")
+MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones")
 
 # =============================================================================
 # S3
@@ -130,6 +131,24 @@ QUALITY_MIN_SNR_DB: float = 5.0
 QUALITY_MAX_SILENCE_RATIO: float = 0.85
 QUALITY_MAX_CLIPPING_RATIO: float = 0.05
 LOMBARD_NOISE_FLOOR_DB: float = -30.0  # Above this → Lombard effect warning
+
+# =============================================================================
+# Milestone Types (Phase 6)
+# =============================================================================
+MILESTONE_TYPES = {
+    "FIRST_CANONICAL_BABBLE":     "First session with CBR > 0.20",
+    "FIRST_PROTO_WORD_CANDIDATE": "First cluster meeting proto-word criteria",
+    "FIRST_CONFIRMED_PROTO_WORD": "Cluster promoted to established signal",
+    "LINGUISTIC_MODE_TRANSITION": "First session in LINGUISTIC mode",
+    "CONCEPT_GRAPH_10_NODES":     "Personal concept graph reached 10 confirmed concepts",
+    "CONCEPT_GRAPH_25_NODES":     "Personal concept graph reached 25 confirmed concepts",
+    "FIRST_MLU_2":                "Estimated MLU reached 2.0 (two-morpheme utterances)",
+    "FIRST_MLU_3":                "Estimated MLU reached 3.0 (three-morpheme utterances)",
+    "VOCAB_SIZE_20":              "Confirmed vocabulary reached 20 concepts",
+    "VOCAB_SIZE_50":              "Confirmed vocabulary reached 50 concepts",
+}
+
+PRAGMATIC_TYPES = ["declaration", "request", "question", "exclamation"]
 
 # =============================================================================
 # Biological Validation Thresholds (Phase 1 — Layer 1)

@@ -62,6 +62,11 @@ variable "concept_graph_table" {
   type        = string
 }
 
+variable "milestones_table" {
+  description = "DynamoDB Milestones table name"
+  type        = string
+}
+
 variable "alpha_value" {
   description = "EMA alpha value for baseline aggregation"
   type        = number

@@ -214,6 +214,160 @@ def get_rule_based_sections(intent_key: str) -> Dict:
 
 
 # =============================================================================
+# LINGUISTIC Mode Insight (Phase 7)
+# =============================================================================
+
+LINGUISTIC_FALLBACK_INSIGHTS = {
+    "FIRST_WORDS": {
+        "what_i_hear": "Your child is producing clear, intentional word-like sounds with real communicative purpose.",
+        "what_it_means": "Each session helps track their vocabulary growth. These are the building blocks of language.",
+        "what_to_try": [
+            "Respond to every word attempt — acknowledgement encourages more speech",
+            "Name objects together during play to expand vocabulary",
+            "Read simple picture books and point to objects as you name them",
+        ],
+    },
+    "WORD_COMBINATIONS": {
+        "what_i_hear": "Your child is linking sounds and words in multi-word patterns — a key leap in language.",
+        "what_it_means": "Two-word combinations show the grammar system is developing. This is a major milestone.",
+        "what_to_try": [
+            "Expand what your child says — if they say 'more milk', respond 'yes, more cold milk'",
+            "Ask open questions that need more than one word to answer",
+            "Narrate everyday activities: 'We're washing the big red apple'",
+        ],
+    },
+    "EARLY_SENTENCES": {
+        "what_i_hear": "Your child is forming multi-word sentences with structure and intent.",
+        "what_it_means": "Sentence formation at this stage reflects strong language development.",
+        "what_to_try": [
+            "Engage in back-and-forth conversation and give your child time to respond",
+            "Model complete sentences in response to shorter ones they produce",
+            "Introduce simple stories with cause and effect to build narrative thinking",
+        ],
+    },
+}
+
+
+def _generate_linguistic_insight_with_bedrock(
+    developmental_stage: str,
+    rich_features: dict,
+) -> dict:
+    """Generate language-development insight via Bedrock for LINGUISTIC mode sessions."""
+    try:
+        bedrock = boto3.client("bedrock-runtime")
+        model_id = os.environ.get("BEDROCK_MODEL_ID", BEDROCK_MODEL_ID)
+
+        syllable_rate = round(float(rich_features.get("syllable_rate", 0.0)), 2)
+        pause_ratio = round(float(rich_features.get("pause_ratio", 0.5)), 2)
+        f0_range = round(float(rich_features.get("f0_range", 0.0)), 1)
+        hnr_db = round(float(rich_features.get("hnr_db", 0.0)), 1)
+        cbr = round(float(rich_features.get("cbr_estimate", 0.0)), 3)
+        stage_label = developmental_stage.replace("_", " ").title()
+
+        prompt = f"""You are a warm, supportive language development analyst helping parents understand their child's speech progress.
+
+CHILD'S DEVELOPMENTAL STAGE: {stage_label}
+
+ACOUSTIC MEASUREMENTS FROM THIS SESSION:
+- Syllable rate: {syllable_rate} syllables/second
+- Pause ratio: {pause_ratio} (proportion of silence — higher = more pauses between utterances)
+- Pitch range: {f0_range} Hz (wider = more expressive prosody)
+- Voice clarity (HNR): {hnr_db} dB (higher = cleaner, more resonant speech)
+- Canonical babbling ratio: {cbr} (residual babble — lower at this stage is normal)
+
+Return ONLY a JSON object with exactly these three fields:
+{{
+  "what_i_hear": "1-2 sentences describing what the acoustic measurements show about this child's current speech. Focus on positive signals. Plain, warm language.",
+  "what_it_means": "1-2 sentences about what this means for their language development. Use 'suggests', 'indicates', 'is consistent with'. Never diagnose.",
+  "what_to_try": ["specific actionable language activity 1", "specific actionable language activity 2", "specific actionable language activity 3"]
+}}
+
+Guidelines:
+- Write for a parent who wants practical language development support, not medical information
+- Focus on language development, not cry interpretation
+- Keep each sentence under 25 words
+- The 3 activities must be immediately doable at home
+- Return ONLY the JSON object"""
+
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 450,
+            "temperature": 0.35,
+            "messages": [{"role": "user", "content": prompt}],
+        })
+
+        response = bedrock.invoke_model(modelId=model_id, body=body)
+        result = json.loads(response["body"].read())
+        raw_text = result["content"][0]["text"]
+
+        sections = _parse_bedrock_json(raw_text)
+        if sections and "what_i_hear" in sections:
+            if isinstance(sections.get("what_to_try"), str):
+                sections["what_to_try"] = [sections["what_to_try"]]
+            return {
+                "what_i_hear": sections.get("what_i_hear", ""),
+                "what_it_means": sections.get("what_it_means", ""),
+                "what_to_try": sections.get("what_to_try", [])[:3],
+                "source": "bedrock",
+            }
+
+        raise ValueError(f"Could not parse Bedrock JSON: {raw_text[:200]}")
+
+    except Exception as e:
+        logger.warning(f"Bedrock failed for LINGUISTIC insight, using rule-based: {e}")
+        return None
+
+
+def _generate_linguistic_insight(
+    session_id: str,
+    child_id: str,
+    developmental_stage: str,
+    rich_features: dict,
+) -> dict:
+    """
+    Generate and store language-development insight for LINGUISTIC-mode sessions.
+    Skips intent classification — focuses on language metrics instead.
+    """
+    use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
+
+    insight_sections = None
+    if use_bedrock:
+        insight_sections = _generate_linguistic_insight_with_bedrock(developmental_stage, rich_features)
+
+    if not insight_sections:
+        # Rule-based fallback — stage-based
+        fallback_key = developmental_stage if developmental_stage in LINGUISTIC_FALLBACK_INSIGHTS else "WORD_COMBINATIONS"
+        base = LINGUISTIC_FALLBACK_INSIGHTS[fallback_key]
+        insight_sections = {
+            "what_i_hear": base["what_i_hear"],
+            "what_it_means": base["what_it_means"],
+            "what_to_try": list(base["what_to_try"]),
+            "source": "rule-based",
+        }
+
+    insight = {
+        "insight_type": "language_development",
+        "developmental_stage": developmental_stage,
+        "insight_sections": insight_sections,
+        "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
+        "note": DISCLAIMER,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    save_insight_to_session(session_id, insight)
+
+    logger.info(
+        f"LINGUISTIC insight generated for session {session_id}: "
+        f"stage={developmental_stage} source={insight_sections['source']}"
+    )
+    return {
+        "status": "insight_generated",
+        "session_id": session_id,
+        "insight": insight,
+    }
+
+
+# =============================================================================
 # Acoustic Feature-Based Intent Classifier
 # =============================================================================
 
@@ -640,6 +794,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     session = get_session(session_id)
     if not session:
         raise ValueError(f"Session {session_id} not found")
+
+    # Branch: LINGUISTIC mode sessions get language-development insight
+    developmental_mode = session.get("developmental_mode", "")
+    if developmental_mode == "LINGUISTIC":
+        developmental_stage = session.get("developmental_stage", "WORD_COMBINATIONS")
+        rich_features = session.get("rich_features", {})
+        return _generate_linguistic_insight(session_id, child_id, developmental_stage, rich_features)
 
     profile = get_child_profile(child_id)
     if not profile:

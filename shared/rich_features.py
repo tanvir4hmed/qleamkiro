@@ -422,5 +422,31 @@ def extract_rich_features(
     features.update(extract_formant_features(formants))
     features.update(extract_cry_babble_ratio(y, sr))
 
+    # Group 8 (1): CBR estimate — approximated from session-level aggregates
+    features["cbr_estimate"] = _compute_cbr_estimate(
+        babble_fraction=features.get("babble_fraction", 0.0),
+        hnr_db=features.get("hnr_db", 0.0),
+        f1=features.get("formant_f1", 0.0),
+        f2=features.get("formant_f2", 0.0),
+    )
+
     logger.info(f"Rich feature extraction complete: {len(features)} features")
     return features
+
+
+def _compute_cbr_estimate(babble_fraction: float, hnr_db: float, f1: float, f2: float) -> float:
+    """
+    Approximate Canonical Babbling Ratio from session-level aggregates.
+    True CBR requires syllable segmentation; this estimates from existing features.
+
+    voice_quality: 0 at HNR≤3dB (noisy), 1 at HNR≥13dB (clear voiced)
+    formant_factor: full weight if F1>300Hz and F2>700Hz (canonical vowel space)
+    """
+    voice_quality = max(0.0, min(1.0, (hnr_db - 3.0) / 10.0))
+    if f1 > 300 and f2 > 700:
+        formant_factor = 1.0
+    elif f1 > 200:
+        formant_factor = 0.6
+    else:
+        formant_factor = 0.3
+    return round(min(1.0, max(0.0, babble_fraction * voice_quality * formant_factor)), 4)

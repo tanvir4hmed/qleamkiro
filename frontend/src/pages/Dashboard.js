@@ -121,6 +121,14 @@ function Dashboard({ user }) {
           <button className="child-btn add-btn" onClick={() => setShowAddChild(true)}>
             + Add Child
           </button>
+          {selectedChild && (
+            <button
+              className="child-btn journey-btn"
+              onClick={() => navigate(`/progress/${selectedChild.child_id}`)}
+            >
+              Journey
+            </button>
+          )}
         </div>
 
         {showAddChild && (
