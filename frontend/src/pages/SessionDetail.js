@@ -61,9 +61,12 @@ function SessionDetail() {
   const handleFeedback = async (feedbackData) => {
     setFeedbackError(null);
     try {
+      const developmentalStage = session?.insight?.developmental_stage || '';
+      const payload = { ...feedbackData };
+      if (developmentalStage) payload.developmental_stage = developmentalStage;
       await apiCall(`/session/${sessionId}/feedback`, {
         method: 'POST',
-        body: JSON.stringify(feedbackData),
+        body: JSON.stringify(payload),
       });
       setFeedbackSubmitted(true);
     } catch (err) {
@@ -127,19 +130,22 @@ function SessionDetail() {
             </section>
           )}
 
-          {/* Feedback */}
+          {/* Feedback — optional, gentle */}
           {!feedbackSubmitted ? (
             <section className="feedback-section">
-              <h2>Did this help?</h2>
-              <p>Your feedback helps Qleam learn your baby's patterns</p>
               {feedbackError && (
                 <p className="feedback-error">{feedbackError}</p>
               )}
-              <FeedbackForm onSubmit={handleFeedback} />
+              <FeedbackForm
+                onSubmit={handleFeedback}
+                developmentalStage={session?.insight?.developmental_stage}
+                childId={session?.child_id}
+                apiCall={apiCall}
+              />
             </section>
           ) : (
             <div className="feedback-thanks">
-              ✓ Thank you! Your feedback helps improve future insights.
+              ✓ Thank you — this helps Qleam understand your baby better.
             </div>
           )}
 

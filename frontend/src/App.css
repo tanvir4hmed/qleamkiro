@@ -171,3 +171,43 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 /* Error state with better message */
 .error-state { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 60px 20px; text-align: center; }
 .error-msg { font-size: 15px; color: var(--text-muted); max-width: 300px; line-height: 1.6; }
+
+/* ── Feedback Card (gentle, optional) ── */
+.feedback-section { padding: 0; background: none; box-shadow: none; }
+.feedback-reveal { padding: 4px 0 8px; }
+.feedback-reveal-btn { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 12px 16px; background: var(--bg); border: 1px dashed var(--border); border-radius: 10px; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+.feedback-reveal-btn:hover { border-color: var(--primary); background: rgba(78,205,196,0.04); }
+.feedback-reveal-btn > span:first-child { font-size: 14px; font-weight: 500; color: var(--text); }
+.feedback-reveal-hint { font-size: 12px; color: var(--text-muted); }
+.feedback-form-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.feedback-form-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.feedback-skip-btn { background: none; border: none; font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 8px; }
+.feedback-skip-btn:hover { color: var(--text); }
+.feedback-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
+.feedback-optional { font-weight: 400; font-style: italic; }
+.notes-input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-family: inherit; resize: vertical; line-height: 1.5; color: var(--text); background: var(--bg); }
+.notes-input:focus { outline: none; border-color: var(--primary); }
+.feedback-error { font-size: 13px; color: #c0392b; margin-bottom: 8px; }
+
+/* ── Session Context Card ── */
+.context-card { width: 100%; max-width: 420px; border: 1px dashed var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 4px; background: var(--surface); }
+.context-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 10px 14px; background: none; border: none; cursor: pointer; font-size: 13px; color: var(--text-muted); text-align: left; transition: background 0.15s; }
+.context-toggle:hover { background: var(--bg); }
+.context-toggle.open { color: var(--primary); border-bottom: 1px dashed var(--border); }
+.context-toggle-icon { font-size: 11px; flex-shrink: 0; }
+.context-toggle-hint { font-size: 11px; color: var(--text-muted); margin-left: 2px; opacity: 0.75; }
+.context-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+.context-fields { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.context-group { display: flex; flex-direction: column; gap: 6px; }
+.context-group-label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.context-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.context-chip { padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.context-chip:hover { border-color: var(--primary); color: var(--primary); }
+.context-chip.selected { border-color: var(--primary); background: rgba(78,205,196,0.10); color: var(--primary); font-weight: 600; }
+.context-inspire { font-size: 11px; color: var(--text-muted); font-style: italic; line-height: 1.5; padding-top: 4px; }
+
+/* Concept chips — personal concept graph picker (Phase 5, LINGUISTIC stage) */
+.concept-chips-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.concept-chip { padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.concept-chip:hover { border-color: var(--primary); color: var(--primary); }
+.concept-chip.selected { border-color: var(--primary); background: rgba(78,205,196,0.12); color: var(--primary); font-weight: 600; }

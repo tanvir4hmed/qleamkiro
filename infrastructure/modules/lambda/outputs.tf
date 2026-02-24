@@ -62,3 +62,13 @@ output "api_handler_invoke_arn" {
   description = "API handler Lambda invoke ARN (for API Gateway)"
   value       = aws_lambda_function.api_handler.invoke_arn
 }
+
+output "nlp_processor_function_name" {
+  description = "NLP processor Lambda function name"
+  value       = aws_lambda_function.nlp_processor.function_name
+}
+
+output "nlp_processor_function_arn" {
+  description = "NLP processor Lambda function ARN"
+  value       = aws_lambda_function.nlp_processor.arn
+}

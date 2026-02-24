@@ -57,6 +57,11 @@ variable "feedback_table" {
   type        = string
 }
 
+variable "concept_graph_table" {
+  description = "DynamoDB ConceptGraph table name"
+  type        = string
+}
+
 variable "alpha_value" {
   description = "EMA alpha value for baseline aggregation"
   type        = number

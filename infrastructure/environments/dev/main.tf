@@ -204,6 +204,7 @@ module "lambda" {
   sound_cluster_table   = module.dynamodb.sound_cluster_table_name
   semantic_bridge_table = module.dynamodb.semantic_bridge_table_name
   feedback_table        = module.dynamodb.feedback_table_name
+  concept_graph_table   = module.dynamodb.concept_graph_table_name
 
   alpha_value                  = var.alpha_value
   cluster_similarity_threshold = var.cluster_similarity_threshold
@@ -271,6 +272,7 @@ module "cloudwatch" {
     module.lambda.insight_generator_function_name,
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,
+    module.lambda.nlp_processor_function_name,
   ]
 
   state_machine_arn            = module.step_functions.state_machine_arn

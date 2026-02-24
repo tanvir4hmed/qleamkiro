@@ -383,6 +383,7 @@ def generate_insight_with_bedrock(
     semantic_bridge: Optional[Dict],
     developmental_stage: str = "UNKNOWN",
     session_context: Optional[Dict] = None,
+    child_name: str = "",
 ) -> Dict:
     """
     Generate structured 3-section parent insight using Amazon Bedrock Claude.
@@ -424,6 +425,7 @@ def generate_insight_with_bedrock(
         )
 
         stage_label = developmental_stage.replace("_", " ").title()
+        name_line = f"\nBABY'S NAME: {child_name}" if child_name else ""
 
         prompt = f"""You are Qleam, a supportive baby communication assistant helping parents understand their infant's sounds.
 
@@ -434,7 +436,7 @@ AUDIO ANALYSIS FROM THIS SESSION:
 - Continuity: {feature_narrative['continuity']}
 - Compared to baby's usual: {feature_narrative['vs_baseline']}
 
-BABY'S DEVELOPMENTAL STAGE: {stage_label}{context_note}
+BABY'S DEVELOPMENTAL STAGE: {stage_label}{name_line}{context_note}
 
 PATTERN HISTORY:
 - This sound pattern has been recorded {cluster_count} time(s) for this baby
@@ -456,6 +458,7 @@ Guidelines:
 - Never use medical or clinical terms
 - Keep each sentence under 25 words
 - The 3 action steps must be immediately doable
+- If baby's name is provided, use it naturally 1-2 times (e.g., "Emma's sounds suggest...")
 - If confidence is low or pattern is still forming, acknowledge gently
 - Return ONLY the JSON object, no other text"""
 
@@ -515,16 +518,26 @@ def build_insight(
         or "UNKNOWN"
     )
 
+    # Phase 4: pull session count, trust scores, and baby name from child profile
+    session_count        = int(profile.get("session_count") or 0)
+    parent_trust_score   = float(profile.get("parent_trust_score") or 0.5)
+    context_reliability  = float(profile.get("context_reliability") or 0.8)
+    child_name           = str(profile.get("name") or "")
+
     # 1. Feature narrative — always computed from audio data, no feedback involved
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
 
     # 2. [Phase 4] Three-source evidence model: 60% acoustic + 15% research + 25% feedback
+    #    Confidence capped by session count; feedback weight scaled by parent trust score (FRS)
     probable_intent = determine_probable_intent_v2(
         cluster=cluster,
         feature_scores=feature_scores,
         rich_features=rich_features,
         developmental_stage=developmental_stage,
         session_context=session_context,
+        session_count=session_count,
+        parent_trust_score=parent_trust_score,
+        context_reliability=context_reliability,
     )
     cluster_stability = determine_cluster_stability(cluster)
 
@@ -535,6 +548,7 @@ def build_insight(
             cluster, probable_intent, feature_narrative, semantic_bridge,
             developmental_stage=developmental_stage,
             session_context=session_context,
+            child_name=child_name,
         )
     else:
         insight_sections = get_rule_based_sections(probable_intent["key"])
@@ -567,6 +581,7 @@ def build_insight(
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
         "readiness_score": round(profile.get("readiness_score", 0.5), 3),
         "language_maturity_level": profile.get("language_maturity_level", "pre-linguistic"),
+        "developmental_stage": developmental_stage,
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -578,15 +593,25 @@ def build_insight(
 # Save Insight
 # =============================================================================
 
-def save_insight_to_session(session_id: str, insight: Dict):
-    """Save generated insight to session record."""
+def save_insight_to_session(session_id: str, insight: Dict, efp: Optional[Dict] = None):
+    """Save generated insight (and EFP) to session record.
+
+    EFP (Expected Feedback Profile) is stored separately on the session so the
+    feedback_processor can retrieve it without parsing the full insight blob.
+    """
+    update_expr = "SET insight = :ins, insight_generated_at = :iga"
+    expr_values: Dict = {
+        ":ins": _float_to_decimal(insight),
+        ":iga": datetime.now(timezone.utc).isoformat(),
+    }
+    if efp:
+        update_expr += ", efp = :efp"
+        expr_values[":efp"] = _float_to_decimal(efp)
+
     session_table.update_item(
         Key={"session_id": session_id},
-        UpdateExpression="SET insight = :ins, insight_generated_at = :iga",
-        ExpressionAttributeValues={
-            ":ins": _float_to_decimal(insight),
-            ":iga": datetime.now(timezone.utc).isoformat(),
-        }
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_values,
     )
 
 
@@ -629,8 +654,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # 2. Build enhanced insight
     insight = build_insight(session, profile, cluster, semantic_bridge)
 
-    # 3. Save insight to session
-    save_insight_to_session(session_id, insight)
+    # 3. Extract EFP (Expected Feedback Profile) from insight for delta scoring later
+    efp = insight.get("probable_intent", {}).get("evidence", {}).get("blended")
+
+    # 4. Save insight + EFP to session
+    save_insight_to_session(session_id, insight, efp=efp)
 
     logger.info(
         f"Insight generated for session {session_id}: "

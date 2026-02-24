@@ -12,6 +12,7 @@ locals {
     SOUND_CLUSTER_TABLE           = var.sound_cluster_table
     SEMANTIC_BRIDGE_TABLE         = var.semantic_bridge_table
     FEEDBACK_TABLE                = var.feedback_table
+    CONCEPT_GRAPH_TABLE           = var.concept_graph_table
     ALPHA_VALUE                   = tostring(var.alpha_value)
     CLUSTER_SIMILARITY_THRESHOLD  = tostring(var.cluster_similarity_threshold)
     STEP_FUNCTION_ARN             = var.step_function_arn
@@ -276,6 +277,50 @@ resource "aws_lambda_function" "api_handler" {
 
 resource "aws_cloudwatch_log_group" "api_handler" {
   name              = "/aws/lambda/${aws_lambda_function.api_handler.function_name}"
+  retention_in_days = var.log_retention_days
+}
+
+# -----------------------------------------------------------------------------
+# NLP Processor Lambda (processes free-text feedback → concept graph updates)
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "nlp_processor" {
+  function_name = "${var.project}-${var.environment}-nlp-processor"
+  description   = "Extracts semantic concepts from parent free-text and updates concept graph"
+
+  package_type  = "Image"
+  image_uri     = "${var.ecr_repository_urls["nlp_processor"]}:${var.image_tag}"
+
+  role          = var.lambda_execution_role_arn
+  timeout       = 60
+  memory_size   = 512
+
+  environment {
+    variables = merge(local.common_env_vars, {
+      BEDROCK_MODEL_ID = var.bedrock_model_id
+    })
+  }
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.lambda_security_group_id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  tags = {
+    Name      = "${var.project}-${var.environment}-nlp-processor"
+    Component = "nlp-processor"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "nlp_processor" {
+  name              = "/aws/lambda/${aws_lambda_function.nlp_processor.function_name}"
   retention_in_days = var.log_retention_days
 }
 

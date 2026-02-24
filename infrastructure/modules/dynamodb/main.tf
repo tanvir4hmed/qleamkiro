@@ -1,6 +1,6 @@
 # =============================================================================
 # Module: DynamoDB
-# All Qleam data tables: ChildProfile, Session, SoundCluster, SemanticBridge, Feedback
+# All Qleam data tables: ChildProfile, Session, SoundCluster, SemanticBridge, Feedback, ConceptGraph
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -219,5 +219,40 @@ resource "aws_dynamodb_table" "feedback" {
   tags = {
     Name  = "${var.project}-${var.environment}-Feedback"
     Table = "Feedback"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ConceptGraph Table
+# Personal concept graph: maps each child's acoustic clusters to semantic concepts
+# PK: child_id, SK: concept_id (enables all-concepts-for-child query)
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "concept_graph" {
+  name         = "${var.project}-${var.environment}-ConceptGraph"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "child_id"
+  range_key    = "concept_id"
+
+  attribute {
+    name = "child_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "concept_id"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-ConceptGraph"
+    Table = "ConceptGraph"
   }
 }

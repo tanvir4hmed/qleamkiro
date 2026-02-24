@@ -216,23 +216,29 @@ _STAGE_PRIORS: Dict[str, Dict[str, float]] = {
 def compute_research_priors(
     developmental_stage: str,
     session_context: Optional[Dict] = None,
+    context_reliability: float = 0.8,
 ) -> Dict[str, float]:
     """
     Return context-adjusted developmental research priors.
 
     Base prior: stage-specific distribution from infant vocalization literature.
 
-    Context adjustments (from Phase 3 session_context):
-        feeding_minutes_ago >= 120  → hunger += 0.15  (not fed in > 2 hours)
-        feeding_minutes_ago <= 30   → hunger -= 0.10  (recently fed)
-        health_state == "sick"      → discomfort += 0.15, overstimulation += 0.05
-        health_state == "teething"  → discomfort += 0.20
+    Context adjustments (from Phase 3 session_context) are scaled by context_reliability
+    so that unreliable or potentially incorrect parent-provided data doesn't fully override
+    the research prior.  context_reliability starts at 0.8 and is updated via EMA in the
+    feedback_processor as parent-provided context is validated against actual outcomes.
+
+        feeding_minutes_ago >= 120  → hunger += 0.15 × cr  (not fed in > 2 hours)
+        feeding_minutes_ago <= 30   → hunger -= 0.10 × cr  (recently fed)
+        health_state == "sick"      → discomfort += 0.15 × cr, overstimulation += 0.05 × cr
+        health_state == "teething"  → discomfort += 0.20 × cr
 
     All adjustments are applied before normalization so distribution always sums to 1.
 
     Args:
         developmental_stage: One of the stage names from DEVELOPMENTAL_STAGE_MAP.
         session_context:     Optional Phase 3 context dict from session record.
+        context_reliability: How much to trust parent-provided context (0.2–1.0, default 0.8).
 
     Returns:
         Normalized probability distribution over intent labels.
@@ -241,21 +247,23 @@ def compute_research_priors(
     priors = dict(_STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]))
 
     if session_context:
+        cr = max(0.2, min(1.0, context_reliability))   # clamp to safe range
+
         # --- Feeding time adjustment ---
         feeding_ago = session_context.get("feeding_minutes_ago")
         if isinstance(feeding_ago, (int, float)) and feeding_ago >= 0:
             if feeding_ago >= 120:
-                priors["hunger"] += 0.15    # Not fed in > 2 hours
+                priors["hunger"] += 0.15 * cr    # Not fed in > 2 hours
             elif feeding_ago <= 30:
-                priors["hunger"] = max(0.0, priors["hunger"] - 0.10)  # Recently fed
+                priors["hunger"] = max(0.0, priors["hunger"] - 0.10 * cr)  # Recently fed
 
         # --- Health state adjustment ---
         health = str(session_context.get("health_state", "")).lower().strip()
         if health == "sick":
-            priors["discomfort"]      += 0.15
-            priors["overstimulation"] += 0.05
+            priors["discomfort"]      += 0.15 * cr
+            priors["overstimulation"] += 0.05 * cr
         elif health == "teething":
-            priors["discomfort"] += 0.20
+            priors["discomfort"] += 0.20 * cr
 
     # Ensure all non-negative after adjustments
     priors = {k: max(0.0, v) for k, v in priors.items()}
@@ -270,11 +278,14 @@ def blend_evidence_sources(
     acoustic_scores: Dict[str, float],
     research_priors: Dict[str, float],
     feedback_intents: Dict[str, float],
+    acoustic_w: float = ACOUSTIC_WEIGHT,
+    research_w: float = RESEARCH_WEIGHT,
+    feedback_w: float = FEEDBACK_WEIGHT,
 ) -> Dict[str, float]:
     """
-    Blend three evidence sources with fixed weights.
+    Blend three evidence sources with the given weights.
 
-    Weights:
+    Default weights (overridden by dynamic FRS weighting in determine_probable_intent_v2):
         Acoustic  60% — real-time audio (primary truth source, immune to bias)
         Research  15% — developmental science (cold-start + domain knowledge)
         Feedback  25% — parent reinforcement history (long-term personalisation)
@@ -293,7 +304,7 @@ def blend_evidence_sources(
         a = acoustic_scores.get(key, 0.0)
         r = research_priors.get(key, 0.0)
         f = feedback_intents.get(key, 0.0)
-        blended[key] = ACOUSTIC_WEIGHT * a + RESEARCH_WEIGHT * r + FEEDBACK_WEIGHT * f
+        blended[key] = acoustic_w * a + research_w * r + feedback_w * f
 
     return normalize_probability_distribution(blended)
 
@@ -307,6 +318,7 @@ def compute_intent_confidence(
     cluster: Dict,
     acoustic_scores: Dict[str, float],
     research_priors: Dict[str, float],
+    session_count: int = 0,
 ) -> float:
     """
     Compute confidence for the top blended intent.
@@ -318,10 +330,14 @@ def compute_intent_confidence(
       4. Semantic alignment      — cluster.semantic_alignment_score (word detected)
       5. Cross-source agreement  — acoustic AND research agree on top intent → +0.05
 
-    Cap: 0.92 — Qleam never claims certainty.
+    Caps (applied after calculation):
+      - Default ceiling: 0.92 — Qleam never claims certainty
+      - Sessions 1–5: max 0.40 (still learning this baby's unique patterns)
+      - Weak signal (top acoustic score < 0.30): max 0.35
+      - Floor: 0.10
 
     Returns:
-        float in [0.05, 0.92]
+        float in [0.10, 0.92]
     """
     if not blended:
         return 0.05
@@ -348,7 +364,14 @@ def compute_intent_confidence(
         + agreement_bonus
     )
 
-    return round(min(max(confidence, 0.05), 0.92), 3)
+    # Apply session-based and signal-strength caps
+    ceiling = 0.92
+    if session_count <= 5:
+        ceiling = 0.40
+    top_acoustic = max(acoustic_scores.values()) if acoustic_scores else 0.5
+    if top_acoustic < 0.30:
+        ceiling = min(ceiling, 0.35)
+    return round(min(max(confidence, 0.10), ceiling), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -361,12 +384,18 @@ def determine_probable_intent_v2(
     rich_features: Optional[Dict[str, float]] = None,
     developmental_stage: str = "UNKNOWN",
     session_context: Optional[Dict] = None,
+    session_count: int = 0,
+    parent_trust_score: float = 0.5,
+    context_reliability: float = 0.8,
 ) -> Dict:
     """
     Three-Source Evidence Model intent determination (Phase 4).
 
     Supersedes the Phase 2 two-source model (70% acoustic + 30% feedback).
-    New split: 60% acoustic + 15% research priors + 25% feedback history.
+    Default split: 60% acoustic + 15% research priors + 25% feedback history.
+    Feedback weight is dynamically scaled by parent_trust_score (FRS):
+        effective_feedback_w = 0.25 × max(0.1, FRS)
+        remaining weight redistributed proportionally to acoustic + research.
 
     Args:
         cluster:              SoundCluster DynamoDB item (probable_intents, reinforcement_weight)
@@ -374,19 +403,22 @@ def determine_probable_intent_v2(
         rich_features:        65-feature dict from Phase 3 (optional, improves accuracy)
         developmental_stage:  Baby's current developmental stage (e.g. "CANONICAL_BABBLE")
         session_context:      Phase 3 context dict (feeding_minutes_ago, health_state, etc.)
+        session_count:        Total sessions recorded for this child (drives confidence caps)
+        parent_trust_score:   Parent Feedback Reliability Score — FRS in [0, 1] (default 0.5)
+        context_reliability:  How much to trust parent-provided context data (0.2–1.0, default 0.8)
 
     Returns:
         {
             "label":       str,   # Human-readable intent label
             "key":         str,   # Intent key (e.g. "hunger")
-            "confidence":  float, # 0.05–0.92
+            "confidence":  float, # 0.10–0.92 (capped by session count + signal strength)
             "top_intents": [...], # Top 3 [{key, label, weight}]
             "evidence": {         # Source breakdown (transparency layer)
                 "acoustic":  {intent: weight, ...},
                 "research":  {intent: weight, ...},
                 "feedback":  {intent: weight, ...},
                 "blended":   {intent: weight, ...},
-                "weights":   {"acoustic": 0.60, "research": 0.15, "feedback": 0.25},
+                "weights":   {"acoustic": float, "research": float, "feedback": float},
                 "agreement": bool,   # acoustic + research agree on top intent
             }
         }
@@ -400,21 +432,27 @@ def determine_probable_intent_v2(
     # --- Source 1: Acoustic ---
     acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
 
-    # --- Source 2: Research priors + context ---
-    research_priors = compute_research_priors(developmental_stage, session_context)
+    # --- Source 2: Research priors + context (scaled by context_reliability) ---
+    research_priors = compute_research_priors(developmental_stage, session_context, context_reliability)
 
     # --- Source 3: Feedback history (maintained by reinforcement_engine) ---
     feedback_intents: Dict[str, float] = cluster.get("probable_intents") or {}
 
+    # --- Phase 4: Dynamic feedback weight scaled by parent trust score (FRS) ---
+    feedback_w = 0.25 * max(0.1, min(1.0, parent_trust_score))
+    remaining = 1.0 - feedback_w
+    acoustic_w = remaining * (0.60 / 0.75)  # acoustic's original share of non-feedback
+    research_w = remaining * (0.15 / 0.75)  # research's original share of non-feedback
+
     # --- Blend ---
-    blended = blend_evidence_sources(acoustic_scores, research_priors, feedback_intents)
+    blended = blend_evidence_sources(acoustic_scores, research_priors, feedback_intents, acoustic_w, research_w, feedback_w)
 
     # --- Winner ---
     best_key = max(blended, key=blended.get)
     label    = LABELS.get(best_key, best_key.replace("_", " ").title())
 
     # --- Confidence ---
-    confidence = compute_intent_confidence(blended, cluster, acoustic_scores, research_priors)
+    confidence = compute_intent_confidence(blended, cluster, acoustic_scores, research_priors, session_count=session_count)
 
     # --- Cross-source agreement flag ---
     acoustic_best = max(acoustic_scores, key=acoustic_scores.get) if acoustic_scores else best_key
@@ -426,7 +464,8 @@ def determine_probable_intent_v2(
 
     logger.info(
         f"Evidence model: intent={best_key} confidence={confidence:.3f} "
-        f"stage={developmental_stage} agreement={agreement}"
+        f"stage={developmental_stage} agreement={agreement} "
+        f"session_count={session_count} frs={parent_trust_score:.3f}"
     )
 
     return {
@@ -447,9 +486,9 @@ def determine_probable_intent_v2(
             "feedback":  {k: round(v, 3) for k, v in feedback_intents.items()},
             "blended":   {k: round(v, 3) for k, v in blended.items()},
             "weights":   {
-                "acoustic": ACOUSTIC_WEIGHT,
-                "research": RESEARCH_WEIGHT,
-                "feedback": FEEDBACK_WEIGHT,
+                "acoustic": round(acoustic_w, 4),
+                "research": round(research_w, 4),
+                "feedback": round(feedback_w, 4),
             },
             "agreement": agreement,
         },

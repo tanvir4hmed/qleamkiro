@@ -27,6 +27,7 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     CHILD_PROFILE_TABLE,
+    CONCEPT_GRAPH_TABLE,
     FEEDBACK_TABLE,
     S3_BUCKET_NAME,
     SEMANTIC_BRIDGE_TABLE,
@@ -34,6 +35,7 @@ from constants import (
     SOUND_CLUSTER_TABLE,
     STEP_FUNCTION_ARN,
 )
+from concept_graph import pre_populate_universal_concepts, get_concepts
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -65,6 +67,7 @@ session_table = dynamodb.Table(SESSION_TABLE)
 sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
+concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
 
 
 def _decimal_to_float(obj: Any) -> Any:
@@ -264,6 +267,12 @@ def create_child(event: Dict) -> Dict:
 
     child_profile_table.put_item(Item=_float_to_decimal(profile))
     logger.info(f"Created child profile {child_id} for user {user_id} (birth_date={'set' if birth_date else 'not set'})")
+
+    # Pre-populate universal concepts for new child (best-effort, non-fatal)
+    try:
+        pre_populate_universal_concepts(child_id, concept_graph_table)
+    except Exception as e:
+        logger.warning(f"Failed to pre-populate concepts for child {child_id}: {e}")
 
     return response(201, {"child_id": child_id, "message": "Child profile created"}, event)
 
@@ -557,6 +566,28 @@ def submit_feedback(event: Dict) -> Dict:
 
 
 # =============================================================================
+# GET /child/{child_id}/concepts — List personal concept graph for a child
+# =============================================================================
+def list_concepts(event: Dict) -> Dict:
+    user_id = get_user_id(event)
+    child_id = event["pathParameters"]["child_id"]
+
+    # Verify ownership
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    if profile_resp["Item"].get("parent_id") != user_id:
+        return response(403, {"error": "Forbidden"}, event)
+
+    try:
+        concepts = get_concepts(child_id, concept_graph_table, limit=20)
+        return response(200, {"concepts": concepts, "count": len(concepts)}, event)
+    except Exception as e:
+        logger.error(f"Failed to list concepts for child {child_id}: {e}")
+        return response(500, {"error": "Failed to retrieve concepts"}, event)
+
+
+# =============================================================================
 # Router
 # =============================================================================
 ROUTES = {
@@ -564,6 +595,7 @@ ROUTES = {
     ("POST", "/child"): create_child,
     ("DELETE", "/child/{child_id}"): delete_child,
     ("GET", "/child/{child_id}/sessions"): list_sessions,
+    ("GET", "/child/{child_id}/concepts"): list_concepts,
     ("POST", "/session/upload"): upload_session,
     ("POST", "/session/{session_id}/start"): start_processing,
     ("GET", "/session/{session_id}/insight"): get_insight,
