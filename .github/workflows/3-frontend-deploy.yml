@@ -85,11 +85,26 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Configure npm for CI environment
         run: |
           cd frontend
-          npm install
+          npm config set registry https://registry.npmjs.org/
+          npm config set strict-ssl true
+          npm config set fetch-retries 5
+          npm config set fetch-retry-factor 2
+          npm config set fetch-retry-mintimeout 10000
+          npm config set fetch-retry-maxtimeout 60000
+
+      - name: Install dependencies with fallback
+        run: |
+          cd frontend
+          # Try npm ci first, fallback to npm install if it fails
+          if ! npm ci --verbose; then
+            echo "npm ci failed, trying npm install..."
+            npm install --verbose
+          fi
 
       - name: Build frontend
         run: |
