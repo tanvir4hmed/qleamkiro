@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 
+// Stage labels with age range context so parents aren't confused
+// e.g. "First Words" alone sounds like "we heard a first word in this recording"
 const STAGE_LABELS = {
-  NEWBORN: 'Newborn',
-  EARLY_VOCAL: 'Early Vocal',
-  CANONICAL_BABBLE: 'Canonical Babble',
-  PROTO_WORDS: 'Proto-Words',
-  FIRST_WORDS: 'First Words',
-  WORD_COMBINATIONS: 'Word Combinations',
-  EARLY_SENTENCES: 'Early Sentences',
+  NEWBORN:           { label: 'Newborn',             age: '0–3 months' },
+  EARLY_VOCAL:       { label: 'Early Vocalisation',  age: '3–6 months' },
+  CANONICAL_BABBLE:  { label: 'Canonical Babbling',  age: '6–9 months' },
+  PROTO_WORDS:       { label: 'Proto-Words',          age: '9–12 months' },
+  FIRST_WORDS:       { label: 'Emerging Words',       age: '12–18 months' },
+  WORD_COMBINATIONS: { label: 'Word Combinations',    age: '18–24 months' },
+  EARLY_SENTENCES:   { label: 'Early Sentences',      age: '24 months+' },
 };
 
 const CBR_LABELS = {
@@ -39,7 +41,7 @@ function DevelopmentalView({ data }) {
     milestones_this_session = [],
   } = data;
 
-  const stageLabel = STAGE_LABELS[current_stage] || current_stage;
+  const stageInfo = STAGE_LABELS[current_stage] || { label: current_stage, age: '' };
   const cbrLabel = CBR_LABELS[cbr_category] || cbr_category;
   const cbrPercent = Math.round(cbr * 100);
   const hasMilestones = milestones_this_session.length > 0;
@@ -61,7 +63,10 @@ function DevelopmentalView({ data }) {
           {/* Stage badge */}
           <div className="developmental-row">
             <span className="developmental-key">Stage</span>
-            <span className="stage-badge">{stageLabel}</span>
+            <span className="stage-badge">
+              {stageInfo.label}
+              {stageInfo.age && <span className="stage-age-range"> · {stageInfo.age}</span>}
+            </span>
           </div>
 
           {/* CBR bar */}

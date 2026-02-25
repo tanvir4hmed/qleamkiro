@@ -353,6 +353,7 @@ def _generate_linguistic_insight(
     child_id: str,
     developmental_stage: str,
     rich_features: dict,
+    feature_scores: Optional[Dict] = None,
 ) -> dict:
     """
     Generate and store language-development insight for LINGUISTIC-mode sessions.
@@ -375,9 +376,19 @@ def _generate_linguistic_insight(
             "source": "rule-based",
         }
 
+    # Build observed_pattern from feature_scores so the acoustic chart can render
+    fs = feature_scores or {}
+    observed_pattern = {
+        "emotional_intensity": round(float(fs.get("emotional_intensity", 0)), 3),
+        "rhythm":              round(float(fs.get("rhythm", 0)), 3),
+        "repetition":          round(float(fs.get("repetition", 0)), 3),
+        "expressive_flow":     round(float(fs.get("expressive_flow", 0)), 3),
+    }
+
     insight = {
         "insight_type": "language_development",
         "developmental_stage": developmental_stage,
+        "observed_pattern": observed_pattern,
         "insight_sections": insight_sections,
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
         "note": DISCLAIMER,
@@ -780,29 +791,53 @@ def build_insight(
 # Save Insight
 # =============================================================================
 
-def _build_rejection_insight(session: Dict) -> Dict:
-    """Lightweight insight returned when the quality gate rejects the recording."""
+def _build_rejection_insight(session: Dict, reason: str = "quality") -> Dict:
+    """
+    Lightweight insight returned when recording cannot be analysed.
+
+    reason values:
+      "quality"  — no signal / no vocal activity / too short
+      "adult"    — biological validation flagged adult voice (mimicry suspected)
+    """
+    if reason == "adult":
+        what_i_hear = "This recording contains adult speech rather than baby sounds."
+        what_it_means = (
+            "The voice patterns match an adult, not a baby. "
+            "Make sure to record while your baby is vocalising, not while you're talking."
+        )
+        what_to_try = [
+            "Wait for baby to make sounds, then start recording",
+            "Hold the phone 20–30 cm from baby's face",
+            "Stay quiet yourself while recording",
+        ]
+        label = "Adult voice detected"
+    else:
+        what_i_hear = "We couldn't detect clear baby sounds in this recording."
+        what_it_means = (
+            "This usually means the recording was too quiet, too short, or "
+            "captured background noise rather than your baby's voice."
+        )
+        what_to_try = [
+            "Hold the phone 20–30 cm from your baby's mouth",
+            "Record somewhere quieter if possible",
+            "Try again when baby is actively making sounds",
+        ]
+        label = "No baby sounds detected"
+
     return {
         "probable_intent": {
             "key": "unknown",
-            "label": "No baby sounds detected",
+            "label": label,
             "confidence": 0.0,
             "confidence_tier": "low",
         },
         "insight_sections": {
-            "what_i_hear": "We couldn't detect clear baby sounds in this recording.",
-            "what_it_means": (
-                "This usually means the recording was too quiet, too short, or "
-                "captured background noise rather than your baby's voice."
-            ),
-            "what_to_try": [
-                "Hold the phone 20–30 cm from your baby's mouth",
-                "Record somewhere quieter if possible",
-                "Try again when baby is actively making sounds",
-            ],
+            "what_i_hear": what_i_hear,
+            "what_it_means": what_it_means,
+            "what_to_try": what_to_try,
             "source": "quality-rejection",
         },
-        "developmental_stage": session.get("developmental_stage", ""),
+        # No developmental_stage — don't show a misleading stage label on rejected sessions
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -857,6 +892,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         raise ValueError(f"Session {session_id} not found")
 
     # 1a. Quality gate check — reject recordings with no vocal content
+    # Only truly critical issues block analysis.
+    # too_silent alone is NOT critical — 1s of sound in a 5s recording is still analysable.
     _CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
     quality_gate = session.get("quality_gate", {})
     gate_issues = quality_gate.get("issues", [])
@@ -868,7 +905,22 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.warning(
             f"Quality gate rejection for session {session_id}: {critical_issues}"
         )
-        rejection_insight = _build_rejection_insight(session)
+        rejection_insight = _build_rejection_insight(session, reason="quality")
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
+        }
+
+    # 1b. Adult/mimicry check — reject when biological validation detects adult voice
+    biological = session.get("biological", {})
+    if biological.get("mimicry_suspected") is True:
+        logger.warning(
+            f"Adult voice detected for session {session_id}: "
+            f"vtl={biological.get('vtl_cm')}cm f0={biological.get('f0_hz')}Hz"
+        )
+        rejection_insight = _build_rejection_insight(session, reason="adult")
         save_insight_to_session(session_id, rejection_insight)
         return {
             "status": "insight_generated",
@@ -881,7 +933,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if developmental_mode == "LINGUISTIC":
         developmental_stage = session.get("developmental_stage", "WORD_COMBINATIONS")
         rich_features = session.get("rich_features", {})
-        return _generate_linguistic_insight(session_id, child_id, developmental_stage, rich_features)
+        feature_scores = session.get("feature_scores", {})
+        return _generate_linguistic_insight(
+            session_id, child_id, developmental_stage, rich_features, feature_scores
+        )
 
     profile = get_child_profile(child_id)
     if not profile:

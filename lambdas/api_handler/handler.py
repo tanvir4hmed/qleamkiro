@@ -446,7 +446,10 @@ def upload_session(event: Dict) -> Dict:
         return response(400, {"error": "child_id is required"}, event)
 
     # [Phase 3] Optional session context (feeding time, health, environment)
-    session_context = _validate_context(body.get("context"))
+    # Frontend sends the key as "session_context"; accept both for backward compat
+    session_context = _validate_context(
+        body.get("session_context") or body.get("context")
+    )
 
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
