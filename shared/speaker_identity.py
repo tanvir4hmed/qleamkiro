@@ -11,7 +11,7 @@ Design principles:
   - Gives benefit of the doubt until >= MIN_SESSIONS_FOR_ENROLLMENT sessions exist
 """
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -161,6 +161,7 @@ def determine_routing(
     developmental_mode: str,
     bio_result: Dict,
     enrollment_result: Dict,
+    age_classification: Optional[Dict] = None,
 ) -> Dict:
     """
     Determine which analysis pipeline to use for this session.
@@ -169,13 +170,23 @@ def determine_routing(
       "infant_vocalization"               — PRE_LINGUISTIC standard path
       "infant_vocalization_proto_word"    — TRANSITION: add proto-word detection
       "speech_analysis"                   — LINGUISTIC: MLU / vocabulary (Phase 7)
-      "adult_mimicry_flagged"             — Bio says adult, high confidence
+      "adult_mimicry_flagged"             — Adult confirmed by multi-feature evidence
+      "low_confidence"                    — Classifier returned UNKNOWN, flag for review
+
+    Adult detection priority (OR logic — any one triggers adult_mimicry_flagged):
+      A. bio_result["mimicry_suspected"]=True AND bio_confidence ≥ 0.55
+         (bio_result is already reconciled with Phase-4 probabilistic classifier)
+      B. age_classification["is_adult"]=True AND confidence ≥ 0.60
+
+    The confidence thresholds are intentionally lower than before (0.55 / 0.60 vs old 0.75)
+    because bio_result is now informed by the 7-feature probabilistic classifier.
 
     Returns:
         {
-            "mode": str,          # PRE_LINGUISTIC | TRANSITION | LINGUISTIC
-            "stage": str,
+            "mode":          str,
+            "stage":         str,
             "analysis_type": str,
+            "adult_evidence": list,   # audit trail of what triggered adult detection
         }
     """
     mode_to_analysis = {
@@ -184,17 +195,44 @@ def determine_routing(
         "LINGUISTIC":     "speech_analysis",
     }
 
-    analysis_type = mode_to_analysis.get(developmental_mode, "infant_vocalization")
+    analysis_type  = mode_to_analysis.get(developmental_mode, "infant_vocalization")
+    adult_evidence: list = []
 
-    # Override: strong adult signal and high bio confidence
-    if (
-        bio_result.get("mimicry_suspected", False)
-        and bio_result.get("bio_confidence", 0.0) >= 0.75
-    ):
+    # --- Adult detection path A: bio_result (already reconciled with Phase 4) ---
+    bio_mimicry = bio_result.get("mimicry_suspected", False)
+    bio_conf    = float(bio_result.get("bio_confidence", 0.0))
+    if bio_mimicry and bio_conf >= 0.55:
         analysis_type = "adult_mimicry_flagged"
+        adult_evidence.append(
+            f"bio_mimicry:conf={bio_conf:.2f} "
+            f"cat={bio_result.get('speaker_category', '?')} "
+            f"src={bio_result.get('classifier_source', 'bio_validator')}"
+        )
+
+    # --- Adult detection path B: direct probabilistic classifier signal ---
+    if age_classification:
+        age_is_adult   = age_classification.get("is_adult", False)
+        age_conf       = float(age_classification.get("confidence", 0.0))
+        age_voice_type = age_classification.get("voice_type", "")
+
+        if age_is_adult and age_conf >= 0.60:
+            analysis_type = "adult_mimicry_flagged"
+            adult_evidence.append(
+                f"age_classifier:class={age_classification.get('final_class')} "
+                f"conf={age_conf:.2f} voice_type={age_voice_type}"
+            )
+
+        # Low-confidence / noise signal — flag for review but don't block pipeline
+        if (
+            age_classification.get("is_unknown", False)
+            and age_voice_type == "noise"
+            and analysis_type != "adult_mimicry_flagged"
+        ):
+            analysis_type = "low_confidence"
 
     return {
-        "mode": developmental_mode,
-        "stage": developmental_stage,
-        "analysis_type": analysis_type,
+        "mode":           developmental_mode,
+        "stage":          developmental_stage,
+        "analysis_type":  analysis_type,
+        "adult_evidence": adult_evidence,
     }

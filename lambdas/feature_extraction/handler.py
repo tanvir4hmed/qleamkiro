@@ -45,11 +45,14 @@ from audio_utils import (
 )
 
 # Phase 2 imports
-from diarization import diarize
+from diarization import diarize, extract_baby_audio
 from speaker_identity import determine_routing, verify_enrolled_baby
 
 # Phase 3 imports
 from rich_features import extract_rich_features
+
+# Phase 4 imports — probabilistic age classifier
+from age_classifier import classify_probabilistic, age_class_to_stage_hint
 
 # Configure logging
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -244,8 +247,9 @@ def save_session(
     routing: Optional[Dict] = None,
     rich_features: Optional[Dict] = None,
     session_context: Optional[Dict] = None,
+    age_classification: Optional[Dict] = None,
 ):
-    """Save session record to DynamoDB with Phase 1 + Phase 2 + Phase 3 metadata."""
+    """Save session record to DynamoDB with Phase 1–4 metadata."""
     now = datetime.now(timezone.utc).isoformat()
 
     session_item = {
@@ -273,61 +277,125 @@ def save_session(
         # Phase 3
         "rich_features": rich_features or {},
         "session_context": session_context or {},
+        # Phase 4 — probabilistic age classification
+        "age_classification": age_classification or {},
     }
 
     session_table.put_item(Item=_float_to_decimal(session_item))
     logger.info(f"Saved session {session_id}")
 
 
+def _reconcile_bio_with_age_class(bio_result: Dict, age_class: Dict) -> None:
+    """
+    Overwrite bio_result flags with the probabilistic classifier's verdict
+    when it is more confident.
+
+    The probabilistic classifier uses 7+ acoustic features (F0, VTL, jitter,
+    shimmer, HNR, spectral centroid, cry fraction, syllable rate) against
+    literature-based Gaussian priors.  The original biological_validation uses
+    a simpler score-based system and can be overridden when the richer model
+    disagrees with high confidence.
+
+    Rules:
+      • Classifier says ADULT (conf ≥ 0.55):
+          force is_infant=False, is_adult=True, mimicry_suspected=True,
+          update speaker_category and bio_confidence.
+
+      • Classifier says NON-ADULT (conf ≥ 0.60) but bio said ADULT:
+          flip is_adult=False, mimicry_suspected=False,
+          update speaker_category and bio_confidence.
+
+    Anything below these confidence thresholds: no change (trust bio_result).
+    """
+    cls  = age_class.get("final_class", "unknown")
+    conf = float(age_class.get("confidence", 0.0))
+
+    if cls == "unknown" or conf < 0.50:
+        return
+
+    is_adult = age_class.get("is_adult", False)
+    is_baby  = age_class.get("is_baby",  False)
+    is_child = age_class.get("is_child", False)
+
+    if is_adult and conf >= 0.55:
+        bio_result["is_infant"]        = False
+        bio_result["is_child"]         = False
+        bio_result["is_adult"]         = True
+        bio_result["mimicry_suspected"]= True
+        bio_result["speaker_category"] = cls
+        bio_result["speaker_type"]     = "adult"
+        bio_result["bio_confidence"]   = round(max(bio_result.get("bio_confidence", 0.0), conf), 3)
+        bio_result["classifier_source"]= "age_classifier_phase4"
+
+    elif (is_baby or is_child) and conf >= 0.60:
+        bio_was_adult = bio_result.get("is_adult", False)
+        if bio_was_adult:
+            bio_result["is_infant"]        = is_baby
+            bio_result["is_child"]         = is_child
+            bio_result["is_adult"]         = False
+            bio_result["mimicry_suspected"]= False
+            bio_result["speaker_category"] = cls
+            bio_result["speaker_type"]     = (
+                "infant" if is_baby else ("child" if is_child else "toddler")
+            )
+            bio_result["bio_confidence"]   = round(conf, 3)
+            bio_result["classifier_source"]= "age_classifier_phase4"
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
-    Feature Extraction Lambda handler — Phase 1 + Phase 2 + Phase 3.
+    Feature Extraction Lambda handler — Phase 1–4.
 
-    Pipeline:
-      0. Download audio from S3
-      1. Extract acoustic features (4 scores + embedding + audio_array)
-      2. [Phase 1] Audio quality gate (SNR, clipping, silence, Lombard)
-      3. [Phase 1] Biological validation (formants, VTL, infant/adult classifier)
-      3b.[Phase 3] Rich feature extraction (~65 features, reuses formants from step 3)
-      4. [Phase 2] Diarization — segment by speaker, label each segment
-      5. [Phase 2] Load historical embeddings → verify enrolled baby identity
-      6. Get child profile → compute age + developmental stage from birth_date
-      7. [Phase 2] Determine analysis routing (PRE_LINGUISTIC / TRANSITION / LINGUISTIC)
-      8. Update EMA baselines, deviation, readiness score
-      9. Update child profile (with developmental stage)
-     10. Save session with all Phase 1 + Phase 2 + Phase 3 metadata
+    Pipeline (corrected order for accuracy):
+      0.  Download audio from S3
+      1.  Extract acoustic features on full audio (embedding, feature_scores, audio_array)
+      2.  [Phase 1] Audio quality gate (SNR, clipping, silence, Lombard)
+      3.  [Phase 2] Diarization on full audio — speaker-segment labels
+      4.  Extract baby-only audio from diarization segments
+      5.  [Phase 1] Biological validation on BABY audio (clean, not adult-contaminated)
+      6.  [Phase 3] Rich feature extraction (~65 features) on BABY audio
+      7.  [Phase 4] Probabilistic age classification (Gaussian + voice-type + adult gate)
+      8.  Reconcile bio_result flags with probabilistic classifier
+      9.  [Phase 2] Load embeddings → enrolled baby identity verification
+      10. Get child profile → age + developmental stage selection
+      11. [Phase 2] Determine analysis routing
+      12. Update EMA baselines, deviation, readiness score
+      13. Update child profile
+      14. Save session
+
+    Key accuracy improvement: running bio validation and rich feature extraction on
+    baby-only audio (step 4) prevents adult voice contamination of acoustic features.
 
     Args:
         event: {
             "child_id": str,
             "session_id": str,
             "s3_audio_path": str,
-            "session_context": dict  # optional (Phase 3)
+            "session_context": dict  # optional
         }
     """
     logger.info(f"Feature extraction started: {json.dumps({k: v for k, v in event.items() if k != 'embedding_vector'})}")
 
-    child_id = event["child_id"]
-    session_id = event["session_id"]
-    s3_audio_path = event["s3_audio_path"]
-    # [Phase 3] Session context provided by parent at upload time (may be absent)
+    child_id       = event["child_id"]
+    session_id     = event["session_id"]
+    s3_audio_path  = event["s3_audio_path"]
     session_context = event.get("session_context") or {}
 
     # 0. Download audio from S3
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     audio_bytes = download_audio_from_s3(bucket, s3_audio_path)
 
-    # 1. Extract features (includes audio loading + VAD trimming)
+    # 1. Full-audio extraction: embedding (for enrollment), feature_scores, audio_array
     extraction_result = extract_all_features(audio_bytes)
-    feature_scores = extraction_result["feature_scores"]
+    feature_scores   = extraction_result["feature_scores"]
     embedding_vector = extraction_result["embedding_vector"]
     duration_seconds = extraction_result["duration_seconds"]
-    audio_array = extraction_result.get("audio_array")
-    sample_rate = extraction_result.get("sample_rate", 22050)
+    audio_array      = extraction_result.get("audio_array")
+    sample_rate      = extraction_result.get("sample_rate", 22050)
 
     logger.info(f"Extracted features: {feature_scores}")
 
-    # 2. [Phase 1] Audio quality gate
+    # 2. [Phase 1] Audio quality gate — always run on full audio
     quality_gate_result = {}
     if audio_array is not None:
         try:
@@ -339,33 +407,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         except Exception as e:
             logger.warning(f"Quality gate error (non-blocking): {e}")
 
-    # 3. [Phase 1] Biological validation
-    bio_result = {}
-    if audio_array is not None:
-        try:
-            bio_result = biological_validation(audio_array, sample_rate)
-            if bio_result.get("mimicry_suspected"):
-                logger.warning(f"Adult mimicry suspected for session {session_id}: {bio_result['evidence']}")
-            else:
-                logger.info(f"Bio: is_infant={bio_result.get('is_infant')} VTL={bio_result.get('vtl_cm')}cm F0={bio_result.get('f0_hz')}Hz")
-        except Exception as e:
-            logger.warning(f"Biological validation error (non-blocking): {e}")
-
-    # 3b. [Phase 3] Rich feature extraction (~65 features)
-    # Formants from bio validation are reused to avoid a second LPC pass.
-    rich_features_result = {}
-    if audio_array is not None:
-        try:
-            formants_for_rich = bio_result.get("formants") if bio_result else None
-            rich_features_result = extract_rich_features(
-                audio_array, sample_rate, formants=formants_for_rich
-            )
-            logger.info(f"Rich features extracted: {len(rich_features_result)} features")
-        except Exception as e:
-            logger.warning(f"Rich feature extraction error (non-blocking): {e}")
-
-    # 4. [Phase 2] Diarization — who spoke when
+    # 3. [Phase 2] Diarization on FULL audio — segment and label by speaker type
+    # Running this FIRST allows us to isolate baby audio before bio/rich feature extraction.
     diarization_result = {}
+    baby_audio = audio_array   # fallback: full audio
     if audio_array is not None:
         try:
             diarization_result = diarize(audio_array, sample_rate)
@@ -374,10 +419,69 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 f"baby_fraction={diarization_result['baby_audio_fraction']:.0%}, "
                 f"adult_segments={diarization_result['adult_segments_detected']}"
             )
+            # 4. Extract baby-labeled audio for clean downstream analysis
+            # "unknown" segments are included (conservative — might be quiet baby sounds)
+            baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result)
+            baby_secs  = len(baby_audio) / max(sample_rate, 1)
+            logger.info(f"Baby audio extracted: {baby_secs:.1f}s of {duration_seconds:.1f}s total")
         except Exception as e:
             logger.warning(f"Diarization error (non-blocking): {e}")
+            baby_audio = audio_array  # safe fallback
 
-    # 5. [Phase 2] Load historical embeddings → enrolled baby verification
+    # 5. [Phase 1] Biological validation on BABY audio
+    # Running on clean baby audio prevents adult VTL/F0 from contaminating estimates.
+    bio_result = {}
+    if baby_audio is not None:
+        try:
+            bio_result = biological_validation(baby_audio, sample_rate)
+            if bio_result.get("mimicry_suspected"):
+                logger.warning(f"Adult mimicry suspected for session {session_id}: {bio_result['evidence']}")
+            else:
+                logger.info(f"Bio: is_infant={bio_result.get('is_infant')} VTL={bio_result.get('vtl_cm')}cm F0={bio_result.get('f0_hz')}Hz")
+        except Exception as e:
+            logger.warning(f"Biological validation error (non-blocking): {e}")
+
+    # 6. [Phase 3] Rich feature extraction (~65 features) on BABY audio
+    # Formants from bio validation reused to avoid a second LPC pass.
+    rich_features_result = {}
+    if baby_audio is not None:
+        try:
+            formants_for_rich = bio_result.get("formants") if bio_result else None
+            rich_features_result = extract_rich_features(
+                baby_audio, sample_rate, formants=formants_for_rich
+            )
+            logger.info(f"Rich features extracted: {len(rich_features_result)} features")
+        except Exception as e:
+            logger.warning(f"Rich feature extraction error (non-blocking): {e}")
+
+    # 7. [Phase 4] Probabilistic age classification
+    # Voice type layer + diagonal Gaussian scoring + conservative adult gate.
+    age_classification_result = {}
+    if rich_features_result:
+        try:
+            age_classification_result = classify_probabilistic(
+                rich_features_result, bio_result or {}
+            )
+            logger.info(
+                f"Age classifier: class={age_classification_result.get('final_class')} "
+                f"conf={age_classification_result.get('confidence', 0.0):.3f} "
+                f"voice_type={age_classification_result.get('voice_type')} "
+                f"probs={age_classification_result.get('probability_distribution')}"
+            )
+        except Exception as e:
+            logger.warning(f"Age classification error (non-blocking): {e}")
+
+    # 8. Reconcile bio_result with probabilistic classifier
+    # Overwrites is_infant, is_adult, mimicry_suspected, speaker_category
+    # when the richer multi-feature classifier disagrees with sufficient confidence.
+    if age_classification_result and bio_result:
+        try:
+            _reconcile_bio_with_age_class(bio_result, age_classification_result)
+        except Exception as e:
+            logger.warning(f"Bio reconciliation error (non-blocking): {e}")
+
+    # 9. [Phase 2] Load historical embeddings → enrolled baby identity verification
+    # Uses FULL-audio embedding (not baby-only) — intentional for identity consistency.
     enrollment_result = {}
     try:
         historical_embeddings = load_historical_embeddings(child_id, session_id, limit=10)
@@ -395,7 +499,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     except Exception as e:
         logger.warning(f"Enrollment verification error (non-blocking): {e}")
 
-    # 6. Get child profile → age + developmental stage
+    # 10. Get child profile → age + developmental stage
     profile = get_or_create_child_profile(child_id)
     previous_baselines = profile.get("baseline_features", {})
     session_count = profile.get("session_count", 0) + 1
@@ -404,40 +508,55 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     age_days = compute_age_days(birth_date_str)
     age_stage_info = developmental_stage_from_age(age_days)
 
-    # Primary: audio-derived stage from VTL + F0 (biological validation).
-    # Birth date is used only as a plausibility check, not the sole determinant.
+    # Stage source priority:
+    #   1. Bio hint (VTL + F0) — highest physical grounding, conf ≥ 0.55
+    #   2. Probabilistic hint (7 features) — conf ≥ 0.40
+    #   3. Birth-date estimate — fallback when both audio signals are weak
+    #
+    # Note: bio_result has already been reconciled with age_classification above,
+    # so audio_stage_hint_from_bio will return _NO_HINT if prob classifier
+    # detected adult (mimicry_suspected=True).
     audio_hint = audio_stage_hint_from_bio(bio_result)
-    if audio_hint["stage"] and audio_hint["confidence"] >= 0.55:
+    prob_hint  = age_class_to_stage_hint(age_classification_result) if age_classification_result else {}
+
+    if audio_hint.get("stage") and audio_hint.get("confidence", 0.0) >= 0.55:
         developmental_stage = audio_hint["stage"]
         developmental_mode  = audio_hint["mode"]
-        # Log plausibility mismatch between audio signal and birth date
         if age_stage_info["stage"] != audio_hint["stage"]:
             logger.info(
-                f"Stage: audio={audio_hint['stage']} (conf={audio_hint['confidence']}) "
-                f"vs age={age_stage_info['stage']} — using audio-derived stage"
+                f"Stage: bio={audio_hint['stage']} (conf={audio_hint['confidence']}) "
+                f"overrides age-based={age_stage_info['stage']}"
             )
         else:
-            logger.info(
-                f"Stage: audio={audio_hint['stage']} matches age-based estimate — "
-                f"confidence boosted"
-            )
+            logger.info(f"Stage: bio={audio_hint['stage']} agrees with age-based estimate")
+
+    elif prob_hint.get("stage") and prob_hint.get("confidence", 0.0) >= 0.40:
+        developmental_stage = prob_hint["stage"]
+        developmental_mode  = prob_hint["mode"]
+        logger.info(
+            f"Stage: probabilistic hint — class={age_classification_result.get('final_class')} "
+            f"→ stage={developmental_stage} conf={prob_hint['confidence']}"
+        )
+
     else:
-        # Fall back to age-based stage when audio quality is too low for VTL/F0
         developmental_stage = age_stage_info["stage"]
         developmental_mode  = age_stage_info["mode"]
         logger.info(
-            f"Stage: audio hint unavailable (bio_confidence={audio_hint['confidence']}) "
-            f"— using age-based stage={developmental_stage}"
+            f"Stage: fallback to age-based={developmental_stage} "
+            f"(bio_conf={audio_hint.get('confidence', 0):.2f}, "
+            f"prob_conf={prob_hint.get('confidence', 0):.2f})"
         )
 
     logger.info(f"Child: age={age_days}d stage={developmental_stage} mode={developmental_mode}")
 
-    # 7. [Phase 2] Determine analysis routing
+    # 11. [Phase 2] Determine analysis routing
+    # bio_result is already reconciled with age_classification — passes both signals.
     routing_result = determine_routing(
         developmental_stage=developmental_stage,
         developmental_mode=developmental_mode,
         bio_result=bio_result,
         enrollment_result=enrollment_result,
+        age_classification=age_classification_result,
     )
     logger.info(f"Routing: {routing_result['analysis_type']}")
 
@@ -466,7 +585,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         developmental_mode=developmental_mode,
     )
 
-    # 12. Save session with all Phase 1 + Phase 2 + Phase 3 metadata
+    # 12. Save session with all Phase 1–4 metadata
     save_session(
         session_id=session_id,
         child_id=child_id,
@@ -485,6 +604,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         routing=routing_result,
         rich_features=rich_features_result,
         session_context=session_context,
+        age_classification=age_classification_result,
     )
 
     logger.info(f"Feature extraction complete for session {session_id}")
@@ -507,4 +627,5 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "developmental_stage": developmental_stage,
         "developmental_mode": developmental_mode,
         "session_context": session_context,
+        "age_classification": age_classification_result,
     }

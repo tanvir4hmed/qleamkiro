@@ -115,32 +115,97 @@ def segment_audio_by_energy(
 # Per-segment speaker classification
 # ---------------------------------------------------------------------------
 
+def _segment_aux_features(y_segment: np.ndarray, sr: int):
+    """
+    Compute lightweight auxiliary features for segment classification.
+
+    Returns:
+        (f0_instability, zcr, rms_var_ratio)
+
+    f0_instability — relative F0 standard deviation (std / median).
+        High (>0.12) → irregular pitch → baby-like (cry, babble).
+        Low  (<0.05) → very stable   → adult speech or sustained tone.
+
+    zcr — zero-crossing rate per sample.
+        ~0.018 for pure tone at 200 Hz @ 22 kHz.
+        0.02–0.06 for voiced speech.
+        High → fricatives / noise.
+
+    rms_var_ratio — RMS energy std / mean across 20 ms frames.
+        High (>0.5) → energy bursts → syllabic / cry-like.
+        Low  (<0.25)→ steady energy → sustained tone or steady adult speech.
+    """
+    # F0 already computed by caller, but we only receive the segment here.
+    # These are O(n) numpy operations — safe for up to 20 segments.
+    try:
+        # ZCR: sign changes per sample
+        signs = np.sign(y_segment)
+        zcr = float(np.sum(signs[:-1] != signs[1:])) / max(len(y_segment), 1)
+
+        # RMS variance ratio across short frames
+        frame_len = max(256, int(sr * 0.020))
+        hop = max(128, frame_len // 2)
+        n_frames = max(1, (len(y_segment) - frame_len) // hop + 1)
+        frames_rms = np.array([
+            float(np.sqrt(np.mean(y_segment[i * hop: i * hop + frame_len] ** 2)))
+            for i in range(n_frames)
+        ])
+        rms_mean = float(np.mean(frames_rms)) + 1e-10
+        rms_var_ratio = float(np.std(frames_rms)) / rms_mean
+
+        return zcr, rms_var_ratio
+    except Exception:
+        return 0.05, 0.5   # Safe neutral defaults
+
+
+def _is_sustained_tone(f0_instability: float, zcr: float, rms_var_ratio: float) -> bool:
+    """
+    Return True if segment looks like a sustained tone (hum / falsetto / held vowel).
+
+    Adults humming or doing falsetto have very stable F0, low ZCR, and steady energy.
+    This check flags the overlap zone (160–260 Hz) where adults and toddlers meet.
+    """
+    return (
+        f0_instability < 0.05      # Pitch barely fluctuates
+        and zcr < 0.025            # Few zero crossings → periodic signal
+        and rms_var_ratio < 0.30   # Steady energy
+    )
+
+
 def classify_segment(y_segment: np.ndarray, sr: int) -> str:
     """
-    Classify a single voiced segment using F0 and basic acoustic features.
+    Classify a single voiced segment using F0 + auxiliary acoustic features.
 
-    IMPORTANT: Default to baby classification unless there's STRONG adult evidence.
-    Baby sounds (crying, cooing, babbling) are much more common in this app.
-    Adult detection should require very low F0 (< 150 Hz) as definitive evidence.
+    Conservative by design: defaults to baby classification unless there is
+    strong multi-feature evidence for an adult speaker.
+
+    Improvements over pure F0 threshold approach:
+      - Computes F0 instability (std/median): high → baby-like irregularity
+      - Computes ZCR: very low → sustained periodic tone (possible adult hum)
+      - Computes energy variance ratio: high → cry / babble pattern
+      - Sustained-tone detection: ambiguous zones return "unknown" instead of
+        misclassifying adult humming as toddler/child
+      - Adult classification requires low F0 (<160 Hz) AND feature stability
 
     Classification categories:
-        "newborn"       - F0 > 400 Hz (crying baby 0-3 months)
-        "infant"        - F0 280-400 Hz (baby 3-12 months) - includes low crying
-        "toddler"       - F0 220-280 Hz (child 1-2 years)
-        "child"         - F0 180-220 Hz (child 2-5 years)
-        "adult_female"  - F0 150-180 Hz (adult female) - STRICT threshold
-        "adult_male"    - F0 < 150 Hz (adult male) - STRONG evidence required
-        "unknown"       - no reliable F0 detected
+        "newborn"      — F0 > 400 Hz  (newborn cry — almost certain)
+        "infant"       — F0 280–400 Hz (infant babble/cry)
+        "toddler"      — F0 220–280 Hz (toddler speech; stable tone → unknown)
+        "child"        — F0 160–220 Hz (child speech; stable tone → unknown)
+        "adult_female" — F0 130–160 Hz + stable features
+        "adult_male"   — F0 <  130 Hz
+        "unknown"      — no reliable F0, or sustained tone in overlap zone
 
-    Returns: "newborn" | "infant" | "toddler" | "child" | "adult_female" | "adult_male" | "unknown"
+    Returns: one of the seven labels above.
     """
     try:
         import librosa
 
-        min_samples = int(sr * 0.15)  # Need at least 150ms for reliable F0
+        min_samples = int(sr * 0.15)
         if len(y_segment) < min_samples:
             return "unknown"
 
+        # --- F0 estimation via YIN ---
         f0 = librosa.yin(
             y_segment,
             fmin=librosa.note_to_hz("C2"),   # ~65 Hz
@@ -152,30 +217,56 @@ def classify_segment(y_segment: np.ndarray, sr: int) -> str:
             return "unknown"
 
         f0_median = float(np.median(f0_voiced))
+        f0_std    = float(np.std(f0_voiced))
+        f0_instability = f0_std / (f0_median + 1e-6)
 
-        # LENIENT baby-first classification
-        # Default to baby unless F0 is very low (strong adult evidence)
-        if f0_median > 450:
-            return "newborn"       # High-pitch cry - definitely baby
-        elif f0_median > 400:
-            return "newborn"       # Newborn crying range
-        elif f0_median > 280:
-            return "infant"        # Infant cooing, babbling, low crying
-        elif f0_median > 220:
-            return "toddler"       # Toddler range
-        elif f0_median > 180:
-            return "child"         # Young child
-        elif f0_median > 150:
-            return "child"         # Still likely child (lenient)
-        elif f0_median > 120:
-            # Gray zone - could be low child or high adult female
-            # Default to child (more likely in baby monitoring app)
+        # Auxiliary features (lightweight O(n) operations)
+        zcr, rms_var_ratio = _segment_aux_features(y_segment, sr)
+
+        # ----------------------------------------------------------------
+        # Classification — high F0 zones are unambiguously baby
+        # ----------------------------------------------------------------
+
+        # Clear newborn cry: very high fundamental
+        if f0_median > 400:
+            return "newborn"
+
+        # Clear infant range: 280–400 Hz (only extreme adult falsetto reaches here)
+        if f0_median > 280:
+            return "infant"
+
+        # Toddler range: 220–280 Hz
+        if f0_median > 220:
+            # Sustained tone in this range could be adult falsetto / hum → unknown
+            if _is_sustained_tone(f0_instability, zcr, rms_var_ratio):
+                return "unknown"
+            return "toddler"
+
+        # Overlap zone: 160–220 Hz (child / adult-female boundary)
+        if f0_median > 160:
+            # Sustained tone → adult humming most likely → mark ambiguous
+            if _is_sustained_tone(f0_instability, zcr, rms_var_ratio):
+                return "unknown"
+            # Baby-like instability → child/toddler
+            if f0_instability > 0.10 or rms_var_ratio > 0.55:
+                return "child"
+            # Moderate — conservative default
             return "child"
-        elif f0_median > 85:
-            # Very low F0 - strong adult male evidence
+
+        # Lower overlap: 130–160 Hz (adult_female / low-child boundary)
+        if f0_median > 130:
+            # Require stable features before calling adult_female
+            if f0_instability < 0.08 and zcr > 0.018:
+                return "adult_female"
+            return "child"   # Conservative
+
+        # Clear adult male: ≤ 130 Hz
+        if f0_median > 85:
             return "adult_male"
-        elif f0_median > 0:
-            return "adult_male"    # Deep adult male
+
+        if f0_median > 0:
+            return "adult_male"
+
         return "unknown"
 
     except Exception as e:
@@ -185,13 +276,14 @@ def classify_segment(y_segment: np.ndarray, sr: int) -> str:
 
 def classify_segment_detailed(y_segment: np.ndarray, sr: int) -> Dict:
     """
-    Detailed segment classification with confidence score.
-    
+    Detailed segment classification with confidence score and auxiliary features.
+
     Returns:
         {
-            "label": str,
-            "f0_median": float,
-            "confidence": float,
+            "label":           str,
+            "f0_median":       float,
+            "f0_instability":  float,   # std / median — high → irregular (baby-like)
+            "confidence":      float,
         }
     """
     try:
@@ -199,7 +291,7 @@ def classify_segment_detailed(y_segment: np.ndarray, sr: int) -> Dict:
 
         min_samples = int(sr * 0.15)
         if len(y_segment) < min_samples:
-            return {"label": "unknown", "f0_median": 0.0, "confidence": 0.0}
+            return {"label": "unknown", "f0_median": 0.0, "f0_instability": 0.0, "confidence": 0.0}
 
         f0 = librosa.yin(
             y_segment,
@@ -209,25 +301,32 @@ def classify_segment_detailed(y_segment: np.ndarray, sr: int) -> Dict:
         f0_voiced = f0[~np.isnan(f0)] if f0 is not None else np.array([])
 
         if len(f0_voiced) == 0:
-            return {"label": "unknown", "f0_median": 0.0, "confidence": 0.0}
+            return {"label": "unknown", "f0_median": 0.0, "f0_instability": 0.0, "confidence": 0.0}
 
         f0_median = float(np.median(f0_voiced))
-        f0_std = float(np.std(f0_voiced))
-        
-        # Lower std = more confident classification
-        confidence = 1.0 - min(f0_std / f0_median if f0_median > 0 else 1.0, 1.0)
-        
+        f0_std    = float(np.std(f0_voiced))
+        f0_instability = f0_std / (f0_median + 1e-6)
+
+        # Confidence: higher for more stable F0 AND clearer class boundary
+        # (lower instability = more confident in any direction)
+        stability_conf = 1.0 - min(f0_instability, 1.0)
+
         label = classify_segment(y_segment, sr)
-        
+
+        # "unknown" segments have near-zero confidence
+        if label == "unknown":
+            stability_conf = 0.0
+
         return {
-            "label": label,
-            "f0_median": round(f0_median, 1),
-            "confidence": round(confidence, 3),
+            "label":          label,
+            "f0_median":      round(f0_median, 1),
+            "f0_instability": round(f0_instability, 3),
+            "confidence":     round(stability_conf, 3),
         }
 
     except Exception as e:
         logger.warning(f"Detailed segment classification failed: {e}")
-        return {"label": "unknown", "f0_median": 0.0, "confidence": 0.0}
+        return {"label": "unknown", "f0_median": 0.0, "f0_instability": 0.0, "confidence": 0.0}
 
 
 # ---------------------------------------------------------------------------
