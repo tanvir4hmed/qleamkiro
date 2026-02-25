@@ -200,7 +200,7 @@ def developmental_stage_from_age(age_days) -> Dict:
     _STAGE_MAP = [
         (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
         (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
-        (181,  270,  "CANONICAL_BABBLE",  "TRANSITION"),
+        (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
         (271,  365,  "PROTO_WORDS",       "TRANSITION"),
         (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
         (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
@@ -240,7 +240,9 @@ def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
     if not bio_result:
         return _NO_HINT
     # Adult mimicry suspected or bio validation skipped
-    if bio_result.get("mimicry_suspected") or not bio_result.get("is_infant", False):
+    # Include both is_infant (newborn/infant/toddler) and is_child (2-5 years)
+    is_valid_child = bio_result.get("is_infant", False) or bio_result.get("is_child", False)
+    if bio_result.get("mimicry_suspected") or not is_valid_child:
         return _NO_HINT
 
     vtl_cm = bio_result.get("vtl_cm") or 0.0
