@@ -361,6 +361,263 @@ def extract_embedding_vector(y: np.ndarray, sr: int, n_mfcc: int = 13) -> List[f
 
 
 # =============================================================================
+# Extended Acoustic Features for Speaker Classification
+# =============================================================================
+
+def extract_jitter(y: np.ndarray, sr: int) -> float:
+    """
+    Compute jitter (pitch stability) - frequency variation between consecutive periods.
+    
+    Higher jitter = less stable voice = characteristic of infants/children
+    Lower jitter = stable voice = characteristic of adults
+    
+    Returns:
+        float in [0, 1] - normalized jitter measure
+    """
+    librosa = _get_librosa()
+    
+    try:
+        # Extract F0 using YIN
+        f0 = librosa.yin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"))
+        f0_voiced = f0[~np.isnan(f0)] if f0 is not None else np.array([])
+        
+        if len(f0_voiced) < 3:
+            return 0.0
+        
+        # Compute relative differences between consecutive F0 values
+        diffs = np.abs(np.diff(f0_voiced)) / (f0_voiced[:-1] + 1e-10)
+        
+        # Jitter is the mean of these relative differences
+        jitter = float(np.mean(diffs))
+        
+        # Normalize to [0, 1] - typical jitter ranges from 0.001 to 0.1
+        # Higher values indicate more instability
+        normalized_jitter = float(np.clip(jitter * 10, 0.0, 1.0))
+        
+        return round(normalized_jitter, 4)
+    
+    except Exception as e:
+        logger.warning(f"Jitter extraction failed: {e}")
+        return 0.0
+
+
+def extract_shimmer(y: np.ndarray, sr: int) -> float:
+    """
+    Compute shimmer (amplitude stability) - amplitude variation between consecutive periods.
+    
+    Higher shimmer = less stable volume = characteristic of infants/children
+    Lower shimmer = stable volume = characteristic of adults
+    
+    Returns:
+        float in [0, 1] - normalized shimmer measure
+    """
+    librosa = _get_librosa()
+    
+    try:
+        # Compute RMS energy
+        rms = librosa.feature.rms(y=y)[0]
+        
+        if len(rms) < 3:
+            return 0.0
+        
+        # Compute relative differences between consecutive RMS values
+        diffs = np.abs(np.diff(rms)) / (rms[:-1] + 1e-10)
+        
+        # Shimmer is the mean of these relative differences
+        shimmer = float(np.mean(diffs))
+        
+        # Normalize to [0, 1]
+        normalized_shimmer = float(np.clip(shimmer * 5, 0.0, 1.0))
+        
+        return round(normalized_shimmer, 4)
+    
+    except Exception as e:
+        logger.warning(f"Shimmer extraction failed: {e}")
+        return 0.0
+
+
+def extract_hnr(y: np.ndarray, sr: int) -> float:
+    """
+    Compute Harmonics-to-Noise Ratio (HNR).
+    
+    Higher HNR = clearer harmonics = adult voice
+    Lower HNR = more noise/breathiness = child voice
+    
+    Returns:
+        float in [0, 1] - normalized HNR (higher = more adult-like)
+    """
+    librosa = _get_librosa()
+    
+    try:
+        # Use librosa's spectral centroid as a proxy for harmonic clarity
+        # Higher centroid often correlates with clearer harmonics
+        spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        
+        # Also compute spectral flatness (lower = more tonal/harmonic)
+        spectral_flatness = librosa.feature.spectral_flatness(y=y)[0]
+        
+        # HNR approximation: combination of centroid and inverse flatness
+        mean_centroid = float(np.mean(spectral_centroid))
+        mean_flatness = float(np.mean(spectral_flatness))
+        
+        # Higher centroid + lower flatness = higher HNR
+        # Normalize: centroid typical range 1000-4000 Hz, flatness 0-1
+        hnr_proxy = (mean_centroid / 4000.0) * (1.0 - mean_flatness)
+        
+        return round(float(np.clip(hnr_proxy, 0.0, 1.0)), 4)
+    
+    except Exception as e:
+        logger.warning(f"HNR extraction failed: {e}")
+        return 0.5
+
+
+def extract_spectral_features(y: np.ndarray, sr: int) -> Dict[str, float]:
+    """
+    Extract spectral features for speaker classification.
+    
+    Returns:
+        Dict with spectral_centroid, spectral_rolloff, spectral_bandwidth, spectral_flux
+    """
+    librosa = _get_librosa()
+    
+    features = {
+        "spectral_centroid": 0.5,
+        "spectral_rolloff": 0.5,
+        "spectral_bandwidth": 0.5,
+        "spectral_flux": 0.5,
+        "zero_crossing_rate": 0.5,
+    }
+    
+    try:
+        # Spectral centroid - "brightness" of sound
+        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        features["spectral_centroid"] = round(float(np.mean(centroid) / 8000.0), 4)  # Normalize by max expected
+        
+        # Spectral rolloff - frequency below which 85% of energy is contained
+        rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)[0]
+        features["spectral_rolloff"] = round(float(np.mean(rolloff) / 10000.0), 4)
+        
+        # Spectral bandwidth - spread of frequencies
+        bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr)[0]
+        features["spectral_bandwidth"] = round(float(np.mean(bandwidth) / 5000.0), 4)
+        
+        # Zero-crossing rate - how often signal crosses zero
+        zcr = librosa.feature.zero_crossing_rate(y)[0]
+        features["zero_crossing_rate"] = round(float(np.mean(zcr)), 4)
+        
+        # Spectral flux - rate of change of spectrum
+        stft = np.abs(librosa.stft(y))
+        flux = np.sqrt(np.sum(np.diff(stft, axis=1) ** 2, axis=0))
+        features["spectral_flux"] = round(float(np.mean(flux) / 100.0), 4)
+        
+    except Exception as e:
+        logger.warning(f"Spectral feature extraction failed: {e}")
+    
+    return features
+
+
+def extract_speech_rate(y: np.ndarray, sr: int) -> Dict[str, float]:
+    """
+    Estimate speech rate and pause patterns.
+    
+    Adults speak faster with shorter pauses.
+    Children/babies have slower, more irregular patterns.
+    
+    Returns:
+        Dict with syllable_rate, pause_ratio, rhythm_regularity
+    """
+    librosa = _get_librosa()
+    
+    features = {
+        "syllable_rate": 0.0,
+        "pause_ratio": 0.0,
+        "rhythm_regularity": 0.0,
+    }
+    
+    try:
+        # RMS energy for finding voiced/unvoiced regions
+        rms = librosa.feature.rms(y=y)[0]
+        
+        # Threshold for silence detection
+        threshold = 0.05 * np.max(rms) if np.max(rms) > 0 else 0.01
+        
+        # Find voiced frames
+        voiced = rms > threshold
+        
+        # Count syllable-like units (energy peaks in voiced regions)
+        from scipy.signal import find_peaks
+        rms_voiced = rms * voiced
+        peaks, _ = find_peaks(rms_voiced, height=threshold, distance=5)
+        
+        duration = len(y) / sr
+        features["syllable_rate"] = round(len(peaks) / max(duration, 1.0), 2)
+        
+        # Pause ratio
+        silence_frames = np.sum(rms < threshold)
+        features["pause_ratio"] = round(float(silence_frames / len(rms)), 4)
+        
+        # Rhythm regularity (std of inter-peak intervals)
+        if len(peaks) > 2:
+            intervals = np.diff(peaks)
+            cv = np.std(intervals) / (np.mean(intervals) + 1e-10)
+            features["rhythm_regularity"] = round(float(1.0 / (1.0 + cv)), 4)
+        
+    except Exception as e:
+        logger.warning(f"Speech rate extraction failed: {e}")
+    
+    return features
+
+
+def extract_formant_bandwidth(y: np.ndarray, sr: int) -> float:
+    """
+    Estimate formant bandwidth - width of formant peaks.
+    
+    Children have wider formant bandwidths due to less precise articulation.
+    
+    Returns:
+        float in [0, 1] - normalized formant bandwidth measure
+    """
+    try:
+        # Use spectral flatness around formant regions as bandwidth proxy
+        formants = extract_formants_lpc(y, sr)
+        
+        # If we have valid formants, estimate bandwidth by spectral shape
+        if formants.get("F1", 0) > 0:
+            librosa = _get_librosa()
+            flatness = librosa.feature.spectral_flatness(y=y)[0]
+            # Higher flatness around formants = wider bandwidth
+            return round(float(np.mean(flatness)), 4)
+        
+        return 0.5
+    
+    except Exception as e:
+        logger.warning(f"Formant bandwidth extraction failed: {e}")
+        return 0.5
+
+
+def extract_all_speaker_features(y: np.ndarray, sr: int) -> Dict:
+    """
+    Extract all speaker classification features.
+    
+    Returns comprehensive feature dict for speaker classification.
+    """
+    features = {
+        "jitter": extract_jitter(y, sr),
+        "shimmer": extract_shimmer(y, sr),
+        "hnr": extract_hnr(y, sr),
+        "formant_bandwidth": extract_formant_bandwidth(y, sr),
+    }
+    
+    # Add spectral features
+    features.update(extract_spectral_features(y, sr))
+    
+    # Add speech rate features
+    features.update(extract_speech_rate(y, sr))
+    
+    return features
+
+
+# =============================================================================
 # Phase 1 — Layer 0: Audio Quality Gate
 # =============================================================================
 
@@ -612,45 +869,249 @@ def estimate_vtl_from_formants(
     return 0.0
 
 
+def classify_speaker_type(
+    f0_hz: float,
+    vtl_cm: float,
+    jitter: float,
+    shimmer: float,
+    hnr: float,
+    spectral_centroid: float,
+) -> Tuple[str, str, List[str]]:
+    """
+    Comprehensive speaker classification using all acoustic features.
+    
+    Classification Matrix (based on research literature):
+    | Category     | F0 Range    | VTL Range  | Jitter  | Key Characteristics         |
+    |--------------|-------------|------------|---------|----------------------------|
+    | NEWBORN      | > 450 Hz    | < 8 cm     | High    | Cry, unstable pitch        |
+    | INFANT       | 300-450 Hz  | 8-10 cm    | Moderate| Babbling, cooing           |
+    | TODDLER      | 250-350 Hz  | 10-11 cm   | Lower   | First words, syllables     |
+    | CHILD        | 200-300 Hz  | 11-13 cm   | Low     | Structured speech          |
+    | ADULT_FEMALE | 165-255 Hz  | 14-17 cm   | Very Low| Stable, clear              |
+    | ADULT_MALE   | 85-180 Hz   | 16-18 cm   | Very Low| Deep, stable               |
+    
+    Returns:
+        Tuple of (speaker_type, confidence_tier, evidence_list)
+    """
+    evidence = []
+    scores = {
+        "newborn": 0,
+        "infant": 0,
+        "toddler": 0,
+        "child": 0,
+        "adult_female": 0,
+        "adult_male": 0,
+    }
+    
+    # === F0-based scoring ===
+    if f0_hz > 500:
+        scores["newborn"] += 3
+        evidence.append(f"f0_newborn:{f0_hz:.0f}Hz")
+    elif f0_hz > 450:
+        scores["newborn"] += 2
+        scores["infant"] += 1
+        evidence.append(f"f0_likely_newborn:{f0_hz:.0f}Hz")
+    elif f0_hz > 350:
+        scores["infant"] += 3
+        evidence.append(f"f0_infant:{f0_hz:.0f}Hz")
+    elif f0_hz > 300:
+        scores["infant"] += 2
+        scores["toddler"] += 1
+        evidence.append(f"f0_infant_toddler:{f0_hz:.0f}Hz")
+    elif f0_hz > 250:
+        scores["toddler"] += 2
+        scores["infant"] += 1
+        scores["child"] += 1
+        evidence.append(f"f0_toddler:{f0_hz:.0f}Hz")
+    elif f0_hz > 200:
+        scores["child"] += 2
+        scores["toddler"] += 1
+        scores["adult_female"] += 1
+        evidence.append(f"f0_child_overlap:{f0_hz:.0f}Hz")
+    elif f0_hz > 165:
+        # Overlap zone: child vs adult female - need VTL to distinguish
+        scores["child"] += 1
+        scores["adult_female"] += 2
+        evidence.append(f"f0_child_female_overlap:{f0_hz:.0f}Hz")
+    elif f0_hz > 85:
+        scores["adult_female"] += 1
+        scores["adult_male"] += 2
+        evidence.append(f"f0_adult:{f0_hz:.0f}Hz")
+    elif f0_hz > 0:
+        scores["adult_male"] += 3
+        evidence.append(f"f0_adult_male:{f0_hz:.0f}Hz")
+    
+    # === VTL-based scoring ===
+    if vtl_cm > 0:
+        if vtl_cm < 7:
+            scores["newborn"] += 3
+            evidence.append(f"vtl_newborn:{vtl_cm:.1f}cm")
+        elif vtl_cm < 8.5:
+            scores["newborn"] += 2
+            scores["infant"] += 1
+            evidence.append(f"vtl_very_young:{vtl_cm:.1f}cm")
+        elif vtl_cm < 10:
+            scores["infant"] += 3
+            evidence.append(f"vtl_infant:{vtl_cm:.1f}cm")
+        elif vtl_cm < 11:
+            scores["toddler"] += 2
+            scores["infant"] += 1
+            evidence.append(f"vtl_toddler:{vtl_cm:.1f}cm")
+        elif vtl_cm < 12:
+            scores["child"] += 2
+            scores["toddler"] += 1
+            evidence.append(f"vtl_young_child:{vtl_cm:.1f}cm")
+        elif vtl_cm < 13:
+            scores["child"] += 2
+            evidence.append(f"vtl_child:{vtl_cm:.1f}cm")
+        elif vtl_cm < 14:
+            scores["child"] += 1
+            scores["adult_female"] += 1
+            evidence.append(f"vtl_child_female_boundary:{vtl_cm:.1f}cm")
+        elif vtl_cm < 17:
+            scores["adult_female"] += 2
+            evidence.append(f"vtl_adult_female:{vtl_cm:.1f}cm")
+        else:
+            scores["adult_male"] += 2
+            scores["adult_female"] += 1
+            evidence.append(f"vtl_adult:{vtl_cm:.1f}cm")
+    
+    # === Jitter-based scoring (voice stability) ===
+    # Higher jitter = younger speaker
+    if jitter > 0.4:
+        scores["newborn"] += 2
+        scores["infant"] += 1
+        evidence.append(f"jitter_high:{jitter:.2f}")
+    elif jitter > 0.25:
+        scores["infant"] += 2
+        scores["toddler"] += 1
+        evidence.append(f"jitter_moderate:{jitter:.2f}")
+    elif jitter > 0.15:
+        scores["toddler"] += 1
+        scores["child"] += 1
+        evidence.append(f"jitter_lower:{jitter:.2f}")
+    elif jitter > 0.08:
+        scores["child"] += 1
+        evidence.append(f"jitter_low:{jitter:.2f}")
+    else:
+        scores["adult_female"] += 1
+        scores["adult_male"] += 1
+        evidence.append(f"jitter_stable:{jitter:.2f}")
+    
+    # === Shimmer-based scoring ===
+    if shimmer > 0.4:
+        scores["newborn"] += 1
+        scores["infant"] += 1
+        evidence.append(f"shimmer_high:{shimmer:.2f}")
+    elif shimmer > 0.25:
+        scores["infant"] += 1
+        scores["toddler"] += 1
+        evidence.append(f"shimmer_moderate:{shimmer:.2f}")
+    else:
+        scores["adult_female"] += 1
+        scores["adult_male"] += 1
+        evidence.append(f"shimmer_stable:{shimmer:.2f}")
+    
+    # === HNR-based scoring ===
+    # Lower HNR = more breathiness = younger
+    if hnr < 0.3:
+        scores["newborn"] += 1
+        scores["infant"] += 1
+        evidence.append(f"hnr_breathy:{hnr:.2f}")
+    elif hnr > 0.6:
+        scores["adult_female"] += 1
+        scores["adult_male"] += 1
+        evidence.append(f"hnr_clear:{hnr:.2f}")
+    
+    # === Spectral centroid scoring ===
+    # Higher centroid = brighter = younger
+    if spectral_centroid > 0.5:
+        scores["newborn"] += 1
+        scores["infant"] += 1
+        evidence.append(f"spectral_bright:{spectral_centroid:.2f}")
+    
+    # === Resolve overlap zone (child vs adult female) using VTL ===
+    if 200 <= f0_hz <= 255 and vtl_cm > 0:
+        if vtl_cm < 13:
+            scores["child"] += 2
+            evidence.append("overlap_resolved_child_by_vtl")
+        elif vtl_cm > 14:
+            scores["adult_female"] += 2
+            evidence.append("overlap_resolved_female_by_vtl")
+    
+    # === Determine final classification ===
+    max_category = max(scores, key=scores.get)
+    max_score = scores[max_category]
+    total_score = sum(scores.values())
+    
+    # Calculate confidence
+    if total_score > 0:
+        confidence = max_score / total_score
+    else:
+        confidence = 0.0
+    
+    # Confidence tier
+    if confidence > 0.5:
+        tier = "high"
+    elif confidence > 0.35:
+        tier = "moderate"
+    elif confidence > 0.25:
+        tier = "low"
+    else:
+        tier = "uncertain"
+    
+    return max_category, tier, evidence
+
+
 def biological_validation(
     y: np.ndarray,
     sr: int,
-    vtl_infant_max_cm: float = 13.0,
-    vtl_uncertain_min_cm: float = 12.5,
+    vtl_infant_max_cm: float = 12.0,
+    vtl_uncertain_min_cm: float = 11.0,
     infant_f0_min_hz: float = 200.0,
-    strong_infant_f0_hz: float = 300.0,
+    strong_infant_f0_hz: float = 280.0,
+    adult_f0_threshold_hz: float = 180.0,
+    newborn_f0_threshold_hz: float = 450.0,
     ambient_temp_c: float = 20.0,
 ) -> Dict:
     """
-    Layer 1: Biological validation — classify infant vs adult speaker.
-
-    Evidence sources:
+    Layer 1: Biological validation — comprehensive speaker classification.
+    
+    Uses multiple acoustic features:
       1. F0 (fundamental frequency) via YIN estimator
       2. Formants (F1–F4) via LPC analysis
-      3. VTL estimate from mean inter-formant spacing (Eq 1.5)
-
-    VTL scoring (TECHNICAL_PIPELINE.md Layer 1 / Theorem 3.1):
-      VTL < 12.5 cm   → +2 (strong infant)
-      VTL 12.5–13.0 cm → 0  (UNCERTAIN — no score change)
-      VTL > 13.0 cm   → -2 (adult — REJECT signal)
-
-    F0 scoring:
-      +2: F0 > 300 Hz   (strong infant signal)
-      +1: F0 200–300 Hz (moderate infant signal)
-      -2: F0 < 180 Hz   (adult range)
-
-    is_infant:         score >= 1
-    mimicry_suspected: score <= -2 (strong adult signal in a baby session)
-
+      3. VTL estimate from mean inter-formant spacing
+      4. Jitter (pitch stability)
+      5. Shimmer (amplitude stability)
+      6. HNR (harmonics-to-noise ratio)
+      7. Spectral features (centroid, bandwidth, etc.)
+    
+    Classification categories:
+      - NEWBORN (0-3 months): F0 > 450 Hz, VTL < 8 cm, high jitter
+      - INFANT (3-12 months): F0 300-450 Hz, VTL 8-10 cm, moderate jitter
+      - TODDLER (1-2 years): F0 250-350 Hz, VTL 10-11 cm, lower jitter
+      - CHILD (2-5 years): F0 200-300 Hz, VTL 11-13 cm, low jitter
+      - ADULT_FEMALE: F0 165-255 Hz, VTL 14-17 cm, very low jitter
+      - ADULT_MALE: F0 85-180 Hz, VTL 16-18 cm, very low jitter
+    
     Returns:
         {
             "vtl_cm": float,
             "f0_hz": float,
             "formants": {"F1": Hz, "F2": Hz, "F3": Hz, "F4": Hz},
+            "jitter": float,
+            "shimmer": float,
+            "hnr": float,
+            "spectral_features": dict,
             "is_infant": bool,
+            "is_child": bool,
+            "is_adult": bool,
             "mimicry_suspected": bool,
-            "vtl_zone": str,         # "infant" | "uncertain" | "adult"
-            "bio_confidence": float, # 0-1
+            "speaker_type": str,
+            "speaker_category": str,  # "newborn" | "infant" | "toddler" | "child" | "adult_female" | "adult_male"
+            "confidence_tier": str,   # "high" | "moderate" | "low" | "uncertain"
+            "vtl_zone": str,
+            "bio_confidence": float,
             "evidence": List[str],
         }
     """
@@ -666,20 +1127,41 @@ def biological_validation(
     except Exception:
         f0_hz = 0.0
 
+    # --- Formants + VTL ---
+    formants = extract_formants_lpc(y, sr)
+    vtl_cm = estimate_vtl_from_formants(formants, ambient_temp_c)
+
+    # --- Extended acoustic features ---
+    jitter = extract_jitter(y, sr)
+    shimmer = extract_shimmer(y, sr)
+    hnr = extract_hnr(y, sr)
+    spectral_features = extract_spectral_features(y, sr)
+    
+    # --- Comprehensive speaker classification ---
+    speaker_category, confidence_tier, classification_evidence = classify_speaker_type(
+        f0_hz=f0_hz,
+        vtl_cm=vtl_cm,
+        jitter=jitter,
+        shimmer=shimmer,
+        hnr=hnr,
+        spectral_centroid=spectral_features.get("spectral_centroid", 0.5),
+    )
+    evidence.extend(classification_evidence)
+
+    # --- Legacy F0 scoring for backward compatibility ---
     if f0_hz > strong_infant_f0_hz:
         infant_score += 2
         evidence.append(f"f0_strong_infant:{f0_hz:.0f}Hz")
     elif f0_hz > infant_f0_min_hz:
         infant_score += 1
         evidence.append(f"f0_infant:{f0_hz:.0f}Hz")
-    elif 0 < f0_hz < 180:
-        infant_score -= 2
+    elif f0_hz > adult_f0_threshold_hz:
+        evidence.append(f"f0_ambiguous:{f0_hz:.0f}Hz")
+    elif f0_hz > 0:
+        infant_score -= 3
         evidence.append(f"f0_adult:{f0_hz:.0f}Hz")
 
-    # --- Formants (F1–F4) + VTL via mean formant spacing ---
-    formants = extract_formants_lpc(y, sr)
-    vtl_cm = estimate_vtl_from_formants(formants, ambient_temp_c)
-
+    # --- Legacy VTL scoring ---
     vtl_zone = "unknown"
     if vtl_cm > 0:
         if vtl_cm < vtl_uncertain_min_cm:
@@ -688,22 +1170,46 @@ def biological_validation(
             evidence.append(f"vtl_infant:{vtl_cm:.1f}cm")
         elif vtl_cm <= vtl_infant_max_cm:
             vtl_zone = "uncertain"
-            evidence.append(f"vtl_uncertain:{vtl_cm:.1f}cm")  # no score change
+            evidence.append(f"vtl_uncertain:{vtl_cm:.1f}cm")
         else:
             infant_score -= 2
             vtl_zone = "adult"
             evidence.append(f"vtl_adult:{vtl_cm:.1f}cm")
 
-    is_infant = infant_score >= 1
-    mimicry_suspected = infant_score <= -2
+    # --- Determine legacy speaker_type for backward compatibility ---
+    if speaker_category in ("newborn", "infant"):
+        speaker_type = "infant"
+    elif speaker_category == "toddler":
+        speaker_type = "toddler"
+    elif speaker_category == "child":
+        speaker_type = "child"
+    elif speaker_category in ("adult_female", "adult_male"):
+        speaker_type = "adult"
+    else:
+        speaker_type = "unknown"
+
+    # --- Final determinations ---
+    is_infant = speaker_category in ("newborn", "infant", "toddler")
+    is_child = speaker_category == "child"
+    is_adult = speaker_category in ("adult_female", "adult_male")
+    mimicry_suspected = is_adult or infant_score <= -2
     bio_confidence = round(min(abs(infant_score) / 4.0, 1.0), 3)
 
     return {
         "vtl_cm": vtl_cm,
         "f0_hz": round(f0_hz, 1),
         "formants": formants,
+        "jitter": jitter,
+        "shimmer": shimmer,
+        "hnr": hnr,
+        "spectral_features": spectral_features,
         "is_infant": is_infant,
+        "is_child": is_child,
+        "is_adult": is_adult,
         "mimicry_suspected": mimicry_suspected,
+        "speaker_type": speaker_type,
+        "speaker_category": speaker_category,
+        "confidence_tier": confidence_tier,
         "vtl_zone": vtl_zone,
         "bio_confidence": bio_confidence,
         "evidence": evidence,

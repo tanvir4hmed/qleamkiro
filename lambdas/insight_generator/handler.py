@@ -791,26 +791,69 @@ def build_insight(
 # Save Insight
 # =============================================================================
 
-def _build_rejection_insight(session: Dict, reason: str = "quality") -> Dict:
+def _build_rejection_insight(
+    session: Dict, 
+    reason: str = "quality",
+    speaker_type: str = "unknown",
+    speaker_category: str = "unknown",
+    expected_stage: str = "",
+) -> Dict:
     """
     Lightweight insight returned when recording cannot be analysed.
 
     reason values:
-      "quality"  — no signal / no vocal activity / too short
-      "adult"    — biological validation flagged adult voice (mimicry suspected)
+      "quality"     — no signal / no vocal activity / too short
+      "adult"       — biological validation flagged adult voice
+      "mismatch"    — speaker type doesn't match expected child
     """
-    if reason == "adult":
-        what_i_hear = "This recording contains adult speech rather than baby sounds."
-        what_it_means = (
-            "The voice patterns match an adult, not a baby. "
-            "Make sure to record while your baby is vocalising, not while you're talking."
-        )
+    if reason == "adult" or reason == "mismatch":
+        # Build specific message based on detected speaker category
+        if speaker_category in ("adult_male", "adult_female") or speaker_type == "adult":
+            what_i_hear = (
+                "This recording contains an adult voice, not baby sounds. "
+                "I detected adult vocal characteristics: low pitch and stable voice quality."
+            )
+            what_it_means = (
+                "The audio patterns clearly match an adult speaker. "
+                "For accurate analysis, the recording needs to capture your baby's actual vocalizations."
+            )
+            label = "Adult voice detected"
+        elif speaker_category == "child" or speaker_type == "child":
+            what_i_hear = (
+                "This recording sounds like an older child (2-5 years), not a baby. "
+                "The voice has characteristics of a child who can already speak in sentences."
+            )
+            what_it_means = (
+                "The audio patterns match a child with developed speech, "
+                "which is different from the baby's expected developmental stage. "
+                "Please ensure you're recording the correct child."
+            )
+            label = "Older child voice detected"
+        elif speaker_category == "toddler" or speaker_type == "toddler":
+            what_i_hear = (
+                "This recording sounds like a toddler (1-2 years), not a younger baby. "
+                "The voice patterns show early word formation and more developed vocalization."
+            )
+            what_it_means = (
+                "The audio suggests a toddler who is learning to talk, "
+                "which may be different from the registered child's age. "
+                "If your child is younger, please ensure you're recording the right child."
+            )
+            label = "Toddler voice detected"
+        else:
+            what_i_hear = "This recording contains a voice that doesn't match the expected child profile."
+            what_it_means = (
+                "The voice characteristics don't match what we expect for this child's age. "
+                "Please ensure you're recording the correct child."
+            )
+            label = "Voice mismatch detected"
+        
         what_to_try = [
-            "Wait for baby to make sounds, then start recording",
-            "Hold the phone 20–30 cm from baby's face",
-            "Stay quiet yourself while recording",
+            "Wait for your baby to make sounds naturally, then record",
+            "Make sure you're close to your baby (20-30 cm) during recording",
+            "Stay quiet yourself — only record the baby's vocalizations",
+            "If someone else was speaking, try a new recording with just the baby",
         ]
-        label = "Adult voice detected"
     else:
         what_i_hear = "We couldn't detect clear baby sounds in this recording."
         what_it_means = (
@@ -821,6 +864,7 @@ def _build_rejection_insight(session: Dict, reason: str = "quality") -> Dict:
             "Hold the phone 20–30 cm from your baby's mouth",
             "Record somewhere quieter if possible",
             "Try again when baby is actively making sounds",
+            "Make sure baby is cooing, babbling, or crying — not silent",
         ]
         label = "No baby sounds detected"
 
@@ -837,6 +881,8 @@ def _build_rejection_insight(session: Dict, reason: str = "quality") -> Dict:
             "what_to_try": what_to_try,
             "source": "quality-rejection",
         },
+        "speaker_type_detected": speaker_type,
+        "speaker_category_detected": speaker_category,
         # No developmental_stage — don't show a misleading stage label on rejected sessions
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -915,12 +961,71 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     # 1b. Adult/mimicry check — reject when biological validation detects adult voice
     biological = session.get("biological", {})
-    if biological.get("mimicry_suspected") is True:
+    speaker_type = biological.get("speaker_type", "unknown")
+    speaker_category = biological.get("speaker_category", "unknown")
+    
+    # Check diarization for adult segments
+    diarization = session.get("diarization", {})
+    adult_segments = diarization.get("adult_segments_detected", 0)
+    primary_speaker = diarization.get("primary_speaker", "unknown")
+    
+    # Reject if mimicry suspected OR speaker type is adult
+    if biological.get("mimicry_suspected") is True or speaker_type == "adult" or speaker_category in ("adult_male", "adult_female"):
         logger.warning(
             f"Adult voice detected for session {session_id}: "
-            f"vtl={biological.get('vtl_cm')}cm f0={biological.get('f0_hz')}Hz"
+            f"speaker_type={speaker_type} speaker_category={speaker_category} "
+            f"vtl={biological.get('vtl_cm')}cm f0={biological.get('f0_hz')}Hz "
+            f"adult_segments={adult_segments}"
         )
-        rejection_insight = _build_rejection_insight(session, reason="adult")
+        rejection_insight = _build_rejection_insight(
+            session, 
+            reason="adult", 
+            speaker_type=speaker_type,
+            speaker_category=speaker_category,
+        )
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
+        }
+    
+    # Check for significant adult presence in diarization
+    total_segments = diarization.get("total_segments", 0)
+    baby_fraction = diarization.get("baby_audio_fraction", 1.0)
+    adult_fraction = diarization.get("adult_audio_fraction", 0.0)
+    
+    # Reject if adult is the primary speaker
+    if primary_speaker in ("adult_male", "adult_female"):
+        logger.warning(
+            f"Adult voice is primary speaker in session {session_id}: "
+            f"primary_speaker={primary_speaker} adult_fraction={adult_fraction}"
+        )
+        rejection_insight = _build_rejection_insight(
+            session, 
+            reason="adult", 
+            speaker_type="adult",
+            speaker_category=primary_speaker,
+        )
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
+        }
+    
+    # Reject if adult segments dominate
+    if total_segments > 0 and adult_segments > 0 and baby_fraction < 0.3:
+        logger.warning(
+            f"Adult voice dominant in session {session_id}: "
+            f"adult_segments={adult_segments}/{total_segments} baby_fraction={baby_fraction}"
+        )
+        rejection_insight = _build_rejection_insight(
+            session, 
+            reason="adult", 
+            speaker_type="adult",
+            speaker_category="adult_male" if biological.get("f0_hz", 0) < 180 else "adult_female",
+        )
         save_insight_to_session(session_id, rejection_insight)
         return {
             "status": "insight_generated",
