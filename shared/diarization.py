@@ -119,13 +119,17 @@ def classify_segment(y_segment: np.ndarray, sr: int) -> str:
     """
     Classify a single voiced segment using F0 and basic acoustic features.
 
+    IMPORTANT: Default to baby classification unless there's STRONG adult evidence.
+    Baby sounds (crying, cooing, babbling) are much more common in this app.
+    Adult detection should require very low F0 (< 150 Hz) as definitive evidence.
+
     Classification categories:
-        "newborn"       - F0 > 450 Hz (crying baby 0-3 months)
-        "infant"        - F0 300-450 Hz (baby 3-12 months)
-        "toddler"       - F0 250-350 Hz (child 1-2 years)
-        "child"         - F0 200-300 Hz (child 2-5 years)
-        "adult_female"  - F0 165-255 Hz (adult female)
-        "adult_male"    - F0 < 180 Hz (adult male)
+        "newborn"       - F0 > 400 Hz (crying baby 0-3 months)
+        "infant"        - F0 280-400 Hz (baby 3-12 months) - includes low crying
+        "toddler"       - F0 220-280 Hz (child 1-2 years)
+        "child"         - F0 180-220 Hz (child 2-5 years)
+        "adult_female"  - F0 150-180 Hz (adult female) - STRICT threshold
+        "adult_male"    - F0 < 150 Hz (adult male) - STRONG evidence required
         "unknown"       - no reliable F0 detected
 
     Returns: "newborn" | "infant" | "toddler" | "child" | "adult_female" | "adult_male" | "unknown"
@@ -149,23 +153,27 @@ def classify_segment(y_segment: np.ndarray, sr: int) -> str:
 
         f0_median = float(np.median(f0_voiced))
 
-        # Comprehensive classification based on research literature
-        if f0_median > 500:
-            return "newborn"       # High-pitch cry
-        elif f0_median > 450:
-            return "newborn"       # Likely newborn crying
-        elif f0_median > 350:
-            return "infant"        # 3-12 months
-        elif f0_median > 300:
-            return "infant"        # Could be older infant
-        elif f0_median > 250:
-            return "toddler"       # 1-2 years
-        elif f0_median > 200:
-            return "child"         # 2-5 years (could overlap adult female)
-        elif f0_median > 165:
-            return "adult_female"  # Adult female range (could be older child)
+        # LENIENT baby-first classification
+        # Default to baby unless F0 is very low (strong adult evidence)
+        if f0_median > 450:
+            return "newborn"       # High-pitch cry - definitely baby
+        elif f0_median > 400:
+            return "newborn"       # Newborn crying range
+        elif f0_median > 280:
+            return "infant"        # Infant cooing, babbling, low crying
+        elif f0_median > 220:
+            return "toddler"       # Toddler range
+        elif f0_median > 180:
+            return "child"         # Young child
+        elif f0_median > 150:
+            return "child"         # Still likely child (lenient)
+        elif f0_median > 120:
+            # Gray zone - could be low child or high adult female
+            # Default to child (more likely in baby monitoring app)
+            return "child"
         elif f0_median > 85:
-            return "adult_male"    # Adult male range
+            # Very low F0 - strong adult male evidence
+            return "adult_male"
         elif f0_median > 0:
             return "adult_male"    # Deep adult male
         return "unknown"

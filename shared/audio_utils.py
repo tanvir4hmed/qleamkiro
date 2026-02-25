@@ -903,37 +903,41 @@ def classify_speaker_type(
         "adult_male": 0,
     }
     
-    # === F0-based scoring ===
+    # === F0-based scoring (LENIENT - baby first) ===
+    # Default to baby unless F0 is very low (strong adult evidence)
     if f0_hz > 500:
         scores["newborn"] += 3
         evidence.append(f"f0_newborn:{f0_hz:.0f}Hz")
-    elif f0_hz > 450:
+    elif f0_hz > 400:
         scores["newborn"] += 2
         scores["infant"] += 1
         evidence.append(f"f0_likely_newborn:{f0_hz:.0f}Hz")
     elif f0_hz > 350:
         scores["infant"] += 3
         evidence.append(f"f0_infant:{f0_hz:.0f}Hz")
-    elif f0_hz > 300:
+    elif f0_hz > 280:
         scores["infant"] += 2
         scores["toddler"] += 1
         evidence.append(f"f0_infant_toddler:{f0_hz:.0f}Hz")
-    elif f0_hz > 250:
+    elif f0_hz > 220:
         scores["toddler"] += 2
         scores["infant"] += 1
-        scores["child"] += 1
         evidence.append(f"f0_toddler:{f0_hz:.0f}Hz")
-    elif f0_hz > 200:
+    elif f0_hz > 180:
         scores["child"] += 2
         scores["toddler"] += 1
-        scores["adult_female"] += 1
-        evidence.append(f"f0_child_overlap:{f0_hz:.0f}Hz")
-    elif f0_hz > 165:
-        # Overlap zone: child vs adult female - need VTL to distinguish
+        evidence.append(f"f0_child:{f0_hz:.0f}Hz")
+    elif f0_hz > 150:
+        # Likely child - lenient
+        scores["child"] += 2
+        evidence.append(f"f0_likely_child:{f0_hz:.0f}Hz")
+    elif f0_hz > 120:
+        # Gray zone - default to child (more likely in baby monitoring app)
         scores["child"] += 1
-        scores["adult_female"] += 2
-        evidence.append(f"f0_child_female_overlap:{f0_hz:.0f}Hz")
+        scores["adult_female"] += 1
+        evidence.append(f"f0_child_adult_overlap:{f0_hz:.0f}Hz")
     elif f0_hz > 85:
+        # Low F0 - strong adult evidence
         scores["adult_female"] += 1
         scores["adult_male"] += 2
         evidence.append(f"f0_adult:{f0_hz:.0f}Hz")
