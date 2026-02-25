@@ -129,6 +129,14 @@ function Dashboard({ user }) {
               Journey
             </button>
           )}
+          {selectedChild && (
+            <button
+              className="child-btn language-btn"
+              onClick={() => navigate(`/language/${selectedChild.child_id}`)}
+            >
+              Language
+            </button>
+          )}
         </div>
 
         {showAddChild && (
@@ -142,7 +150,7 @@ function Dashboard({ user }) {
               autoFocus
             />
             <label className="birth-date-label">
-              Date of birth
+              Date of birth <span className="birth-date-required">*</span>
               <input
                 type="date"
                 value={newChildBirthDate}
@@ -150,7 +158,7 @@ function Dashboard({ user }) {
                 max={new Date().toISOString().split('T')[0]}
               />
             </label>
-            <button onClick={handleAddChild} disabled={!newChildName.trim()}>Add</button>
+            <button onClick={handleAddChild} disabled={!newChildName.trim() || !newChildBirthDate}>Add</button>
             <button onClick={() => { setShowAddChild(false); setNewChildBirthDate(''); }}>Cancel</button>
           </div>
         )}

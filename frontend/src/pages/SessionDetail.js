@@ -8,6 +8,42 @@ import FeatureChart from '../components/FeatureChart';
 import DevelopmentalView from '../components/DevelopmentalView';
 import SpeechAnalysisPanel from '../components/SpeechAnalysisPanel';
 
+const HEALTH_FLAG_LABELS = {
+  sick: { label: 'Feeling unwell today', color: '#FF6B6B' },
+  fussy: { label: 'A bit fussy today', color: '#FFE66D' },
+  tired: { label: 'Tired today', color: '#a29bfe' },
+  teething: { label: 'Teething', color: '#fd79a8' },
+};
+
+const CONTEXT_LABELS = {
+  feeding_minutes_ago: {
+    15: 'just ate',
+    45: 'ate about 30–60 min ago',
+    90: 'ate about an hour ago',
+    150: 'it\'s been over 2 hours since eating',
+  },
+  health_state: { well: 'doing well', sick: 'not feeling well', fussy: 'a bit fussy', tired: 'tired' },
+  environment: { quiet: 'at home in a quiet space', noisy: 'in a noisier environment', travel: 'travelling', outdoor: 'outdoors' },
+};
+
+function ContextNote({ ctx }) {
+  if (!ctx || !Object.keys(ctx).length) return null;
+  const parts = [];
+  if (ctx.feeding_minutes_ago != null)
+    parts.push(CONTEXT_LABELS.feeding_minutes_ago[ctx.feeding_minutes_ago] || `last ate ${ctx.feeding_minutes_ago} min ago`);
+  if (ctx.health_state && CONTEXT_LABELS.health_state[ctx.health_state])
+    parts.push(CONTEXT_LABELS.health_state[ctx.health_state]);
+  if (ctx.environment && CONTEXT_LABELS.environment[ctx.environment])
+    parts.push(CONTEXT_LABELS.environment[ctx.environment]);
+  if (!parts.length) return null;
+  return (
+    <div className="context-note">
+      <span className="context-note-icon">📌</span>
+      Context: {parts.join(', ')}.
+    </div>
+  );
+}
+
 function SessionDetail() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -16,6 +52,14 @@ function SessionDetail() {
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [error, setError] = useState(null);
   const [feedbackError, setFeedbackError] = useState(null);
+
+  // Resolve child name from localStorage cache (populated by Dashboard)
+  const getChildName = (childId) => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('qleam_children') || '[]');
+      return cached.find(c => c.child_id === childId)?.name || '';
+    } catch (_) { return ''; }
+  };
 
   const getAuthHeaders = async () => {
     const s = await fetchAuthSession();
@@ -76,11 +120,14 @@ function SessionDetail() {
     }
   };
 
+  // Derive child name: from session data (API v2) or localStorage fallback
+  const childName = session?.child_name || getChildName(session?.child_id || '');
+
   if (loading) {
     return (
       <div className="session-detail loading-state">
         <div className="spinner" />
-        <p>Analyzing your baby's sounds...</p>
+        <p>Analyzing your baby's sounds…</p>
         <p className="loading-sub">This usually takes 10–20 seconds</p>
       </div>
     );
@@ -96,13 +143,25 @@ function SessionDetail() {
   }
 
   const insight = session?.insight;
+  const sessionCtx = session?.session_context;
+  const healthFlag = HEALTH_FLAG_LABELS[sessionCtx?.health_state];
 
   return (
     <div className="session-detail">
       <button className="back-btn" onClick={() => navigate('/')}>← Back</button>
 
-      <h1>Session Analysis</h1>
+      <h1>{childName ? `${childName}'s Session` : 'Session Analysis'}</h1>
       <p className="session-time">{new Date(session?.timestamp).toLocaleString()}</p>
+
+      {/* Health flag — shown when parent reported being unwell / fussy */}
+      {healthFlag && (
+        <div className="health-flag" style={{ borderColor: healthFlag.color, color: healthFlag.color }}>
+          <span className="health-flag-icon">⚠</span> {healthFlag.label} — keep this in mind when interpreting the insight.
+        </div>
+      )}
+
+      {/* Context acknowledgment */}
+      <ContextNote ctx={sessionCtx} />
 
       {insight && (
         <>

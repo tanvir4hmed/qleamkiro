@@ -12,9 +12,10 @@ import math
 import os
 import sys
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 
@@ -37,6 +38,26 @@ lambda_client = boto3.client("lambda")
 
 # All intent keys — must match evidence_model.py
 _ALL_INTENTS = ["hunger", "discomfort", "connection", "fatigue", "overstimulation", "exploration"]
+
+# ---------------------------------------------------------------------------
+# Fraud-detection thresholds
+# ---------------------------------------------------------------------------
+_MISCLICK_THRESHOLD_MS = 3000        # < 3 s since insight displayed → likely misclick
+_UNIFORM_PATTERN_WINDOW = 10         # sliding window of last N response_type submissions
+_UNIFORM_PATTERN_THRESHOLD = 0.80    # ≥80 % same response type across window → suspicious
+_ADVERSARIAL_FRS_THRESHOLD = 0.30    # FRS already this low → fast re-assessment mode
+_ADVERSARIAL_CRS_THRESHOLD = 0.30    # CRS already this low → fast re-assessment mode
+
+# Dynamic EMA α values — FRS
+_ALPHA_FRS_NORMAL = 0.15        # Standard EMA update
+_ALPHA_FRS_MISCLICK = 0.00      # Discard — likely accidental tap
+_ALPHA_FRS_UNIFORM = 0.05       # Slow update — suspicious repetition pattern
+_ALPHA_FRS_ADVERSARIAL = 0.45   # Fast re-assessment — trust critically low
+
+# Dynamic EMA α values — CRS
+_ALPHA_CRS_NORMAL = 0.10
+_ALPHA_CRS_MISCLICK = 0.00
+_ALPHA_CRS_ADVERSARIAL = 0.40
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -157,27 +178,139 @@ def compute_delta_score(efp: Dict[str, float], response_type: str) -> Dict[str, 
     }
 
 
-def update_parent_trust_score(child_id: str, alignment_score: float) -> Tuple[float, float]:
+def _detect_frs_fraud(
+    session: Dict,
+    profile: Dict,
+    response_type: str,
+    submitted_at: datetime,
+) -> Tuple[float, str, List[str]]:
     """
-    Update the parent's Feedback Reliability Score (FRS) using EMA (α=0.15).
+    Evaluate fraud signals for an FRS update.
 
-    FRS(t) = 0.15 × alignment_score + 0.85 × FRS(t-1)
+    Signal hierarchy (first match wins):
+        MISCLICK_SUSPECTED  — feedback submitted < 3 s after insight was displayed
+        UNIFORM_PATTERN     — ≥80 % of last 10 responses are the same response_type
+        ADVERSARIAL         — current FRS already below 0.30 (trust critically low)
+        NONE                — normal submission
 
-    Returns: (old_frs, new_frs)
+    Returns: (alpha, fraud_signal, updated_recent_response_types)
     """
-    response = child_profile_table.get_item(Key={"child_id": child_id})
-    profile = _decimal_to_float(response.get("Item", {}))
+    recent: List[str] = list(profile.get("recent_response_types") or [])
+
+    # --- MISCLICK check ---
+    insight_ts_str = session.get("insight_generated_at")
+    if insight_ts_str:
+        try:
+            insight_ts = datetime.fromisoformat(insight_ts_str.replace("Z", "+00:00"))
+            elapsed_ms = (submitted_at - insight_ts).total_seconds() * 1000
+            if elapsed_ms < _MISCLICK_THRESHOLD_MS:
+                logger.debug(f"FRS fraud: MISCLICK_SUSPECTED (elapsed={elapsed_ms:.0f}ms)")
+                # Do NOT append to window — discard this tick entirely
+                return _ALPHA_FRS_MISCLICK, "MISCLICK_SUSPECTED", recent
+        except Exception:
+            pass
+
+    # --- Update sliding window (only for non-misclick submissions) ---
+    if response_type:
+        recent.append(response_type)
+        if len(recent) > _UNIFORM_PATTERN_WINDOW:
+            recent = recent[-_UNIFORM_PATTERN_WINDOW:]
+
+    # --- UNIFORM_PATTERN check ---
+    if len(recent) >= _UNIFORM_PATTERN_WINDOW:
+        counts = Counter(recent)
+        top_ratio = counts.most_common(1)[0][1] / len(recent)
+        if top_ratio >= _UNIFORM_PATTERN_THRESHOLD:
+            logger.debug(f"FRS fraud: UNIFORM_PATTERN (top_ratio={top_ratio:.2f})")
+            return _ALPHA_FRS_UNIFORM, "UNIFORM_PATTERN", recent
+
+    # --- ADVERSARIAL check ---
+    current_frs = float(profile.get("parent_trust_score") or 0.5)
+    if current_frs < _ADVERSARIAL_FRS_THRESHOLD:
+        logger.debug(f"FRS fraud: ADVERSARIAL (frs={current_frs:.4f})")
+        return _ALPHA_FRS_ADVERSARIAL, "ADVERSARIAL", recent
+
+    return _ALPHA_FRS_NORMAL, "NONE", recent
+
+
+def _detect_crs_fraud(
+    session: Dict,
+    profile: Dict,
+    submitted_at: datetime,
+) -> Tuple[float, str]:
+    """
+    Evaluate fraud signals for a CRS update.
+
+    Signals:
+        MISCLICK_SUSPECTED  — context submitted < 3 s after insight displayed
+        ADVERSARIAL         — current CRS below 0.30 (context consistently unhelpful)
+        NONE                — normal
+
+    Returns: (alpha, fraud_signal)
+    """
+    # --- MISCLICK check ---
+    insight_ts_str = session.get("insight_generated_at")
+    if insight_ts_str:
+        try:
+            insight_ts = datetime.fromisoformat(insight_ts_str.replace("Z", "+00:00"))
+            elapsed_ms = (submitted_at - insight_ts).total_seconds() * 1000
+            if elapsed_ms < _MISCLICK_THRESHOLD_MS:
+                return _ALPHA_CRS_MISCLICK, "MISCLICK_SUSPECTED"
+        except Exception:
+            pass
+
+    # --- ADVERSARIAL check ---
+    current_crs = float(profile.get("context_reliability") or 0.8)
+    if current_crs < _ADVERSARIAL_CRS_THRESHOLD:
+        return _ALPHA_CRS_ADVERSARIAL, "ADVERSARIAL"
+
+    return _ALPHA_CRS_NORMAL, "NONE"
+
+
+def update_parent_trust_score(
+    child_id: str,
+    alignment_score: float,
+    session: Dict,
+    response_type: str,
+) -> Tuple[float, float, str]:
+    """
+    Update FRS using a dynamic EMA α selected by fraud signal detection.
+
+    FRS(t) = α × alignment_score + (1 - α) × FRS(t-1)
+
+    α is chosen as:
+        MISCLICK_SUSPECTED  → 0.00  (discard — accidental tap, no update)
+        UNIFORM_PATTERN     → 0.05  (slow decay — suspicious repetition)
+        ADVERSARIAL         → 0.45  (fast re-assessment — critically low trust)
+        NONE                → 0.15  (standard EMA)
+
+    Also maintains a sliding `recent_response_types` window on the child profile
+    for pattern detection across sessions.
+
+    Returns: (old_frs, new_frs, fraud_signal)
+    """
+    now = datetime.now(timezone.utc)
+    resp = child_profile_table.get_item(Key={"child_id": child_id})
+    profile = _decimal_to_float(resp.get("Item", {}))
     old_frs = float(profile.get("parent_trust_score") or 0.5)
 
-    new_frs = round(max(0.1, min(1.0, 0.15 * alignment_score + 0.85 * old_frs)), 4)
+    alpha, fraud_signal, updated_recent = _detect_frs_fraud(session, profile, response_type, now)
+
+    new_frs = round(max(0.1, min(1.0, alpha * alignment_score + (1.0 - alpha) * old_frs)), 4)
 
     child_profile_table.update_item(
         Key={"child_id": child_id},
-        UpdateExpression="SET parent_trust_score = :frs",
-        ExpressionAttributeValues={":frs": _float_to_decimal(new_frs)},
+        UpdateExpression="SET parent_trust_score = :frs, recent_response_types = :rrt",
+        ExpressionAttributeValues={
+            ":frs": _float_to_decimal(new_frs),
+            ":rrt": updated_recent,
+        },
     )
-    logger.info(f"FRS updated child={child_id}: {old_frs:.4f} → {new_frs:.4f}")
-    return old_frs, new_frs
+    logger.info(
+        f"FRS updated child={child_id}: {old_frs:.4f} → {new_frs:.4f} "
+        f"α={alpha} signal={fraud_signal}"
+    )
+    return old_frs, new_frs, fraud_signal
 
 
 def save_feedback(
@@ -195,6 +328,7 @@ def save_feedback(
     frs_after: Optional[float] = None,
     developmental_stage: str = "",
     stage_version: int = 0,
+    fraud_signals: Optional[Dict] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     feedback_item: Dict[str, Any] = {
@@ -221,34 +355,50 @@ def save_feedback(
         feedback_item["developmental_stage"] = developmental_stage
     if stage_version:
         feedback_item["stage_version"] = stage_version
+    if fraud_signals:
+        feedback_item["fraud_signals"] = fraud_signals
 
     feedback_table.put_item(Item=feedback_item)
     logger.info(f"Saved feedback {feedback_id} alignment={alignment_score} frs={frs_before}→{frs_after}")
 
 
-def update_context_reliability(child_id: str, alignment_score: float) -> None:
+def update_context_reliability(child_id: str, alignment_score: float, session: Dict) -> str:
     """
-    Update context reliability score (CRS) using EMA (α=0.10).
-    Only called when the session actually had parent-provided context data.
+    Update CRS using a dynamic EMA α selected by fraud signal detection.
+    Only called when the session had parent-provided context data.
 
-    CRS tracks how well the parent's context inputs (feeding time, health state, etc.)
-    have correlated with correct predictions over time.  Lower CRS → context adjustments
-    are scaled down in compute_research_priors, preventing wrong context from skewing results.
+    CRS tracks how well context inputs (feeding time, health state, etc.)
+    have correlated with correct predictions.  Lower CRS → context weight is
+    scaled down in compute_research_priors.
 
-    CRS(t) = 0.10 × alignment_score + 0.90 × CRS(t-1)
+    CRS(t) = α × alignment_score + (1 - α) × CRS(t-1)
+
+    α is chosen as:
+        MISCLICK_SUSPECTED  → 0.00  (discard)
+        ADVERSARIAL         → 0.40  (fast re-assessment — context consistently wrong)
+        NONE                → 0.10  (standard EMA)
+
+    Returns the fraud_signal detected.
     """
-    response = child_profile_table.get_item(Key={"child_id": child_id})
-    profile = _decimal_to_float(response.get("Item", {}))
+    now = datetime.now(timezone.utc)
+    resp = child_profile_table.get_item(Key={"child_id": child_id})
+    profile = _decimal_to_float(resp.get("Item", {}))
     old_crs = float(profile.get("context_reliability") or 0.8)
 
-    new_crs = round(max(0.2, min(1.0, 0.10 * alignment_score + 0.90 * old_crs)), 4)
+    alpha, fraud_signal = _detect_crs_fraud(session, profile, now)
+
+    new_crs = round(max(0.2, min(1.0, alpha * alignment_score + (1.0 - alpha) * old_crs)), 4)
 
     child_profile_table.update_item(
         Key={"child_id": child_id},
         UpdateExpression="SET context_reliability = :crs",
         ExpressionAttributeValues={":crs": _float_to_decimal(new_crs)},
     )
-    logger.info(f"Context reliability updated child={child_id}: {old_crs:.4f} → {new_crs:.4f}")
+    logger.info(
+        f"CRS updated child={child_id}: {old_crs:.4f} → {new_crs:.4f} "
+        f"α={alpha} signal={fraud_signal}"
+    )
+    return fraud_signal
 
 
 def invoke_reinforcement_engine(payload: Dict) -> None:
@@ -327,11 +477,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not cluster_id:
         logger.warning(f"Session {session_id} has no cluster_id yet — feedback stored but reinforcement skipped")
 
-    # 2. Phase 4: compute delta score + update parent trust score (FRS) if EFP exists
+    # 2. Phase 4: compute delta score + update FRS/CRS if EFP exists
     alignment_score: Optional[float] = None
     delta_score: Optional[float] = None
     frs_before: Optional[float] = None
     frs_after: Optional[float] = None
+    fraud_signal_frs: str = "NONE"
+    fraud_signal_crs: str = "NONE"
 
     efp = session.get("efp")
     if efp and response_type and response_type in _ALL_INTENTS:
@@ -339,11 +491,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             scores = compute_delta_score(efp, response_type)
             alignment_score = scores["alignment_score"]
             delta_score = scores["delta_score"]
-            frs_before, frs_after = update_parent_trust_score(child_id, alignment_score)
+            frs_before, frs_after, fraud_signal_frs = update_parent_trust_score(
+                child_id, alignment_score, session, response_type
+            )
             logger.info(
                 f"Delta scoring: session={session_id} response={response_type} "
                 f"efp_top={scores['efp_top_intent']} alignment={alignment_score:.3f} "
-                f"delta={delta_score:.3f}"
+                f"delta={delta_score:.3f} frs_signal={fraud_signal_frs}"
             )
         except Exception as e:
             logger.warning(f"Delta scoring failed (non-fatal): {e}")
@@ -358,11 +512,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         )
         if had_context:
             try:
-                update_context_reliability(child_id, alignment_score)
+                fraud_signal_crs = update_context_reliability(child_id, alignment_score, session)
             except Exception as e:
                 logger.warning(f"Context reliability update failed (non-fatal): {e}")
 
-    # 3. Save feedback record (with scoring data if available)
+    # Build fraud_signals summary (only persisted when a signal was detected)
+    detected_signals: Dict = {}
+    if fraud_signal_frs != "NONE":
+        detected_signals["frs"] = fraud_signal_frs
+    if fraud_signal_crs != "NONE":
+        detected_signals["crs"] = fraud_signal_crs
+
+    # 3. Save feedback record (with scoring data and fraud signals if present)
     feedback_id = str(uuid.uuid4())
     save_feedback(
         feedback_id=feedback_id,
@@ -379,6 +540,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         frs_after=frs_after,
         developmental_stage=developmental_stage,
         stage_version=stage_version,
+        fraud_signals=detected_signals if detected_signals else None,
     )
 
     # 4. Trigger reinforcement engine (async) if cluster exists
@@ -409,4 +571,5 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "reinforcement_triggered": cluster_id is not None,
         "delta_score": delta_score,
         "frs_updated": frs_after is not None,
+        "fraud_signals": detected_signals if detected_signals else None,
     }

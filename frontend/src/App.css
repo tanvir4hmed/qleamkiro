@@ -288,3 +288,71 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .speech-milestones-title { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
 .speech-milestone-badges { display: flex; flex-wrap: wrap; gap: 6px; }
 .speech-milestone-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; background: rgba(255,107,107,0.10); color: var(--accent); font-size: 12px; font-weight: 500; }
+
+/* ── Phase 9 — Session Detail personalisation ── */
+.health-flag { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1.5px solid; border-radius: 10px; font-size: 13px; font-weight: 500; background: rgba(255,255,255,0.6); }
+.health-flag-icon { font-size: 15px; }
+.context-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+.context-note-icon { flex-shrink: 0; font-size: 14px; margin-top: 1px; }
+
+/* ── Phase 9 — Dashboard additions ── */
+.child-btn.language-btn { border-color: #a29bfe; color: #6c5ce7; }
+.child-btn.language-btn:hover { background: #a29bfe; color: white; }
+.birth-date-label { font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+.birth-date-required { color: var(--accent); font-weight: 600; }
+
+/* ── Phase 9 — Progress Page additions ── */
+.trend-chart-section h2 { font-size: 16px; margin-bottom: 4px; }
+.language-section-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; font-style: italic; line-height: 1.5; }
+.trend-rows { display: flex; flex-direction: column; gap: 8px; }
+.trend-row { display: flex; align-items: center; gap: 10px; }
+.trend-label { font-size: 12px; color: var(--text-muted); width: 90px; flex-shrink: 0; text-align: right; }
+.mini-history-bar-wrap { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.mini-history-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.trend-value { font-size: 12px; color: var(--text-muted); width: 44px; flex-shrink: 0; text-align: right; }
+
+/* Timeline */
+.timeline-section h2 { font-size: 16px; margin-bottom: 12px; }
+.timeline { display: flex; flex-direction: column; gap: 0; position: relative; }
+.timeline::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+.timeline-event { display: flex; align-items: flex-start; gap: 14px; padding: 8px 0; position: relative; }
+.timeline-event:hover .timeline-body { background: rgba(78,205,196,0.04); border-radius: 8px; }
+.timeline-dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); flex-shrink: 0; z-index: 1; margin-top: 2px; }
+.timeline-event--milestone .timeline-dot { background: rgba(255,107,107,0.15); border-color: var(--accent); }
+.timeline-event--session .timeline-dot { background: rgba(78,205,196,0.12); border-color: var(--primary); }
+.timeline-body { flex: 1; padding: 4px 8px; }
+.timeline-label { font-size: 14px; font-weight: 500; color: var(--text); line-height: 1.4; }
+.timeline-milestone-star { color: var(--accent); }
+.timeline-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+.timeline-date { font-size: 12px; color: var(--text-muted); }
+.timeline-stage { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: rgba(78,205,196,0.10); color: var(--primary); font-weight: 500; }
+.timeline-conf { font-size: 11px; color: var(--text-muted); }
+
+/* ── Phase 9 — Language Page ── */
+.language-page { display: flex; flex-direction: column; gap: 20px; }
+.language-page h1 { font-size: 22px; font-weight: 700; }
+.language-page-subtitle { font-size: 14px; color: var(--text-muted); margin-top: -16px; }
+.language-section { display: flex; flex-direction: column; gap: 10px; }
+.language-section h2 { font-size: 16px; font-weight: 600; }
+
+/* Signal cards */
+.signal-list { display: flex; flex-direction: column; gap: 8px; }
+.signal-list--muted { opacity: 0.75; }
+.signal-card { padding: 12px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--surface); display: flex; flex-direction: column; gap: 5px; }
+.signal-card--crystallized { border-color: rgba(78,205,196,0.4); background: rgba(78,205,196,0.04); }
+.signal-card--candidate { border-color: rgba(253,203,110,0.4); background: rgba(253,203,110,0.04); }
+.signal-card-header { display: flex; align-items: center; gap: 8px; }
+.signal-icon { font-size: 14px; color: var(--text-muted); flex-shrink: 0; }
+.signal-label { font-size: 14px; font-weight: 600; color: var(--text); flex: 1; }
+.signal-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.signal-confirmed { background: rgba(78,205,196,0.15); color: var(--primary-dark); }
+.signal-candidate { background: rgba(253,203,110,0.20); color: #b8860b; }
+.signal-heard { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+.signal-card-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.signal-meta-sep { opacity: 0.4; }
+.signal-description { font-size: 12px; color: var(--text-muted); font-style: italic; line-height: 1.5; }
+
+/* Vocabulary chips */
+.vocab-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.vocab-chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 13px; color: var(--text); }
+.vocab-chip-star { color: var(--primary); font-size: 10px; }

@@ -2,7 +2,8 @@
 ## Start Here. Everything You Need to Know Is in This File.
 
 **Last Updated:** February 2026
-**Status:** Research complete. Build not started. Phase 0 (audit) is next.
+**Status:** Phases 0–8 complete. Phase 9 (UI Rebuild) is next.
+**Build Progress:** Phase 0 ✅ | Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | Phase 5 ✅ | Phase 6 ✅ | Phase 7 ✅ | Phase 8 ✅ | Phase 9 🔲
 **Purpose:** This document is the single entry point for anyone — including future AI sessions with no chat history — to understand the complete project, what has been decided, what needs to be built, and in what order.
 
 ---
@@ -171,44 +172,53 @@ PhD-quality mathematical treatment. Contains:
 
 ## 4. Current System State — What Exists vs What Is Needed
 
-### What Currently Exists (Before Phase 0 Audit)
+### Confirmed Build State (as of February 2026)
 
-Based on codebase exploration before research phase:
+Phases 0–4 are complete. The table below reflects confirmed codebase state.
 
-| Component | Status | Notes |
-|---|---|---|
-| Audio recording (frontend) | Exists | WebM/WAV via MediaRecorder |
-| Feature extraction Lambda | Exists | 4 features only (rhythm, repetition, intensity, flow) |
-| 26-dimension MFCC embedding | Exists | Used for clustering |
-| Cluster engine | Exists | Cosine similarity, threshold 0.85 |
-| Insight generator Lambda | Exists | Rule-based, hard-coded categories |
-| Amazon Bedrock (Claude 3 Haiku) | Exists | For natural language output |
-| Parent feedback (3 fixed inputs) | Exists | response_type, effectiveness, word_token |
-| Reinforcement weights | Exists | +0.10 helpful, -0.02 neutral, -0.05 ineffective |
-| EMA baseline | Exists | α=0.3, fixed |
-| Step Functions state machine | Exists | 3 states: extract → cluster → insight |
-| DynamoDB tables | Exists | Sessions, clusters, baselines |
-| S3 audio storage | Exists | Raw audio files |
-| Baby profile | Partially exists | Unknown if birth_date stored |
-| Biological validation | **Missing** | No infant/adult check |
-| Speaker identity | **Missing** | No diarization, no enrollment verification |
-| Context layer | **Missing** | No feeding time, health, environment |
-| Rich feature extraction (50–80) | **Missing** | Only 4 features |
-| Formant extraction (F1–F4) | **Missing** | Critical for VTL and validation |
-| Trust scoring | **Missing** | No parent reliability system |
-| Delta scoring | **Missing** | No expected vs actual feedback |
-| Concept graph | **Missing** | No personal concept system |
-| NLP on free text | **Missing** | No free text field exists |
-| Stream decoder | **Missing** | No real-time stream analysis |
-| Developmental mode detection | **Missing** | No linguistic transition detection |
-| Speech analysis pipeline | **Missing** | No MLU, vocabulary tracking |
-| Population model / federated | **Missing** | No aggregation infrastructure |
-| Stage-aware feedback UI | **Missing** | Fixed 3-option feedback always |
-| Journey view | **Missing** | No developmental timeline |
-| Age-wise feedback schema | **Missing** | Single schema for all ages |
-
-### Phase 0 Will Confirm This Precisely
-The audit will read every Lambda, every DynamoDB schema, every frontend component, and produce an exact confirmed gap list before any code is written.
+| Component | Status | Phase | Notes |
+|---|---|---|---|
+| Audio recording (frontend) | ✅ Complete | 0 | WebM/WAV via MediaRecorder |
+| Feature extraction Lambda | ✅ Complete | 3 | 65+ features across 8 groups (was 4) |
+| MFCC embedding (26-dim) | ✅ Complete | 0 | Used for clustering |
+| Cluster engine | ✅ Complete | 0 | Cosine similarity, threshold 0.85 |
+| Insight generator Lambda | ✅ Complete | 4 | Three-Source Evidence Model v2 |
+| Amazon Bedrock (Claude 3.5 Haiku) | ✅ Complete | 0 | Natural language output; LINGUISTIC mode uses separate prompt |
+| Parent feedback (3 inputs) | ✅ Complete | 4 | response_type, effectiveness, word_token, notes, stage fields |
+| Reinforcement weights | ✅ Complete | 0 | +0.10 helpful, -0.02 neutral, -0.05 ineffective |
+| EMA baseline | ✅ Complete | 0 | α=0.3 default |
+| Step Functions state machine | ✅ Complete | 0 | extract → cluster → insight |
+| DynamoDB tables | ✅ Complete | 4 | Sessions, clusters, baselines, feedback, semantic_bridge, concept_graph, milestones |
+| S3 audio storage | ✅ Complete | 0 | Raw audio files |
+| Baby profile | ✅ Complete | 1 | birth_date, baby_name, parent_trust_score, context_reliability stored |
+| Audio quality gate (Layer 0) | ✅ Complete | 1 | SNR≥10dB, duration≥3s, silence<0.80, clipping<0.5% |
+| Biological validation (Layer 1) | ✅ Complete | 1 | F1–F4 formants, VTL via mean spacing, Bayesian threshold 13.0cm |
+| Speaker diarization | ✅ Complete | 2 | Segment-level infant/adult classification |
+| Enrolled baby verification | ✅ Complete | 2 | Cosine similarity against session history |
+| Developmental mode detection | ✅ Complete | 2 | PRE_LINGUISTIC / TRANSITION / LINGUISTIC routing |
+| Context collection | ✅ Complete | 3 | Feeding time, health state, environment from parent |
+| Rich feature extraction (65+) | ✅ Complete | 3 | 8 groups: prosodic, voice quality, MFCC, spectral, temporal, formant, cry/babble, CBR |
+| Formant extraction (F1–F4) | ✅ Complete | 1/3 | Via LPC; F4 added for correct VTL formula |
+| Three-Source Evidence Model | ✅ Complete | 4 | 60% acoustic + 15% research + 25% feedback×FRS×DS |
+| Research priors (stage-specific) | ✅ Complete | 4 | 8 developmental stages, context-adjusted |
+| Expected Feedback Profile (EFP) | ✅ Complete | 4 | Stored before parent sees result |
+| Parent trust score (FRS) | ✅ Complete | 4 | EMA α=0.15, stored per child profile |
+| Delta scoring | ✅ Complete | 4 | DS = 0.60×RMS + 0.40×EPS in feedback_processor |
+| Honest confidence scoring | ✅ Complete | 4 | Caps: 0.92 always, 0.40 ≤5 sessions, 0.35 weak signal |
+| LINGUISTIC mode insight | ✅ Complete | 4 | Separate pipeline for 24m+ children |
+| Concept graph (DynamoDB table) | ✅ Complete | 4 | Table exists, universal concepts pre-populated at registration |
+| Milestones table | ✅ Complete | 4 | Table exists, 10 milestone types defined |
+| NLP on free text | ✅ Complete | 5 | nlp_processor Lambda; Bedrock extraction of intent + objects |
+| Concept graph operations | ✅ Complete | 5 | upsert_concept, get_concepts, pre_populate; concept_decoder Lambda |
+| Stage-aware feedback (backend) | ✅ Complete | 5 | notes/stage fields forwarded through API → feedback_processor → NLP |
+| Developmental stage tracking | ✅ Complete | 6 | developmental_tracker Lambda; CBR EMA, φ order parameter |
+| Proto-word crystallisation | ✅ Complete | 6 | 5-criteria check in proto_word.py; concept_decoder Lambda |
+| Milestone logging | ✅ Complete | 6 | milestones_table; 10 milestone types; logged by developmental_tracker |
+| Speech analysis pipeline | ✅ Complete | 7 | speech_analyzer Lambda; MLU, vocab diversity, pragmatic classification |
+| Language development insight | ✅ Complete | 7 | LINGUISTIC mode in insight_generator; separate Bedrock prompt |
+| Population model / federated | ✅ Complete | 8 | federated_aggregator Lambda; FedAvg + DP noise (ε=1.0, δ=1e-5); stage-stratified |
+| FL population prior injection | ✅ Complete | 8 | evidence_model.py accepts population_prior; insight_generator loads from DynamoDB |
+| Stage-aware UI | 🔲 Pending | 9 | Journey view, private language page, progress page |
 
 ---
 
@@ -265,7 +275,7 @@ Each phase is one build command. I (the AI) handle all internal dependencies wit
 
 ---
 
-### Phase 0 — Audit (Do This First)
+### Phase 0 — Audit ✅ COMPLETE
 **Command:** "Run Phase 0"
 **What I do:**
 - Read every Lambda handler
@@ -281,7 +291,7 @@ Each phase is one build command. I (the AI) handle all internal dependencies wit
 
 ---
 
-### Phase 1 — Foundation Gates
+### Phase 1 — Foundation Gates ✅ COMPLETE
 **Command:** "Build Phase 1"
 **Depends on:** Phase 0 confirmed
 **What gets built:**
@@ -316,7 +326,7 @@ Each phase is one build command. I (the AI) handle all internal dependencies wit
 
 ---
 
-### Phase 2 — Speaker Identity
+### Phase 2 — Speaker Identity ✅ COMPLETE
 **Command:** "Build Phase 2"
 **Depends on:** Phase 1 complete and tested
 
@@ -343,7 +353,7 @@ Each phase is one build command. I (the AI) handle all internal dependencies wit
 
 ---
 
-### Phase 3 — Context Collection + Rich Feature Extraction
+### Phase 3 — Context Collection + Rich Feature Extraction ✅ COMPLETE
 **Command:** "Build Phase 3"
 **Depends on:** Phase 2 complete
 
@@ -375,7 +385,7 @@ Stored in session record, used for all downstream analysis.
 
 ---
 
-### Phase 4 — Insight Engine Rebuild
+### Phase 4 — Insight Engine Rebuild ✅ COMPLETE
 **Command:** "Build Phase 4"
 **Depends on:** Phase 3 complete
 
@@ -421,7 +431,7 @@ Stored in session record, used for all downstream analysis.
 
 ---
 
-### Phase 5 — Concept Graph + NLP + Evolved Feedback
+### Phase 5 — Concept Graph + NLP + Evolved Feedback ✅ COMPLETE
 **Command:** "Build Phase 5"
 **Depends on:** Phase 4 complete
 
@@ -459,7 +469,7 @@ Stored in session record, used for all downstream analysis.
 
 ---
 
-### Phase 6 — Stream Decoder + Developmental Tracking
+### Phase 6 — Stream Decoder + Developmental Tracking ✅ COMPLETE
 **Command:** "Build Phase 6"
 **Depends on:** Phase 5 complete (concept graph must exist)
 
@@ -497,7 +507,7 @@ Stored in session record, used for all downstream analysis.
 
 ---
 
-### Phase 7 — Speech Analysis Pipeline
+### Phase 7 — Speech Analysis Pipeline ✅ COMPLETE
 **Command:** "Build Phase 7"
 **Depends on:** Phase 6 complete (mode detection must be stable)
 
@@ -526,7 +536,7 @@ Stored in session record, used for all downstream analysis.
 
 ---
 
-### Phase 8 — Population Model (Federated Learning)
+### Phase 8 — Population Model (Federated Learning) ✅ COMPLETE
 **Command:** "Build Phase 8"
 **Depends on:** Phases 1–7 complete and generating quality data
 

@@ -49,6 +49,7 @@ SEMANTIC_BRIDGE_TABLE: str = os.environ.get("SEMANTIC_BRIDGE_TABLE", "qleam-dev-
 FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
 CONCEPT_GRAPH_TABLE: str = os.environ.get("CONCEPT_GRAPH_TABLE", "qleam-dev-ConceptGraph")
 MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones")
+POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
 
 # =============================================================================
 # S3
@@ -115,7 +116,7 @@ DISCLAIMER = (
 DEVELOPMENTAL_STAGE_MAP = [
     (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
     (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
-    (181,  270,  "CANONICAL_BABBLE",  "TRANSITION"),
+    (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
     (271,  365,  "PROTO_WORDS",       "TRANSITION"),
     (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
     (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
@@ -124,13 +125,14 @@ DEVELOPMENTAL_STAGE_MAP = [
 
 # =============================================================================
 # Audio Quality Gate Thresholds (Phase 1 — Layer 0)
+# Spec: TECHNICAL_PIPELINE.md Layer 0 / SCIENTIFIC_MATHEMATICS.md Section 1
 # =============================================================================
-QUALITY_MIN_DURATION_SECONDS: float = 2.0
-QUALITY_MAX_DURATION_SECONDS: float = 60.0
-QUALITY_MIN_SNR_DB: float = 5.0
-QUALITY_MAX_SILENCE_RATIO: float = 0.85
-QUALITY_MAX_CLIPPING_RATIO: float = 0.05
-LOMBARD_NOISE_FLOOR_DB: float = -30.0  # Above this → Lombard effect warning
+QUALITY_MIN_DURATION_SECONDS: float = 3.0   # Was 2.0 — spec: Layer 0 gate
+QUALITY_MAX_DURATION_SECONDS: float = 600.0  # Was 60 — spec: Layer 0 gate max 600s
+QUALITY_MIN_SNR_DB: float = 10.0            # Was 5.0  — spec: Layer 0 gate
+QUALITY_MAX_SILENCE_RATIO: float = 0.80     # Was 0.85 — spec: Layer 0 gate
+QUALITY_MAX_CLIPPING_RATIO: float = 0.005   # Was 0.05 — spec: Layer 0 gate (0.5%)
+LOMBARD_NOISE_FLOOR_DB: float = -30.0       # Above this → Lombard effect warning
 
 # =============================================================================
 # Milestone Types (Phase 6)
@@ -152,8 +154,23 @@ PRAGMATIC_TYPES = ["declaration", "request", "question", "exclamation"]
 
 # =============================================================================
 # Biological Validation Thresholds (Phase 1 — Layer 1)
+# Spec: SCIENTIFIC_MATHEMATICS.md Theorem 3.1 / TECHNICAL_PIPELINE.md Layer 1
 # =============================================================================
-VTL_INFANT_MAX_CM: float = 12.0       # Above this → likely adult vocal tract
-VTL_SPEED_OF_SOUND_CM_S: float = 34300.0
-INFANT_F0_MIN_HZ: float = 200.0       # Below this → likely adult fundamental freq
+VTL_INFANT_MAX_CM: float = 13.0       # Was 12.0 — Bayesian-optimal per Theorem 3.1
+VTL_UNCERTAIN_MIN_CM: float = 12.5    # 12.5–13.0 → UNCERTAIN band
+VTL_SPEED_OF_SOUND_CM_S: float = 34300.0  # Deprecated: use temperature-corrected value
+VTL_AMBIENT_TEMP_C: float = 20.0      # Default ambient temperature for c(T) calc
+INFANT_F0_MIN_HZ: float = 250.0       # Was 200 — spec: adult threshold ≥ 250 Hz (Theorem 3.1)
 STRONG_INFANT_F0_HZ: float = 300.0    # Above this → strong infant signal
+
+# =============================================================================
+# Federated Learning (Phase 8 — FIVL)
+# Spec: SCIENTIFIC_MATHEMATICS.md Section 10, Theorem 10.1-10.2
+# =============================================================================
+FL_EPSILON: float = 1.0          # Differential privacy ε (privacy budget)
+FL_DELTA: float = 1e-5           # Differential privacy δ (failure probability)
+FL_MIN_PARTICIPANTS: int = 10    # Minimum sessions per stage before aggregation
+FL_FRS_QUALITY_GATE: float = 0.60   # Minimum FRS for session to be included
+FL_DELTA_QUALITY_GATE: float = 0.65  # Minimum delta_score for session to be included
+FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor — never fully replaced by FL
+FL_ROUND_INTERVAL_HOURS: int = 24    # How often aggregation runs (via EventBridge)

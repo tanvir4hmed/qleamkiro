@@ -396,15 +396,18 @@ def audio_quality_gate(
     y: np.ndarray,
     sr: int,
     duration_seconds: float,
-    min_duration: float = 2.0,
+    min_duration: float = 3.0,
     max_duration: float = 60.0,
-    min_snr_db: float = 5.0,
-    max_silence_ratio: float = 0.85,
-    max_clipping_ratio: float = 0.05,
+    min_snr_db: float = 10.0,
+    max_silence_ratio: float = 0.80,
+    max_clipping_ratio: float = 0.005,
     lombard_floor_db: float = -30.0,
 ) -> Dict:
     """
     Layer 0: Audio quality gate — run before any feature extraction.
+
+    Thresholds per TECHNICAL_PIPELINE.md Layer 0:
+        min_duration=3.0s, min_snr=10dB, silence<0.80, clipping<0.005 (0.5%)
 
     Checks duration, SNR, silence ratio, clipping, and Lombard noise flag.
     Lombard flag is a warning only and does not fail the gate.
@@ -479,13 +482,16 @@ def audio_quality_gate(
 
 def extract_formants_lpc(y: np.ndarray, sr: int) -> Dict[str, float]:
     """
-    Extract F1, F2, F3 formant frequencies via LPC analysis.
+    Extract F1–F4 formant frequencies via LPC analysis.
 
     Uses librosa.lpc (librosa >= 0.8) on a 25ms windowed frame
     from the middle of the audio. Falls back to zeros on failure.
 
+    F4 is required for the spec-correct VTL formula
+    (SCIENTIFIC_MATHEMATICS.md Eq 1.5: mean of F2-F1, F3-F2, F4-F3).
+
     Returns:
-        {"F1": Hz, "F2": Hz, "F3": Hz}
+        {"F1": Hz, "F2": Hz, "F3": Hz, "F4": Hz}
     """
     librosa = _get_librosa()
 
@@ -495,7 +501,7 @@ def extract_formants_lpc(y: np.ndarray, sr: int) -> Dict[str, float]:
         frame = y[max(0, mid - frame_len // 2): mid + frame_len // 2]
 
         if len(frame) < 64:
-            return {"F1": 0.0, "F2": 0.0, "F3": 0.0}
+            return {"F1": 0.0, "F2": 0.0, "F3": 0.0, "F4": 0.0}
 
         # Hamming window + pre-emphasis
         frame = frame * np.hamming(len(frame))
@@ -521,63 +527,92 @@ def extract_formants_lpc(y: np.ndarray, sr: int) -> Dict[str, float]:
             "F1": round(float(freqs[0]), 1) if len(freqs) > 0 else 0.0,
             "F2": round(float(freqs[1]), 1) if len(freqs) > 1 else 0.0,
             "F3": round(float(freqs[2]), 1) if len(freqs) > 2 else 0.0,
+            "F4": round(float(freqs[3]), 1) if len(freqs) > 3 else 0.0,
         }
 
     except Exception as e:
         logger.warning(f"Formant extraction failed: {e}")
-        return {"F1": 0.0, "F2": 0.0, "F3": 0.0}
+        return {"F1": 0.0, "F2": 0.0, "F3": 0.0, "F4": 0.0}
 
 
-def estimate_vtl_from_formants(formants: Dict[str, float]) -> float:
+def estimate_vtl_from_formants(
+    formants: Dict[str, float],
+    ambient_temp_c: float = 20.0,
+) -> float:
     """
-    Estimate Vocal Tract Length (VTL) in cm from formant frequencies.
+    Estimate Vocal Tract Length (VTL) in cm from mean inter-formant spacing.
 
-    Uniform tube model (closed glottis, open lips):
-        F_n = (2n - 1) * c / (4 * VTL)
-        VTL = (2n - 1) * c / (4 * F_n)
+    Spec (SCIENTIFIC_MATHEMATICS.md Eq 1.5):
+        VTL = c(T) / (2 × ΔF̄)   [cm]
+        ΔF̄ = mean(F2−F1, F3−F2, F4−F3)   [Hz]
 
-    Uses F3 (n=3) as primary estimator, falls back to F2 (n=2).
+    Temperature correction (Eq 1.6):
+        c(T) = 331.3 + 0.606 × T   [m/s]   (T in Celsius)
 
-    Reference ranges:
-        Infant 0-6m:   6-8 cm   (F3 ≈ 5360-4025 Hz)
-        Infant 6-18m:  8-11 cm  (F3 ≈ 4025-2936 Hz)
-        Infant 18-24m: 10-12 cm (F3 ≈ 3217-2679 Hz)
-        Adult female:  14-17 cm (F3 ≈ 2278-1879 Hz)
-        Adult male:    16-18 cm (F3 ≈ 1994-1772 Hz)
+    Falls back to single-resonance estimate if fewer than 2 valid spacings.
+
+    Reference ranges at 20°C:
+        Infant 0-6m:   ~6-8 cm   (ΔF̄ ≈ 2145-1608 Hz)
+        Infant 6-18m:  ~8-11 cm  (ΔF̄ ≈ 1608-1169 Hz)
+        Infant 18-24m: ~10-12 cm (ΔF̄ ≈ 1169-975 Hz)
+        Adult female:  ~14-17 cm (ΔF̄ ≈ 699-577 Hz)
+        Adult male:    ~16-18 cm (ΔF̄ ≈ 611-543 Hz)
     """
-    C = 34300.0  # cm/s at body temperature
-    f3 = formants.get("F3", 0.0)
+    # Temperature-corrected speed of sound: m/s → cm/s
+    c_cms = (331.3 + 0.606 * ambient_temp_c) * 100.0
+
+    f1 = formants.get("F1", 0.0)
     f2 = formants.get("F2", 0.0)
+    f3 = formants.get("F3", 0.0)
+    f4 = formants.get("F4", 0.0)
 
+    spacings = []
+    if f2 > 0 and f1 > 0 and f2 > f1:
+        spacings.append(f2 - f1)
+    if f3 > 0 and f2 > 0 and f3 > f2:
+        spacings.append(f3 - f2)
+    if f4 > 0 and f3 > 0 and f4 > f3:
+        spacings.append(f4 - f3)
+
+    if len(spacings) >= 2:
+        mean_spacing = sum(spacings) / len(spacings)
+        if mean_spacing > 0:
+            return round(c_cms / (2.0 * mean_spacing), 2)
+
+    # Fallback: single-resonance estimate using highest available formant
     if f3 > 500:
-        return round(5.0 * C / (4.0 * f3), 2)
+        return round(5.0 * c_cms / (4.0 * f3), 2)
     if f2 > 500:
-        return round(3.0 * C / (4.0 * f2), 2)
+        return round(3.0 * c_cms / (4.0 * f2), 2)
     return 0.0
 
 
 def biological_validation(
     y: np.ndarray,
     sr: int,
-    vtl_infant_max_cm: float = 12.0,
+    vtl_infant_max_cm: float = 13.0,
+    vtl_uncertain_min_cm: float = 12.5,
     infant_f0_min_hz: float = 200.0,
     strong_infant_f0_hz: float = 300.0,
+    ambient_temp_c: float = 20.0,
 ) -> Dict:
     """
     Layer 1: Biological validation — classify infant vs adult speaker.
 
     Evidence sources:
       1. F0 (fundamental frequency) via YIN estimator
-      2. Formants (F1, F2, F3) via LPC analysis
-      3. VTL estimate from F3
+      2. Formants (F1–F4) via LPC analysis
+      3. VTL estimate from mean inter-formant spacing (Eq 1.5)
 
-    Scoring:
-      +2: F0 > 300 Hz         (strong infant signal)
-      +1: F0 200-300 Hz       (moderate infant signal)
-      -2: F0 < 180 Hz         (adult range)
-      +2: VTL < 12 cm         (infant vocal tract)
-      +1: VTL 12-14 cm        (child/toddler vocal tract)
-      -2: VTL > 14 cm         (adult vocal tract)
+    VTL scoring (TECHNICAL_PIPELINE.md Layer 1 / Theorem 3.1):
+      VTL < 12.5 cm   → +2 (strong infant)
+      VTL 12.5–13.0 cm → 0  (UNCERTAIN — no score change)
+      VTL > 13.0 cm   → -2 (adult — REJECT signal)
+
+    F0 scoring:
+      +2: F0 > 300 Hz   (strong infant signal)
+      +1: F0 200–300 Hz (moderate infant signal)
+      -2: F0 < 180 Hz   (adult range)
 
     is_infant:         score >= 1
     mimicry_suspected: score <= -2 (strong adult signal in a baby session)
@@ -586,10 +621,11 @@ def biological_validation(
         {
             "vtl_cm": float,
             "f0_hz": float,
-            "formants": {"F1": Hz, "F2": Hz, "F3": Hz},
+            "formants": {"F1": Hz, "F2": Hz, "F3": Hz, "F4": Hz},
             "is_infant": bool,
             "mimicry_suspected": bool,
-            "bio_confidence": float,   # 0-1
+            "vtl_zone": str,         # "infant" | "uncertain" | "adult"
+            "bio_confidence": float, # 0-1
             "evidence": List[str],
         }
     """
@@ -615,19 +651,22 @@ def biological_validation(
         infant_score -= 2
         evidence.append(f"f0_adult:{f0_hz:.0f}Hz")
 
-    # --- Formants + VTL ---
+    # --- Formants (F1–F4) + VTL via mean formant spacing ---
     formants = extract_formants_lpc(y, sr)
-    vtl_cm = estimate_vtl_from_formants(formants)
+    vtl_cm = estimate_vtl_from_formants(formants, ambient_temp_c)
 
+    vtl_zone = "unknown"
     if vtl_cm > 0:
-        if vtl_cm < vtl_infant_max_cm:
+        if vtl_cm < vtl_uncertain_min_cm:
             infant_score += 2
+            vtl_zone = "infant"
             evidence.append(f"vtl_infant:{vtl_cm:.1f}cm")
-        elif vtl_cm < 14.0:
-            infant_score += 1
-            evidence.append(f"vtl_child:{vtl_cm:.1f}cm")
+        elif vtl_cm <= vtl_infant_max_cm:
+            vtl_zone = "uncertain"
+            evidence.append(f"vtl_uncertain:{vtl_cm:.1f}cm")  # no score change
         else:
             infant_score -= 2
+            vtl_zone = "adult"
             evidence.append(f"vtl_adult:{vtl_cm:.1f}cm")
 
     is_infant = infant_score >= 1
@@ -640,6 +679,7 @@ def biological_validation(
         "formants": formants,
         "is_infant": is_infant,
         "mimicry_suspected": mimicry_suspected,
+        "vtl_zone": vtl_zone,
         "bio_confidence": bio_confidence,
         "evidence": evidence,
     }

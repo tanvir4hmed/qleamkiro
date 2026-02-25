@@ -217,11 +217,19 @@ def compute_research_priors(
     developmental_stage: str,
     session_context: Optional[Dict] = None,
     context_reliability: float = 0.8,
+    population_prior: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
     Return context-adjusted developmental research priors.
 
-    Base prior: stage-specific distribution from infant vocalization literature.
+    Base prior: stage-specific distribution from infant vocalization literature,
+    OR the Phase 8 federated learning population prior if one is provided and
+    has been validated as reliable (n_participants >= FL_MIN_PARTICIPANTS).
+
+    Phase 8 override: if `population_prior` is supplied, it replaces the static
+    _STAGE_PRIORS as the base distribution.  The research floor (10% uniform
+    prior) is already baked into population_prior by the federated_aggregator,
+    so no further floor blending is needed here.
 
     Context adjustments (from Phase 3 session_context) are scaled by context_reliability
     so that unreliable or potentially incorrect parent-provided data doesn't fully override
@@ -239,12 +247,21 @@ def compute_research_priors(
         developmental_stage: One of the stage names from DEVELOPMENTAL_STAGE_MAP.
         session_context:     Optional Phase 3 context dict from session record.
         context_reliability: How much to trust parent-provided context (0.2–1.0, default 0.8).
+        population_prior:    Phase 8 FL population model prior (already DP-protected +
+                             research-floor-blended by federated_aggregator). When provided
+                             and reliable, replaces static literature priors.
 
     Returns:
         Normalized probability distribution over intent labels.
     """
     stage = (developmental_stage or "UNKNOWN").upper().strip()
-    priors = dict(_STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]))
+
+    # Phase 8: use FL population prior if supplied, otherwise fall back to literature
+    if population_prior and len(population_prior) >= 3:
+        priors = dict(population_prior)
+        logger.debug(f"Using FL population prior for stage={stage}")
+    else:
+        priors = dict(_STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]))
 
     if session_context:
         cr = max(0.2, min(1.0, context_reliability))   # clamp to safe range
@@ -387,6 +404,7 @@ def determine_probable_intent_v2(
     session_count: int = 0,
     parent_trust_score: float = 0.5,
     context_reliability: float = 0.8,
+    population_prior: Optional[Dict[str, float]] = None,
 ) -> Dict:
     """
     Three-Source Evidence Model intent determination (Phase 4).
@@ -432,8 +450,10 @@ def determine_probable_intent_v2(
     # --- Source 1: Acoustic ---
     acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
 
-    # --- Source 2: Research priors + context (scaled by context_reliability) ---
-    research_priors = compute_research_priors(developmental_stage, session_context, context_reliability)
+    # --- Source 2: Research priors + context (Phase 8: FL population prior if available) ---
+    research_priors = compute_research_priors(
+        developmental_stage, session_context, context_reliability, population_prior
+    )
 
     # --- Source 3: Feedback history (maintained by reinforcement_engine) ---
     feedback_intents: Dict[str, float] = cluster.get("probable_intents") or {}

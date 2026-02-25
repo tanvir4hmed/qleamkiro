@@ -33,6 +33,7 @@ from constants import (
     CHILD_PROFILE_TABLE,
     DISCLAIMER,
     INTENT_LABELS,
+    POPULATION_MODEL_TABLE,
     SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
     SOUND_CLUSTER_TABLE,
@@ -50,6 +51,7 @@ child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
 sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
+population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
 
 
 # =============================================================================
@@ -129,6 +131,34 @@ def get_semantic_bridge(cluster_id: str) -> Optional[Dict]:
     if not bridges:
         return None
     return _decimal_to_float(max(bridges, key=lambda b: float(b.get("semantic_confidence_score", 0))))
+
+
+def get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]:
+    """
+    Load the Phase 8 FL population prior for a given developmental stage.
+
+    Returns the prior distribution if it exists AND is reliable
+    (n_participants >= FL_MIN_PARTICIPANTS). Returns None otherwise,
+    causing evidence_model to fall back to static literature priors.
+    """
+    try:
+        response = population_model_table.get_item(
+            Key={"stage": developmental_stage.upper()},
+            ProjectionExpression="population_prior, n_participants, is_reliable",
+        )
+        item = _decimal_to_float(response.get("Item") or {})
+        if not item:
+            return None
+        if not item.get("is_reliable"):
+            logger.debug(f"Population prior for {developmental_stage} exists but not reliable — using literature priors")
+            return None
+        prior = item.get("population_prior")
+        if prior and isinstance(prior, dict):
+            logger.debug(f"Using FL population prior for stage={developmental_stage} n={item.get('n_participants')}")
+            return prior
+    except Exception as e:
+        logger.warning(f"Failed to load population prior for {developmental_stage}: {e}")
+    return None
 
 
 # =============================================================================
@@ -682,7 +712,9 @@ def build_insight(
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
 
     # 2. [Phase 4] Three-source evidence model: 60% acoustic + 15% research + 25% feedback
+    #    [Phase 8] Research prior replaced by FL population prior when available + reliable
     #    Confidence capped by session count; feedback weight scaled by parent trust score (FRS)
+    population_prior = get_population_prior(developmental_stage)
     probable_intent = determine_probable_intent_v2(
         cluster=cluster,
         feature_scores=feature_scores,
@@ -692,6 +724,7 @@ def build_insight(
         session_count=session_count,
         parent_trust_score=parent_trust_score,
         context_reliability=context_reliability,
+        population_prior=population_prior,
     )
     cluster_stability = determine_cluster_stability(cluster)
 

@@ -243,13 +243,14 @@ def create_child(event: Dict) -> Dict:
     if not child_name:
         return response(400, {"error": "name is required"}, event)
 
-    # Validate birth_date format if provided
-    if birth_date:
-        try:
-            from datetime import date as _date
-            _date.fromisoformat(birth_date)
-        except ValueError:
-            return response(400, {"error": "birth_date must be a valid date in YYYY-MM-DD format"}, event)
+    # birth_date is mandatory — drives age calculation, developmental staging, and FL aggregation
+    if not birth_date:
+        return response(400, {"error": "birth_date is required (YYYY-MM-DD)"}, event)
+    try:
+        from datetime import date as _date
+        _date.fromisoformat(birth_date)
+    except ValueError:
+        return response(400, {"error": "birth_date must be a valid date in YYYY-MM-DD format"}, event)
 
     child_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -527,10 +528,41 @@ def get_insight(event: Dict) -> Dict:
     if not insight:
         return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
 
+    # Fetch child name for personalization
+    child_id = session.get("child_id", "")
+    child_name = ""
+    if child_id:
+        try:
+            profile_resp = child_profile_table.get_item(
+                Key={"child_id": child_id},
+                ProjectionExpression="#n",
+                ExpressionAttributeNames={"#n": "name"},
+            )
+            child_name = profile_resp.get("Item", {}).get("name", "")
+        except Exception:
+            pass
+
     return response(200, {
         "session_id": session_id,
+        "child_id": child_id,
+        "child_name": child_name,
         "insight": insight,
         "timestamp": session.get("timestamp"),
+        # Phase 3: Session context (feeding time, health state, environment)
+        "session_context": session.get("session_context"),
+        # Phase 6: Developmental tracking output
+        "developmental_view": session.get("developmental_view"),
+        # Phase 6: Concept graph decode output
+        "concept_decode": session.get("concept_decode"),
+        # Phase 7: Speech analysis output (LINGUISTIC mode only)
+        "speech_analysis": session.get("speech_analysis"),
+        # Phase 1: Biological validation summary
+        "biological": {
+            k: v for k, v in (session.get("biological") or {}).items()
+            if k in ("vtl_cm", "f0_hz", "is_infant", "vtl_zone", "bio_confidence")
+        },
+        "developmental_stage": session.get("developmental_stage"),
+        "developmental_mode": session.get("developmental_mode"),
     }, event)
 
 
@@ -541,11 +573,24 @@ def submit_feedback(event: Dict) -> Dict:
     session_id = event["pathParameters"]["session_id"]
     body = json.loads(event.get("body") or "{}")
 
+    # Blank submission guard — at least one substantive field must be present
+    response_type = str(body.get("response_type", "") or "").strip()
+    word_token = str(body.get("word_token", "") or "").strip()
+    notes = str(body.get("notes", "") or "").strip()[:500]
+    if not response_type and not word_token and not notes:
+        return response(400, {"error": "Feedback must include at least response_type, word_token, or notes"}, event)
+
+    # Full feedback payload — includes Phase 4 (FRS/DS) and Phase 5 (NLP/stage) fields
     feedback_payload = {
         "session_id": session_id,
-        "response_type": body.get("response_type", ""),
+        "response_type": response_type,
         "effectiveness": body.get("effectiveness", "neutral"),
-        "word_token": body.get("word_token", ""),
+        "word_token": word_token,
+        # Phase 5: free-text notes (fed to NLP processor for concept extraction)
+        "notes": notes,
+        # Phase 5: stage-aware schema tracking
+        "developmental_stage": body.get("developmental_stage", ""),
+        "stage_version": int(body.get("stage_version", 0) or 0),
     }
 
     # Invoke feedback processor Lambda
@@ -617,6 +662,55 @@ def list_milestones(event: Dict) -> Dict:
 
 
 # =============================================================================
+# GET /child/{child_id}/language-signals — Private language signal library
+# Returns sound clusters sorted by proto-word status + frequency.
+# Used by the Private Language Page (Phase 9).
+# =============================================================================
+def list_language_signals(event: Dict) -> Dict:
+    user_id = get_user_id(event)
+    child_id = event["pathParameters"]["child_id"]
+
+    # Verify ownership
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    if profile_resp["Item"].get("parent_id") != user_id:
+        return response(403, {"error": "Forbidden"}, event)
+
+    try:
+        resp = sound_cluster_table.query(
+            IndexName="child_id-last_updated-index",
+            KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id),
+            ScanIndexForward=False,  # Most recent first
+        )
+        clusters = [_decimal_to_float(item) for item in resp.get("Items", [])]
+
+        # Sort: crystallized proto-words first, then candidates, then by frequency
+        _status_order = {"CRYSTALLIZED": 0, "CANDIDATE": 1, "NONE": 2}
+        clusters.sort(key=lambda c: (
+            _status_order.get(c.get("proto_word_status", "NONE"), 2),
+            -float(c.get("frequency_count", 0)),
+        ))
+
+        # Return summary data (no embedding vectors)
+        signals = []
+        for c in clusters[:50]:
+            signals.append({
+                "cluster_id": c.get("cluster_id"),
+                "label": c.get("dominant_word_token") or c.get("label") or "Unnamed sound",
+                "proto_word_status": c.get("proto_word_status", "NONE"),
+                "frequency_count": int(c.get("frequency_count", 0)),
+                "reinforcement_weight": float(c.get("reinforcement_weight", 0.5)),
+                "last_updated": c.get("last_updated"),
+            })
+
+        return response(200, {"signals": signals, "count": len(signals)}, event)
+    except Exception as e:
+        logger.error(f"Failed to list language signals for child {child_id}: {e}")
+        return response(500, {"error": "Failed to retrieve language signals"}, event)
+
+
+# =============================================================================
 # Router
 # =============================================================================
 ROUTES = {
@@ -626,6 +720,7 @@ ROUTES = {
     ("GET", "/child/{child_id}/sessions"): list_sessions,
     ("GET", "/child/{child_id}/concepts"): list_concepts,
     ("GET", "/child/{child_id}/milestones"): list_milestones,
+    ("GET", "/child/{child_id}/language-signals"): list_language_signals,
     ("POST", "/session/upload"): upload_session,
     ("POST", "/session/{session_id}/start"): start_processing,
     ("GET", "/session/{session_id}/insight"): get_insight,
