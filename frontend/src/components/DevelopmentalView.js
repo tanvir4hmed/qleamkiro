@@ -35,7 +35,6 @@ function DevelopmentalView({ data }) {
     cbr = 0,
     cbr_trend,
     cbr_category,
-    phi = 0,
     phi_label,
     milestones_this_session = [],
   } = data;
