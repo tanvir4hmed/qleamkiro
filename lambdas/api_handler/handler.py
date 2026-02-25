@@ -296,18 +296,28 @@ def delete_child(event: Dict) -> Dict:
     if profile.get("parent_id") != user_id:
         return response(403, {"error": "Not authorized to delete this child profile"}, event)
 
-    # Delete sessions
+    _key = boto3.dynamodb.conditions.Key
+
+    # Delete sessions + their feedback records
     sessions_resp = session_table.query(
         IndexName="child_id-timestamp-index",
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id)
+        KeyConditionExpression=_key("child_id").eq(child_id)
     )
-    for session in sessions_resp.get("Items", []):
-        session_table.delete_item(Key={"session_id": session["session_id"]})
+    for sess in sessions_resp.get("Items", []):
+        sid = sess["session_id"]
+        # Delete feedback records linked to this session
+        fb_resp = feedback_table.query(
+            IndexName="session_id-created_at-index",
+            KeyConditionExpression=_key("session_id").eq(sid)
+        )
+        for fb in fb_resp.get("Items", []):
+            feedback_table.delete_item(Key={"feedback_id": fb["feedback_id"]})
+        session_table.delete_item(Key={"session_id": sid})
 
-    # Delete clusters
+    # Delete sound clusters
     clusters_resp = sound_cluster_table.query(
         IndexName="child_id-last_updated-index",
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id)
+        KeyConditionExpression=_key("child_id").eq(child_id)
     )
     for cluster in clusters_resp.get("Items", []):
         sound_cluster_table.delete_item(Key={"cluster_id": cluster["cluster_id"]})
@@ -315,16 +325,34 @@ def delete_child(event: Dict) -> Dict:
     # Delete semantic bridges
     bridges_resp = semantic_bridge_table.query(
         IndexName="child_id-index",
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id)
+        KeyConditionExpression=_key("child_id").eq(child_id)
     )
     for bridge in bridges_resp.get("Items", []):
         semantic_bridge_table.delete_item(Key={"bridge_id": bridge["bridge_id"]})
 
-    # Delete child profile
+    # Delete personal concept graph (child_id is PK)
+    concepts_resp = concept_graph_table.query(
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for concept in concepts_resp.get("Items", []):
+        concept_graph_table.delete_item(
+            Key={"child_id": child_id, "concept_id": concept["concept_id"]}
+        )
+
+    # Delete milestones (child_id is PK)
+    milestones_resp = milestones_table.query(
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for milestone in milestones_resp.get("Items", []):
+        milestones_table.delete_item(
+            Key={"child_id": child_id, "milestone_id": milestone["milestone_id"]}
+        )
+
+    # Delete child profile last
     child_profile_table.delete_item(Key={"child_id": child_id})
 
-    logger.info(f"Deleted all data for child {child_id}")
-    return response(200, {"message": "Child profile and all associated data deleted"}, event)
+    logger.info(f"Deleted all direct data for child {child_id} (population model retained)")
+    return response(200, {"message": "Child profile and all personal data deleted"}, event)
 
 
 # =============================================================================

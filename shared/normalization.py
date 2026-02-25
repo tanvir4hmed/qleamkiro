@@ -215,3 +215,56 @@ def developmental_stage_from_age(age_days) -> Dict:
             return {"stage": stage, "mode": mode}
 
     return {"stage": "EARLY_SENTENCES", "mode": "LINGUISTIC"}
+
+
+def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
+    """
+    Derive a developmental stage hint from biological validation signals
+    (VTL and F0), instead of relying solely on birth_date.
+
+    Uses vocal tract length (VTL cm) and fundamental frequency (F0 Hz):
+      VTL < 9.0cm  + F0 > 380Hz  → NEWBORN        PRE_LINGUISTIC
+      VTL < 9.0cm  + F0 ≤ 380Hz  → EARLY_VOCAL    PRE_LINGUISTIC
+      VTL 9–10.5cm + F0 > 300Hz  → CANONICAL_BABBLE TRANSITION
+      VTL 9–10.5cm + F0 ≤ 300Hz  → PROTO_WORDS    TRANSITION
+      VTL 10.5–12cm + F0 > 240Hz → FIRST_WORDS    LINGUISTIC
+      VTL 10.5–12cm + F0 ≤ 240Hz → WORD_COMBINATIONS LINGUISTIC
+      VTL ≥ 12cm                 → EARLY_SENTENCES LINGUISTIC
+
+    Returns:
+        {"stage": str|None, "mode": str|None, "confidence": float}
+        stage=None when signals are absent, unreliable, or mimicry suspected.
+    """
+    _NO_HINT = {"stage": None, "mode": None, "confidence": 0.0}
+
+    if not bio_result:
+        return _NO_HINT
+    # Adult mimicry suspected or bio validation skipped
+    if bio_result.get("mimicry_suspected") or not bio_result.get("is_infant", False):
+        return _NO_HINT
+
+    vtl_cm = bio_result.get("vtl_cm") or 0.0
+    f0_hz  = bio_result.get("f0_hz")  or 0.0
+
+    # Need at least one reliable signal
+    if vtl_cm <= 0:
+        return _NO_HINT
+
+    if vtl_cm < 9.0:
+        stage = "NEWBORN" if f0_hz > 380 else "EARLY_VOCAL"
+        mode  = "PRE_LINGUISTIC"
+        conf  = 0.70
+    elif vtl_cm < 10.5:
+        stage = "CANONICAL_BABBLE" if f0_hz > 300 else "PROTO_WORDS"
+        mode  = "TRANSITION"
+        conf  = 0.65
+    elif vtl_cm < 12.0:
+        stage = "FIRST_WORDS" if f0_hz > 240 else "WORD_COMBINATIONS"
+        mode  = "LINGUISTIC"
+        conf  = 0.60
+    else:
+        stage = "EARLY_SENTENCES"
+        mode  = "LINGUISTIC"
+        conf  = 0.55
+
+    return {"stage": stage, "mode": mode, "confidence": round(conf, 2)}

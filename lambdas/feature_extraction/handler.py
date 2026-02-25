@@ -32,6 +32,7 @@ from normalization import (
     compute_deviation_level,
     compute_readiness_score,
     developmental_stage_from_age,
+    audio_stage_hint_from_bio,
     update_feature_baselines,
 )
 
@@ -401,9 +402,33 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     birth_date_str = profile.get("birth_date")
     age_days = compute_age_days(birth_date_str)
-    stage_info = developmental_stage_from_age(age_days)
-    developmental_stage = stage_info["stage"]
-    developmental_mode = stage_info["mode"]
+    age_stage_info = developmental_stage_from_age(age_days)
+
+    # Primary: audio-derived stage from VTL + F0 (biological validation).
+    # Birth date is used only as a plausibility check, not the sole determinant.
+    audio_hint = audio_stage_hint_from_bio(bio_result)
+    if audio_hint["stage"] and audio_hint["confidence"] >= 0.55:
+        developmental_stage = audio_hint["stage"]
+        developmental_mode  = audio_hint["mode"]
+        # Log plausibility mismatch between audio signal and birth date
+        if age_stage_info["stage"] != audio_hint["stage"]:
+            logger.info(
+                f"Stage: audio={audio_hint['stage']} (conf={audio_hint['confidence']}) "
+                f"vs age={age_stage_info['stage']} — using audio-derived stage"
+            )
+        else:
+            logger.info(
+                f"Stage: audio={audio_hint['stage']} matches age-based estimate — "
+                f"confidence boosted"
+            )
+    else:
+        # Fall back to age-based stage when audio quality is too low for VTL/F0
+        developmental_stage = age_stage_info["stage"]
+        developmental_mode  = age_stage_info["mode"]
+        logger.info(
+            f"Stage: audio hint unavailable (bio_confidence={audio_hint['confidence']}) "
+            f"— using age-based stage={developmental_stage}"
+        )
 
     logger.info(f"Child: age={age_days}d stage={developmental_stage} mode={developmental_mode}")
 

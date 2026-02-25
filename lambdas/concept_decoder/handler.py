@@ -103,16 +103,22 @@ def lambda_handler(event: dict, context) -> dict:
     is_unknown_cluster = freq < 5 and len(cluster_concepts) == 0
 
     # --- Compute concept confidence scores ---
+    # Only include concepts that a parent has confirmed at least once (confirmation_count > 0).
+    # Universal pre-populated concepts start at confirmation_count=0 and confidence=0.5,
+    # which would give every new child identical fake 25% scores for all categories.
     reinforcement_weight = float(cluster.get("reinforcement_weight", 0.5)) if cluster else 0.5
 
     scored: List[Dict] = []
     for c in concepts:
+        confirmation_count = int(c.get("confirmation_count", 0))
+        if confirmation_count == 0:
+            continue  # Skip universal concepts with no parent evidence yet
         base_confidence = float(c.get("confidence", 0.5))
         score = round(base_confidence * reinforcement_weight, 4)
         scored.append({
             "label": c.get("label", ""),
             "confidence": score,
-            "evidence_count": int(c.get("confirmation_count", 0)),
+            "evidence_count": confirmation_count,
             "category": c.get("category", "personal"),
         })
 

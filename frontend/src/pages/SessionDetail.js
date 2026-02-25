@@ -174,8 +174,13 @@ function SessionDetail() {
 
       {insight && (
         <>
-          {/* Feature Chart */}
-          {insight.observed_pattern && (
+          {/* Feature Chart — only show when real acoustic data exists */}
+          {insight.observed_pattern &&
+           insight.insight_sections?.source !== 'quality-rejection' &&
+           (insight.observed_pattern.rhythm > 0 ||
+            insight.observed_pattern.repetition > 0 ||
+            insight.observed_pattern.emotional_intensity > 0 ||
+            insight.observed_pattern.expressive_flow > 0) && (
             <section className="feature-section">
               <h2>Acoustic Features</h2>
               <FeatureChart features={insight.observed_pattern} />
@@ -187,8 +192,9 @@ function SessionDetail() {
             <InsightPanel insight={insight} />
           </section>
 
-          {/* Developmental snapshot (Phase 6) */}
-          {session?.developmental_view && (
+          {/* Developmental snapshot — only shown when audio quality passed */}
+          {session?.developmental_view &&
+           insight.insight_sections?.source !== 'quality-rejection' && (
             <section className="developmental-section">
               <DevelopmentalView data={session.developmental_view} />
             </section>
@@ -201,27 +207,33 @@ function SessionDetail() {
             </section>
           )}
 
-          {/* Concept chips (Phase 6) */}
-          {session?.concept_decode?.top_concepts?.length > 0 && (
-            <section className="concept-decode-section">
-              <h2>Top Concepts Detected</h2>
-              <div className="concept-decode-chips">
-                {session.concept_decode.top_concepts.map(c => (
-                  <span key={c.label} className="concept-decode-chip">
-                    {c.label}
-                    <span className="concept-conf">
-                      {(c.confidence * 100).toFixed(0)}%
+          {/* Concept chips (Phase 6) — only shown when parent has confirmed evidence */}
+          {(() => {
+            const cd = session?.concept_decode;
+            // Filter to concepts with actual parent-confirmed evidence
+            const evidenced = (cd?.top_concepts || []).filter(c => c.evidence_count > 0);
+            if (!cd || evidenced.length === 0) return null;
+            return (
+              <section className="concept-decode-section">
+                <h2>Concepts Your Baby May Be Expressing</h2>
+                <div className="concept-decode-chips">
+                  {evidenced.map(c => (
+                    <span key={c.label} className="concept-decode-chip">
+                      {c.label}
+                      <span className="concept-conf">
+                        {(c.confidence * 100).toFixed(0)}%
+                      </span>
                     </span>
-                  </span>
-                ))}
-              </div>
-              {session.concept_decode.is_unknown_cluster && (
-                <p className="unknown-cluster-msg">
-                  {session.concept_decode.unknown_flag_message}
-                </p>
-              )}
-            </section>
-          )}
+                  ))}
+                </div>
+                {cd.is_unknown_cluster && (
+                  <p className="unknown-cluster-msg">
+                    {cd.unknown_flag_message}
+                  </p>
+                )}
+              </section>
+            );
+          })()}
 
           {/* Semantic Alignment */}
           {insight.semantic_alignment && (

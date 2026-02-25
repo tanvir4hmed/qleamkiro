@@ -1,15 +1,23 @@
 import { useState, useEffect } from 'react';
 
 // MASTER_INDEX.md §7-8 — five-stage feedback schema
-// Response-type options (used for pre-linguistic through toddler stages)
-const RESPONSE_TYPES = [
-  { key: 'hunger',         label: '🍼 Tried feeding' },
-  { key: 'connection',     label: '🤗 Comforted & held' },
-  { key: 'discomfort',     label: '🩹 Checked for discomfort' },
-  { key: 'overstimulation',label: '🤫 Reduced stimulation' },
-  { key: 'fatigue',        label: '😴 Started sleep routine' },
-  { key: 'exploration',    label: '🎵 Played & talked' },
+// Base response types — labels adapt per mode below
+const BASE_RESPONSE_TYPES = [
+  { key: 'hunger',         labels: { INFANT: '🍼 Tried feeding',       BABBLE: '🍼 Tried feeding',    PROTO: '🍼 Gave food or drink', TODDLER: '🍼 Gave food or snack' } },
+  { key: 'connection',     labels: { INFANT: '🤗 Held & comforted',    BABBLE: '🤗 Held & played',    PROTO: '🤗 Played together',    TODDLER: '🤗 Gave attention & play' } },
+  { key: 'discomfort',     labels: { INFANT: '🩹 Checked for pain',    BABBLE: '🩹 Checked discomfort', PROTO: '🩹 Checked for pain',  TODDLER: '🩹 Checked & comforted' } },
+  { key: 'overstimulation',labels: { INFANT: '🤫 Quieted the space',  BABBLE: '🤫 Reduced stimulation', PROTO: '🤫 Took a calm break', TODDLER: '🤫 Took a quiet break' } },
+  { key: 'fatigue',        labels: { INFANT: '😴 Started sleep routine', BABBLE: '😴 Started nap routine', PROTO: '😴 Tried to nap',    TODDLER: '😴 Put down for nap' } },
+  { key: 'exploration',    labels: { INFANT: '🎵 Sang & talked',       BABBLE: '🎵 Played & explored', PROTO: '🎵 Explored together', TODDLER: '🎵 Read / played together' } },
 ];
+
+// Get response type list with mode-appropriate labels
+function getResponseTypes(mode) {
+  return BASE_RESPONSE_TYPES.map(rt => ({
+    key: rt.key,
+    label: rt.labels[mode] || rt.labels.INFANT,
+  }));
+}
 
 // Reorder response types so the intent-matched option appears first
 function orderByIntent(types, intentKey) {
@@ -90,7 +98,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
 
   const mode = getMode(developmentalStage);
   const isLanguage = mode === 'LANGUAGE';
-  const orderedResponseTypes = orderByIntent(RESPONSE_TYPES, intentKey);
+  const orderedResponseTypes = orderByIntent(getResponseTypes(mode), intentKey);
   const showConcepts = SHOWS_CONCEPTS.has(mode);
   const showEffectiveness = SHOWS_EFFECTIVENESS.has(mode);
   const showNotes = SHOWS_NOTES.has(mode);
@@ -155,7 +163,9 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
       {/* What did you try — absent for LANGUAGE (24m+): child expressed clearly */}
       {!isLanguage && (
         <div className="feedback-group">
-          <label className="feedback-label">What did you try?</label>
+          <label className="feedback-label">
+            {mode === 'TODDLER' ? 'What did you do?' : 'What did you try?'}
+          </label>
           <div className="response-type-grid">
             {orderedResponseTypes.map(rt => (
               <button
