@@ -26,11 +26,11 @@ def check_proto_word_criteria(cluster: Dict) -> Dict:
                 "parent_confirmation":     bool,  # semantic_alignment_score > 0.0
             },
             "met_count": int,          # 0–5
-            "proto_word_status": str,  # "NONE" | "CANDIDATE" | "ESTABLISHED"
+            "proto_word_status": str,  # "NONE" | "CANDIDATE" | "CRYSTALLIZED"
         }
 
     Status rules:
-        ESTABLISHED: all 5 met AND semantic_alignment_score >= 0.85
+        CRYSTALLIZED: all 5 met AND semantic_alignment_score >= 0.85
         CANDIDATE:   met_count >= 3
         NONE:        met_count < 3
     """
@@ -49,7 +49,8 @@ def check_proto_word_criteria(cluster: Dict) -> Dict:
 
     all_met = met_count == 5
     if all_met and alignment >= 0.85:
-        status = "ESTABLISHED"
+        # Use CRYSTALLIZED across API/UI for consistent signal status naming.
+        status = "CRYSTALLIZED"
     elif met_count >= 3:
         status = "CANDIDATE"
     else:

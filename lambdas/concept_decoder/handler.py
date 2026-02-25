@@ -23,6 +23,7 @@ sys.path.insert(0, "/var/task/shared")
 from concept_graph import get_concepts
 from constants import (
     CONCEPT_GRAPH_TABLE,
+    SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
     SOUND_CLUSTER_TABLE,
 )
@@ -36,6 +37,7 @@ dynamodb = boto3.resource("dynamodb")
 session_table = dynamodb.Table(SESSION_TABLE)
 cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
+semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 
 
 def _decimal_to_float(val: Any) -> Any:
@@ -62,6 +64,37 @@ def _get_cluster(cluster_id: str) -> Optional[Dict]:
     resp = cluster_table.get_item(Key={"cluster_id": cluster_id})
     item = resp.get("Item")
     return _decimal_to_float(item) if item else None
+
+
+def _get_dominant_word_token(cluster_id: str) -> Optional[str]:
+    """
+    Resolve dominant baby-sound label from semantic bridges for this cluster.
+
+    Priority:
+      1) highest semantic_confidence_score
+      2) highest co_occurrence_count
+    """
+    if not cluster_id:
+        return None
+    try:
+        resp = semantic_bridge_table.query(
+            IndexName="cluster_id-index",
+            KeyConditionExpression=Key("cluster_id").eq(cluster_id),
+        )
+        items = [_decimal_to_float(i) for i in resp.get("Items", [])]
+        if not items:
+            return None
+        items.sort(
+            key=lambda b: (
+                -float(b.get("semantic_confidence_score", 0.0)),
+                -int(b.get("co_occurrence_count", 0)),
+            )
+        )
+        token = str(items[0].get("word_token", "") or "").strip().lower()
+        return token or None
+    except Exception as e:
+        logger.warning(f"Failed to resolve dominant word token for cluster {cluster_id}: {e}")
+        return None
 
 
 def lambda_handler(event: dict, context) -> dict:
@@ -138,6 +171,36 @@ def lambda_handler(event: dict, context) -> dict:
         "proto_word_criteria_met": proto_word_result["met_count"],
         "unknown_flag_message": unknown_flag_message,
     }
+
+    # --- Persist signal metadata to cluster (for LanguagePage/API consumers) ---
+    # This keeps cluster-level status in sync with per-session concept_decode.
+    dominant_word_token = _get_dominant_word_token(cluster_id)
+    fallback_label = top_concepts[0]["label"] if top_concepts else None
+    try:
+        update_expr = (
+            "SET proto_word_status = :pws, "
+            "proto_word_criteria_met = :pwm"
+        )
+        expr_vals: Dict[str, Any] = {
+            ":pws": proto_word_result["proto_word_status"],
+            ":pwm": _float_to_decimal(proto_word_result["met_count"]),
+        }
+
+        if dominant_word_token:
+            update_expr += ", dominant_word_token = :dwt"
+            expr_vals[":dwt"] = dominant_word_token
+        elif fallback_label:
+            # Non-breaking fallback when no explicit word_token exists yet.
+            update_expr += ", label = :lbl"
+            expr_vals[":lbl"] = fallback_label
+
+        cluster_table.update_item(
+            Key={"cluster_id": cluster_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_vals,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to persist concept decode metadata to cluster {cluster_id}: {e}")
 
     # --- Store on session ---
     try:

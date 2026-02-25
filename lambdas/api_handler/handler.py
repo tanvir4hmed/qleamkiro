@@ -716,20 +716,27 @@ def list_language_signals(event: Dict) -> Dict:
         )
         clusters = [_decimal_to_float(item) for item in resp.get("Items", [])]
 
+        def _normalize_proto_status(raw: str) -> str:
+            # Backward compatibility: older records may use ESTABLISHED.
+            if raw == "ESTABLISHED":
+                return "CRYSTALLIZED"
+            return raw if raw in {"CRYSTALLIZED", "CANDIDATE", "NONE"} else "NONE"
+
         # Sort: crystallized proto-words first, then candidates, then by frequency
         _status_order = {"CRYSTALLIZED": 0, "CANDIDATE": 1, "NONE": 2}
         clusters.sort(key=lambda c: (
-            _status_order.get(c.get("proto_word_status", "NONE"), 2),
+            _status_order.get(_normalize_proto_status(c.get("proto_word_status", "NONE")), 2),
             -float(c.get("frequency_count", 0)),
         ))
 
         # Return summary data (no embedding vectors)
         signals = []
         for c in clusters[:50]:
+            normalized_status = _normalize_proto_status(c.get("proto_word_status", "NONE"))
             signals.append({
                 "cluster_id": c.get("cluster_id"),
                 "label": c.get("dominant_word_token") or c.get("label") or "Unnamed sound",
-                "proto_word_status": c.get("proto_word_status", "NONE"),
+                "proto_word_status": normalized_status,
                 "frequency_count": int(c.get("frequency_count", 0)),
                 "reinforcement_weight": float(c.get("reinforcement_weight", 0.5)),
                 "last_updated": c.get("last_updated"),
