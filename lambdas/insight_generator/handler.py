@@ -640,8 +640,8 @@ Return ONLY a JSON object with exactly these three fields:
 Guidelines:
 - Write for a new parent who needs clear, warm, reassuring support
 - Never use medical or clinical terms
-- Keep each sentence under 25 words
-- The 3 action steps must be immediately doable
+- Keep each sentence under 20 words
+- Each action step: max 10 words, start with a verb, immediately doable
 - If baby's name is provided, use it naturally 1-2 times (e.g., "Emma's sounds suggest...")
 - If confidence is low or pattern is still forming, acknowledge gently
 - Return ONLY the JSON object, no other text"""
@@ -780,6 +780,34 @@ def build_insight(
 # Save Insight
 # =============================================================================
 
+def _build_rejection_insight(session: Dict) -> Dict:
+    """Lightweight insight returned when the quality gate rejects the recording."""
+    return {
+        "probable_intent": {
+            "key": "unknown",
+            "label": "No baby sounds detected",
+            "confidence": 0.0,
+            "confidence_tier": "low",
+        },
+        "insight_sections": {
+            "what_i_hear": "We couldn't detect clear baby sounds in this recording.",
+            "what_it_means": (
+                "This usually means the recording was too quiet, too short, or "
+                "captured background noise rather than your baby's voice."
+            ),
+            "what_to_try": [
+                "Hold the phone 20–30 cm from your baby's mouth",
+                "Record somewhere quieter if possible",
+                "Try again when baby is actively making sounds",
+            ],
+            "source": "quality-rejection",
+        },
+        "developmental_stage": session.get("developmental_stage", ""),
+        "note": DISCLAIMER,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def save_insight_to_session(session_id: str, insight: Dict, efp: Optional[Dict] = None):
     """Save generated insight (and EFP) to session record.
 
@@ -827,6 +855,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     session = get_session(session_id)
     if not session:
         raise ValueError(f"Session {session_id} not found")
+
+    # 1a. Quality gate check — reject recordings with no vocal content
+    _CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
+    quality_gate = session.get("quality_gate", {})
+    gate_issues = quality_gate.get("issues", [])
+    critical_issues = [
+        i for i in gate_issues
+        if any(i.startswith(p) for p in _CRITICAL_GATE_ISSUES)
+    ]
+    if critical_issues and not quality_gate.get("passed", True):
+        logger.warning(
+            f"Quality gate rejection for session {session_id}: {critical_issues}"
+        )
+        rejection_insight = _build_rejection_insight(session)
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
+        }
 
     # Branch: LINGUISTIC mode sessions get language-development insight
     developmental_mode = session.get("developmental_mode", "")

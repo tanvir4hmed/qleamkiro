@@ -245,6 +245,7 @@ function SessionDetail() {
               <FeedbackForm
                 onSubmit={handleFeedback}
                 developmentalStage={session?.insight?.developmental_stage}
+                intentKey={insight?.probable_intent?.key}
                 childId={session?.child_id}
                 apiCall={apiCall}
               />

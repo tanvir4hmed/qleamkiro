@@ -11,6 +11,14 @@ const RESPONSE_TYPES = [
   { key: 'exploration',    label: '🎵 Played & talked' },
 ];
 
+// Reorder response types so the intent-matched option appears first
+function orderByIntent(types, intentKey) {
+  if (!intentKey) return types;
+  const idx = types.findIndex(t => t.key === intentKey);
+  if (idx <= 0) return types;
+  return [types[idx], ...types.slice(0, idx), ...types.slice(idx + 1)];
+}
+
 const EFFECTIVENESS_OPTIONS = [
   { key: 'helpful',     label: '✓ Helped' },
   { key: 'neutral',     label: '~ Hard to tell' },
@@ -70,7 +78,7 @@ const SHOWS_EFFECTIVENESS = new Set(['INFANT', 'BABBLE', 'PROTO', 'TODDLER']);
 // Notes absent for INFANT (0–6m) per spec §8
 const SHOWS_NOTES = new Set(['BABBLE', 'PROTO', 'TODDLER', 'LANGUAGE']);
 
-function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
+function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCall }) {
   const [open, setOpen] = useState(false);
   const [responseType, setResponseType] = useState('');
   const [effectiveness, setEffectiveness] = useState('');
@@ -82,6 +90,7 @@ function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
 
   const mode = getMode(developmentalStage);
   const isLanguage = mode === 'LANGUAGE';
+  const orderedResponseTypes = orderByIntent(RESPONSE_TYPES, intentKey);
   const showConcepts = SHOWS_CONCEPTS.has(mode);
   const showEffectiveness = SHOWS_EFFECTIVENESS.has(mode);
   const showNotes = SHOWS_NOTES.has(mode);
@@ -148,7 +157,7 @@ function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
         <div className="feedback-group">
           <label className="feedback-label">What did you try?</label>
           <div className="response-type-grid">
-            {RESPONSE_TYPES.map(rt => (
+            {orderedResponseTypes.map(rt => (
               <button
                 key={rt.key}
                 type="button"

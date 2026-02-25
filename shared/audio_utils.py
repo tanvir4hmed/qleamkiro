@@ -453,6 +453,18 @@ def audio_quality_gate(
     if silence_ratio > max_silence_ratio:
         issues.append(f"too_silent:{silence_ratio:.0%}")
 
+    # --- Voiced energy fraction ---
+    # Fraction of frames with RMS significantly above the noise floor.
+    # Flat ambient noise has few peaks → fraction < 0.08 means no vocal content.
+    voiced_energy_fraction = 0.0
+    if max_rms > 0 and len(rms) > 0:
+        n_noise = max(1, len(rms) // 10)
+        noise_floor_rms = float(np.mean(np.sort(rms)[:n_noise])) + 1e-10
+        voiced_frames = int(np.sum(rms > 3.0 * noise_floor_rms))
+        voiced_energy_fraction = float(voiced_frames / max(len(rms), 1))
+        if voiced_energy_fraction < 0.08:
+            issues.append("no_vocal_activity_detected")
+
     # --- Clipping ---
     clipping_ratio = _compute_clipping_ratio(y)
     if clipping_ratio > max_clipping_ratio:
@@ -473,6 +485,7 @@ def audio_quality_gate(
         "clipping_ratio": round(clipping_ratio, 6),
         "lombard_flag": lombard_flag,
         "noise_floor_db": round(noise_floor_db, 2),
+        "voiced_energy_fraction": round(voiced_energy_fraction, 4),
     }
 
 
