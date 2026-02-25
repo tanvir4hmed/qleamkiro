@@ -244,3 +244,13 @@ jobs:
           echo "✅ DEV infrastructure deployed"
           terraform output 2>/dev/null || true
           echo "──────────────────────────────────────"
+          
+          # Extract frontend URL for easy access
+          FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
+          if [ -n "$FRONTEND_URL" ] && [ "$FRONTEND_URL" != "None" ]; then
+            echo ""
+            echo "══════════════════════════════════════════════════════"
+            echo "🌐 Frontend URL: $FRONTEND_URL"
+            echo "   Click to open → $FRONTEND_URL"
+            echo "══════════════════════════════════════════════════════"
+          fi

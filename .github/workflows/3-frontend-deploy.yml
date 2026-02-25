@@ -1,3 +1,4 @@
+
 name: 3 - frontend deploy
 
 on:
@@ -122,12 +123,40 @@ jobs:
     needs: build
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.6'
+          terraform_wrapper: false
+
+      - name: Fetch frontend URL from Terraform outputs
+        id: tf-outputs
+        run: |
+          cd infrastructure/environments/dev
+          terraform init \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ env.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -input=false
+          
+          # Fetch frontend URL from Terraform outputs
+          FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
+          CF_DIST_ID=$(terraform output -raw cloudfront_distribution_id 2>/dev/null || echo "")
+          
+          echo "frontend_url=$FRONTEND_URL" >> $GITHUB_OUTPUT
+          echo "cf_distribution_id=$CF_DIST_ID" >> $GITHUB_OUTPUT
+          echo "✅ Frontend URL: $FRONTEND_URL"
 
       - name: Download latest frontend build from S3
         run: |
@@ -153,48 +182,34 @@ jobs:
       - name: Invalidate CloudFront cache (DEV)
         id: cloudfront
         run: |
-          CF_DOMAIN=""
-          CF_ID=$(aws cloudfront list-distributions \
-            --query "DistributionList.Items[?contains(Origins.Items[0].DomainName,'qleam-dev-frontend')].Id" \
-            --output text 2>/dev/null || echo "")
-
-          if [ -z "$CF_ID" ] || [ "$CF_ID" = "None" ]; then
-            CF_ID=$(aws cloudfront list-distributions \
-              --query "DistributionList.Items[?contains(Comment,'dev')].Id" \
-              --output text 2>/dev/null || echo "")
-          fi
-
+          CF_ID="${{ steps.tf-outputs.outputs.cf_distribution_id }}"
+          
           if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
-            CF_DOMAIN=$(aws cloudfront list-distributions \
-              --query "DistributionList.Items[?Id=='${CF_ID}'].DomainName" \
-              --output text 2>/dev/null || echo "")
             aws cloudfront create-invalidation \
               --distribution-id "$CF_ID" \
               --paths "/*" > /dev/null
             echo "✅ CloudFront cache invalidated: $CF_ID"
           else
-            echo "ℹ️  No CloudFront distribution found — skipping invalidation."
+            echo "ℹ️  No CloudFront distribution ID found — skipping invalidation."
           fi
-
-          echo "cf_domain=$CF_DOMAIN" >> $GITHUB_OUTPUT
-          echo "cf_id=$CF_ID"         >> $GITHUB_OUTPUT
 
       - name: Deployment summary
         run: |
-          CF_DOMAIN="${{ steps.cloudfront.outputs.cf_domain }}"
+          FRONTEND_URL="${{ steps.tf-outputs.outputs.frontend_url }}"
+          
           echo "══════════════════════════════════════════════════════"
           echo "✅  Frontend deployed successfully!"
           echo ""
           echo "   Branch  : ${{ github.ref_name }}"
           echo "   Commit  : ${{ github.sha }}"
-          if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
+          if [ -n "$FRONTEND_URL" ] && [ "$FRONTEND_URL" != "None" ]; then
             echo ""
-            echo "   🌐 App URL : https://${CF_DOMAIN}"
+            echo "   🌐 App URL : $FRONTEND_URL"
             echo ""
-            echo "   Open in browser → https://${CF_DOMAIN}"
+            echo "   Click to open → $FRONTEND_URL"
           else
             echo ""
-            echo "   ℹ️  CloudFront domain not found in this step."
+            echo "   ℹ️  Frontend URL not found in Terraform outputs."
             echo "   Check AWS Console → CloudFront for the domain."
           fi
           echo "══════════════════════════════════════════════════════"
