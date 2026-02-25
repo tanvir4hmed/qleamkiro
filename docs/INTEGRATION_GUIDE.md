@@ -35,26 +35,41 @@ Qleam implements a multi-layered approach to baby vs adult identification that s
 
 #### Feature Extraction Lambda (`lambdas/feature_extraction/handler.py`)
 
-**Integration Flow**:
+**Integration Flow** (corrected order for accuracy):
 ```python
-# 1. Audio Quality Gate (Layer 0)
+# 1. Full-audio extraction: embedding (for enrollment), feature_scores, audio_array
+extraction_result = extract_all_features(audio_bytes)
+embedding_vector = extraction_result["embedding_vector"]
+
+# 2. Audio Quality Gate (Layer 0) - on full audio
 quality_gate_result = audio_quality_gate(audio_array, sample_rate, duration_seconds)
 
-# 2. Biological Validation (Layer 1)
-bio_result = biological_validation(audio_array, sample_rate)
-
-# 3. Rich Feature Extraction (Layer 3)
-rich_features_result = extract_rich_features(audio_array, sample_rate, formants=formants_for_rich)
-
-# 4. Diarization (Layer 2)
+# 3. Diarization (Layer 2) - on FULL audio FIRST to isolate baby segments
 diarization_result = diarize(audio_array, sample_rate)
 
-# 5. Enrollment Verification (Layer 2)
-enrollment_result = verify_enrolled_baby(new_embedding, historical_embeddings, session_count)
+# 4. Extract baby-only audio from diarization segments
+baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result)
 
-# 6. Developmental Routing
-routing_result = determine_routing(developmental_stage, developmental_mode, bio_result, enrollment_result)
+# 5. Biological Validation (Layer 1) - on BABY audio (clean, not adult-contaminated)
+bio_result = biological_validation(baby_audio, sample_rate)
+
+# 6. Rich Feature Extraction (Layer 3) - on BABY audio
+rich_features_result = extract_rich_features(baby_audio, sample_rate, formants=formants_for_rich)
+
+# 7. Probabilistic Age Classification (Phase 4)
+age_classification_result = classify_probabilistic(rich_features_result, bio_result)
+
+# 8. Reconcile bio_result with probabilistic classifier
+_reconcile_bio_with_age_class(bio_result, age_classification_result)
+
+# 9. Enrollment Verification (Layer 2) - uses FULL-audio embedding for identity consistency
+enrollment_result = verify_enrolled_baby(embedding_vector, historical_embeddings, session_count)
+
+# 10. Developmental Routing
+routing_result = determine_routing(developmental_stage, developmental_mode, bio_result, enrollment_result, age_classification_result)
 ```
+
+**Key accuracy improvement**: Running bio validation and rich feature extraction on baby-only audio (step 4-6) prevents adult voice contamination of acoustic features.
 
 **Key Integration Points**:
 - All identification technologies are orchestrated in a single Lambda function
@@ -172,7 +187,7 @@ fluency_score = score_fluency(rich_features)
   },
   "routing": {
     "mode": "PRE_LINGUISTIC",
-    "stage": "OLDER_INFANT",
+    "stage": "CANONICAL_BABBLE",
     "analysis_type": "infant_vocalization"
   },
   "insight": {
