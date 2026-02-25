@@ -174,13 +174,9 @@ function SessionDetail() {
 
       {insight && (
         <>
-          {/* Feature Chart — only show when real acoustic data exists */}
+          {/* Feature Chart — show whenever acoustic data was computed (not rejected) */}
           {insight.observed_pattern &&
-           insight.insight_sections?.source !== 'quality-rejection' &&
-           (insight.observed_pattern.rhythm > 0 ||
-            insight.observed_pattern.repetition > 0 ||
-            insight.observed_pattern.emotional_intensity > 0 ||
-            insight.observed_pattern.expressive_flow > 0) && (
+           insight.insight_sections?.source !== 'quality-rejection' && (
             <section className="feature-section">
               <h2>Acoustic Features</h2>
               <FeatureChart features={insight.observed_pattern} />

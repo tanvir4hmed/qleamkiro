@@ -10,7 +10,7 @@ const SELECTED_CHILD_KEY = 'qleam_selected_child_id';
 
 // ─── Settings Panel ──────────────────────────────────────────────────────────
 
-function SettingsPanel({ children, onClose, onAddChild, onDeleteChild }) {
+function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess }) {
   const [panel, setPanel] = useState(null); // null | 'add' | 'remove'
   const [addName, setAddName] = useState('');
   const [addDob, setAddDob] = useState('');
@@ -27,8 +27,9 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild }) {
     setAdding(true);
     setAddError('');
     try {
-      await onAddChild(addName.trim(), addDob);
+      const child = await onAddChild(addName.trim(), addDob);
       setAddName(''); setAddDob(''); setPanel(null);
+      onSuccess?.(`${child?.name || addName.trim()} added`);
     } catch (e) { setAddError(e.message || 'Failed to add child.'); }
     finally { setAdding(false); }
   };
@@ -43,9 +44,11 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild }) {
       return;
     }
     setDeleting(true);
+    const removedName = selectedDeleteChild.name;
     try {
       await onDeleteChild(selectedDeleteChild.child_id);
       setDeleteChildId(''); setConfirmName(''); setPanel(null);
+      onSuccess?.(`${removedName} removed`);
     } catch (e) { setDeleteError(e.message || 'Failed to remove child.'); }
     finally { setDeleting(false); }
   };
@@ -178,6 +181,14 @@ function Dashboard() {
   const [showAddFirst, setShowAddFirst] = useState(false);
   const [newChildName, setNewChildName] = useState('');
   const [newChildBirthDate, setNewChildBirthDate] = useState('');
+  const [notification, setNotification] = useState(null);
+  const notificationTimerRef = useRef(null);
+
+  const showNotification = useCallback((msg) => {
+    setNotification(msg);
+    clearTimeout(notificationTimerRef.current);
+    notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
+  }, []);
 
   const getAuthHeaders = async () => {
     const session = await fetchAuthSession();
@@ -306,6 +317,11 @@ function Dashboard() {
 
   return (
     <div className="dashboard">
+      {/* ── Success toast ── */}
+      {notification && (
+        <div className="dashboard-toast">{notification}</div>
+      )}
+
       {/* ── Child Selector ── */}
       <section className="child-section">
         <div className="child-section-header">
@@ -386,6 +402,7 @@ function Dashboard() {
           onClose={() => setShowSettings(false)}
           onAddChild={addChild}
           onDeleteChild={handleDeleteChild}
+          onSuccess={(msg) => { showNotification(msg); setShowSettings(false); }}
         />
       )}
 

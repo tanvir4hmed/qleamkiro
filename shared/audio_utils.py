@@ -497,8 +497,9 @@ def extract_formants_lpc(y: np.ndarray, sr: int) -> Dict[str, float]:
     """
     Extract F1–F4 formant frequencies via LPC analysis.
 
-    Uses librosa.lpc (librosa >= 0.8) on a 25ms windowed frame
-    from the middle of the audio. Falls back to zeros on failure.
+    Analyzes 7 evenly-spaced 25ms frames across the voiced portion of the
+    audio and returns the median formant values. Averaging across multiple
+    frames produces stable estimates even for short utterances like "hello".
 
     F4 is required for the spec-correct VTL formula
     (SCIENTIFIC_MATHEMATICS.md Eq 1.5: mean of F2-F1, F3-F2, F4-F3).
@@ -510,37 +511,48 @@ def extract_formants_lpc(y: np.ndarray, sr: int) -> Dict[str, float]:
 
     try:
         frame_len = int(0.025 * sr)
-        mid = len(y) // 2
-        frame = y[max(0, mid - frame_len // 2): mid + frame_len // 2]
+        order = min(2 + sr // 1000, frame_len - 2)
+        n_frames = 7
 
-        if len(frame) < 64:
-            return {"F1": 0.0, "F2": 0.0, "F3": 0.0, "F4": 0.0}
+        # Sample positions: spread evenly across the middle 80% of audio
+        # (avoids leading/trailing silence at 10% and 90%)
+        n_samples = len(y)
+        start = int(0.10 * n_samples)
+        end = int(0.90 * n_samples)
+        positions = np.linspace(start, max(start + 1, end - frame_len), n_frames, dtype=int)
 
-        # Hamming window + pre-emphasis
-        frame = frame * np.hamming(len(frame))
-        frame = np.append(frame[0], frame[1:] - 0.97 * frame[:-1])
+        all_freqs: List[List[float]] = [[], [], [], []]  # per formant bucket
 
-        # LPC order (rule of thumb: 2 + sr/1000)
-        order = min(2 + sr // 1000, len(frame) - 2)
+        for pos in positions:
+            frame = y[pos: pos + frame_len]
+            if len(frame) < 64:
+                continue
 
-        # LPC coefficients
-        A = librosa.lpc(frame, order=order)
+            # Hamming window + pre-emphasis
+            frame = frame * np.hamming(len(frame))
+            frame = np.append(frame[0], frame[1:] - 0.97 * frame[:-1])
 
-        # Roots of LPC polynomial
-        roots = np.roots(A)
+            try:
+                A = librosa.lpc(frame, order=order)
+                roots = np.roots(A)
+                roots = roots[(np.imag(roots) >= 0.01) & (np.abs(roots) < 1.0)]
+                freqs = np.angle(roots) * sr / (2.0 * np.pi)
+                freqs = np.sort(freqs[(freqs > 90) & (freqs < sr / 2.0 - 100)])
+                for i in range(4):
+                    if len(freqs) > i:
+                        all_freqs[i].append(float(freqs[i]))
+            except Exception:
+                continue
 
-        # Keep roots with positive imaginary part (inside unit circle)
-        roots = roots[(np.imag(roots) >= 0.01) & (np.abs(roots) < 1.0)]
-
-        # Convert angular frequency to Hz
-        freqs = np.angle(roots) * sr / (2.0 * np.pi)
-        freqs = np.sort(freqs[(freqs > 90) & (freqs < sr / 2.0 - 100)])
+        # Median across frames for each formant; 0.0 if no valid estimate
+        def _median(vals: List[float]) -> float:
+            return round(float(np.median(vals)), 1) if vals else 0.0
 
         return {
-            "F1": round(float(freqs[0]), 1) if len(freqs) > 0 else 0.0,
-            "F2": round(float(freqs[1]), 1) if len(freqs) > 1 else 0.0,
-            "F3": round(float(freqs[2]), 1) if len(freqs) > 2 else 0.0,
-            "F4": round(float(freqs[3]), 1) if len(freqs) > 3 else 0.0,
+            "F1": _median(all_freqs[0]),
+            "F2": _median(all_freqs[1]),
+            "F3": _median(all_freqs[2]),
+            "F4": _median(all_freqs[3]),
         }
 
     except Exception as e:
