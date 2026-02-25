@@ -69,6 +69,17 @@ def compute_acoustic_intent_scores(
                           (high → active babbling → exploration)
         pause_ratio     — fraction of silent energy frames
                           (low → sustained vocalization → exploration / hunger)
+        
+    Extended signal (additional rich features for better differentiation):
+        spectral_centroid   — brightness (high = distress, low = comfort)
+        spectral_flatness   — tonality (low = tonal/harmonic, high = noisy)
+        spectral_entropy    — spectral complexity
+        formant_f1, f2, f3  — vowel space indicators
+        f0_mean, f0_std     — pitch characteristics
+        f0_range            — pitch variability (high = emotional)
+        energy_entropy      — temporal pattern complexity
+        rms_mean, rms_std   — energy characteristics
+        babble_fraction     — canonical babbling indicator
 
     Returns:
         Normalized probability distribution over intent labels.
@@ -89,7 +100,7 @@ def compute_acoustic_intent_scores(
     overstimulation = ei * 0.50 + (1.0 - rh) * 0.30 + ef * 0.20
     exploration    = (1.0 - ei) * 0.35 + (1.0 - rep) * 0.35 + ef * 0.30
 
-    # --- Rich feature augmentations ---
+    # --- Core rich feature augmentations ---
     cry_fraction   = float(rf.get("cry_fraction",   0.0))
     jitter_pct     = float(rf.get("jitter_percent", 0.0))
     hnr_db         = float(rf.get("hnr_db",         0.0))
@@ -124,6 +135,113 @@ def compute_acoustic_intent_scores(
         hunger           += sustained_boost * 0.30
         fatigue          -= sustained_boost * 0.30
 
+    # --- Extended rich feature augmentations for better differentiation ---
+    
+    # Spectral features
+    spectral_centroid = float(rf.get("spectral_centroid", 2000.0))
+    spectral_flatness = float(rf.get("spectral_flatness", 0.1))
+    spectral_entropy  = float(rf.get("spectral_entropy", 5.0))
+    
+    # Normalize spectral centroid (typical range 1000-4000 Hz for infant vocalizations)
+    centroid_norm = min(max((spectral_centroid - 1000.0) / 3000.0, 0.0), 1.0)
+    
+    # High spectral centroid (bright sound) → distress/hunger indicator
+    # Low spectral centroid (dull sound) → comfort/connection indicator
+    if centroid_norm > 0.6:
+        # Bright spectrum - typical of cry/distress
+        distress_boost = (centroid_norm - 0.6) * 0.30
+        discomfort     += distress_boost * 0.6
+        hunger         += distress_boost * 0.4
+    elif centroid_norm < 0.3:
+        # Dull spectrum - typical of comfort sounds
+        comfort_boost = (0.3 - centroid_norm) * 0.20
+        connection    += comfort_boost
+        exploration   += comfort_boost * 0.5
+    
+    # Spectral flatness: low = tonal/harmonic, high = noisy
+    # Tonal sounds (low flatness) → connection/exploration
+    # Noisy sounds (high flatness) → distress
+    if spectral_flatness < 0.05:
+        # Very tonal - singing/humming/cooing
+        connection  += 0.15
+        exploration += 0.10
+    elif spectral_flatness > 0.3:
+        # Noisy - cry/distress
+        discomfort += 0.10
+        hunger     += 0.05
+    
+    # Formant features (vowel space)
+    formant_f1 = float(rf.get("formant_f1", 0.0))
+    formant_f2 = float(rf.get("formant_f2", 0.0))
+    formant_f3 = float(rf.get("formant_f3", 0.0))
+    
+    # Formant ratio F2/F1 indicates vowel openness
+    # Higher ratio = more open vowel = more expressive
+    if formant_f1 > 0 and formant_f2 > 0:
+        f2_f1_ratio = formant_f2 / formant_f1
+        # Normal infant vowel space: ratio typically 2.0-4.0
+        if f2_f1_ratio > 3.0:
+            # Open, expressive vowel - babbling/exploration
+            exploration += 0.10
+            connection  += 0.05
+        elif f2_f1_ratio < 2.0:
+            # Closed vowel - comfort sounds
+            connection += 0.08
+    
+    # F0 characteristics
+    f0_mean  = float(rf.get("f0_mean", 0.0))
+    f0_std   = float(rf.get("f0_std", 0.0))
+    f0_range = float(rf.get("f0_range", 0.0))
+    
+    # F0 range indicates emotional expressiveness
+    # High range = emotional/distressed, Low range = calm/comfort
+    if f0_range > 150:
+        # Wide pitch range - emotional/distress
+        range_boost = min((f0_range - 150) / 200.0, 0.25)
+        discomfort     += range_boost * 0.5
+        hunger         += range_boost * 0.3
+        overstimulation += range_boost * 0.2
+    elif f0_range > 0 and f0_range < 50:
+        # Narrow pitch range - calm/comfort
+        connection += 0.10
+        exploration += 0.05
+    
+    # F0 standard deviation (another expressiveness measure)
+    if f0_std > 60:
+        # High variability - emotional
+        discomfort += 0.08
+        hunger     += 0.05
+    elif f0_std > 0 and f0_std < 20:
+        # Stable pitch - calm
+        connection += 0.08
+    
+    # Energy characteristics
+    energy_entropy = float(rf.get("energy_entropy", 3.0))
+    rms_std        = float(rf.get("rms_std", 0.0))
+    
+    # High energy entropy = complex temporal pattern = exploration
+    # Low energy entropy = simple pattern = repetitive/comfort
+    if energy_entropy > 4.0:
+        exploration += 0.10
+    elif energy_entropy < 2.0:
+        # Simple pattern - could be rhythmic cry or comfort
+        if ei > 0.5:
+            hunger += 0.05
+        else:
+            connection += 0.05
+    
+    # RMS variability - dynamic range
+    if rms_std > 0.1:
+        # High dynamic range - expressive
+        exploration += 0.05
+    
+    # Babble fraction (complement of cry fraction for voiced frames)
+    babble_fraction = float(rf.get("babble_fraction", 0.0))
+    if babble_fraction > 0.3:
+        # Active canonical babbling
+        exploration += 0.15
+        connection  += 0.08
+
     raw = {
         "hunger":          max(0.0, hunger),
         "discomfort":      max(0.0, discomfort),
@@ -146,69 +264,69 @@ def compute_acoustic_intent_scores(
 #   - Social/exploratory vocalizations emerge and dominate from 3–6 months onward.
 #   - By 12–24 months, exploration and proto-linguistic intent dominate.
 _STAGE_PRIORS: Dict[str, Dict[str, float]] = {
-    "NEWBORN": {            # 0–90 days
-        "hunger":          0.30,
-        "discomfort":      0.30,
-        "connection":      0.20,
-        "fatigue":         0.12,
+    "NEWBORN": {            # 0–90 days — primarily distress-driven communication
+        "hunger":          0.35,
+        "discomfort":      0.35,
+        "connection":      0.12,
+        "fatigue":         0.10,
         "overstimulation": 0.05,
         "exploration":     0.03,
     },
-    "EARLY_VOCAL": {        # 91–180 days
-        "hunger":          0.22,
-        "discomfort":      0.22,
-        "connection":      0.28,
-        "fatigue":         0.10,
+    "EARLY_VOCAL": {        # 91–180 days — social vocalizations emerging
+        "hunger":          0.25,
+        "discomfort":      0.20,
+        "connection":      0.30,
+        "fatigue":         0.08,
         "overstimulation": 0.05,
-        "exploration":     0.13,
+        "exploration":     0.12,
     },
-    "CANONICAL_BABBLE": {   # 181–270 days
+    "CANONICAL_BABBLE": {   # 181–270 days — exploratory babbling dominates
         "hunger":          0.15,
-        "discomfort":      0.15,
-        "connection":      0.25,
-        "fatigue":         0.10,
-        "overstimulation": 0.05,
-        "exploration":     0.30,
+        "discomfort":      0.12,
+        "connection":      0.23,
+        "fatigue":         0.08,
+        "overstimulation": 0.07,
+        "exploration":     0.35,
     },
-    "PROTO_WORDS": {        # 271–365 days
-        "hunger":          0.10,
+    "PROTO_WORDS": {        # 271–365 days — intentional communication emerging
+        "hunger":          0.12,
         "discomfort":      0.10,
         "connection":      0.25,
         "fatigue":         0.08,
         "overstimulation": 0.05,
-        "exploration":     0.42,
+        "exploration":     0.40,
     },
-    "FIRST_WORDS": {        # 366–548 days
-        "hunger":          0.08,
+    "FIRST_WORDS": {        # 366–548 days — language development phase
+        "hunger":          0.10,
         "discomfort":      0.08,
-        "connection":      0.23,
-        "fatigue":         0.08,
+        "connection":      0.25,
+        "fatigue":         0.07,
         "overstimulation": 0.05,
-        "exploration":     0.48,
+        "exploration":     0.45,
     },
-    "WORD_COMBINATIONS": {  # 549–730 days
-        "hunger":          0.07,
+    "WORD_COMBINATIONS": {  # 549–730 days — expanding vocabulary
+        "hunger":          0.08,
         "discomfort":      0.07,
-        "connection":      0.22,
-        "fatigue":         0.08,
+        "connection":      0.23,
+        "fatigue":         0.07,
         "overstimulation": 0.05,
-        "exploration":     0.51,
+        "exploration":     0.50,
     },
-    "EARLY_SENTENCES": {    # 731+ days
-        "hunger":          0.06,
+    "EARLY_SENTENCES": {    # 731+ days — linguistic communication
+        "hunger":          0.07,
         "discomfort":      0.06,
         "connection":      0.22,
-        "fatigue":         0.07,
+        "fatigue":         0.06,
         "overstimulation": 0.04,
         "exploration":     0.55,
     },
-    "UNKNOWN": {
-        "hunger":          0.17,
-        "discomfort":      0.17,
-        "connection":      0.22,
+    "UNKNOWN": {            # Default prior — balanced but differentiated
+        "hunger":          0.22,
+        "discomfort":      0.18,
+        "connection":      0.20,
         "fatigue":         0.10,
-        "overstimulation": 0.05,
-        "exploration":     0.29,
+        "overstimulation": 0.08,
+        "exploration":     0.22,
     },
 }
 
@@ -281,6 +399,52 @@ def compute_research_priors(
             priors["overstimulation"] += 0.05 * cr
         elif health == "teething":
             priors["discomfort"] += 0.20 * cr
+
+        # --- Time-of-day adjustment (circadian patterns) ---
+        # Infants have different vocalization patterns throughout the day
+        # Morning (6-12): more exploratory, alert vocalizations
+        # Afternoon (12-17): mixed patterns
+        # Evening (17-21): more fatigue, fussiness
+        # Night (21-6): distress if awake, or comfort if settling
+        hour_of_day = session_context.get("hour_of_day")
+        if isinstance(hour_of_day, (int, float)) and 0 <= hour_of_day <= 23:
+            hour = int(hour_of_day)
+            if 6 <= hour < 12:
+                # Morning: alert, exploratory vocalizations
+                priors["exploration"] += 0.08 * cr
+                priors["connection"]  += 0.05 * cr
+            elif 17 <= hour < 21:
+                # Evening: "witching hour" - more fussiness, fatigue
+                priors["fatigue"]       += 0.10 * cr
+                priors["discomfort"]    += 0.05 * cr
+                priors["overstimulation"] += 0.05 * cr
+            elif 21 <= hour or hour < 6:
+                # Night: if awake, likely distress or settling
+                priors["fatigue"]    += 0.08 * cr
+                priors["discomfort"] += 0.05 * cr
+
+        # --- Sleep state adjustment ---
+        sleep_state = str(session_context.get("sleep_state_before", "")).lower().strip()
+        if sleep_state == "just_woke":
+            # Just woke up - likely hunger or comfort seeking
+            priors["hunger"]    += 0.10 * cr
+            priors["connection"] += 0.05 * cr
+        elif sleep_state == "drowsy":
+            # Drowsy - likely fatigue
+            priors["fatigue"] += 0.12 * cr
+
+        # --- Environment adjustment ---
+        environment = str(session_context.get("environment", "")).lower().strip()
+        if environment == "home_noisy":
+            # Noisy environment - potential overstimulation
+            priors["overstimulation"] += 0.08 * cr
+        elif environment == "car":
+            # Car - often soothing or overstimulating
+            priors["fatigue"]       += 0.05 * cr
+            priors["overstimulation"] += 0.03 * cr
+        elif environment == "outside":
+            # Outside - stimulating, exploratory
+            priors["exploration"] += 0.08 * cr
 
     # Ensure all non-negative after adjustments
     priors = {k: max(0.0, v) for k, v in priors.items()}
@@ -459,10 +623,19 @@ def determine_probable_intent_v2(
     feedback_intents: Dict[str, float] = cluster.get("probable_intents") or {}
 
     # --- Phase 4: Dynamic feedback weight scaled by parent trust score (FRS) ---
-    feedback_w = 0.25 * max(0.1, min(1.0, parent_trust_score))
-    remaining = 1.0 - feedback_w
-    acoustic_w = remaining * (0.60 / 0.75)  # acoustic's original share of non-feedback
-    research_w = remaining * (0.15 / 0.75)  # research's original share of non-feedback
+    # When feedback is empty, redistribute weight to acoustic and research
+    if not feedback_intents:
+        # No feedback history - redistribute feedback weight
+        # Acoustic gets 80% of feedback weight, research gets 20%
+        feedback_w = 0.0
+        acoustic_w = 0.60 + (0.25 * 0.80)  # = 0.80
+        research_w = 0.15 + (0.25 * 0.20)  # = 0.20
+        logger.debug(f"No feedback history - redistributed weights: acoustic={acoustic_w:.2f}, research={research_w:.2f}")
+    else:
+        feedback_w = 0.25 * max(0.1, min(1.0, parent_trust_score))
+        remaining = 1.0 - feedback_w
+        acoustic_w = remaining * (0.60 / 0.75)  # acoustic's original share of non-feedback
+        research_w = remaining * (0.15 / 0.75)  # research's original share of non-feedback
 
     # --- Blend ---
     blended = blend_evidence_sources(acoustic_scores, research_priors, feedback_intents, acoustic_w, research_w, feedback_w)
