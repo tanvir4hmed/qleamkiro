@@ -146,7 +146,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
     return (
       <div className="feedback-reveal">
         <button className="feedback-reveal-btn" onClick={() => setOpen(true)}>
-          What happened next?
+          <span>What happened next?</span>
           <span className="feedback-reveal-hint">Share what you tried — helps Qleam learn</span>
         </button>
       </div>
@@ -154,7 +154,8 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
   }
 
   return (
-    <div className="feedback-form">
+    <div className="feedback-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
+      <div className="feedback-modal">
       <div className="feedback-form-header">
         <span className="feedback-form-title">What happened next?</span>
         <button className="feedback-skip-btn" onClick={() => setOpen(false)}>Skip</button>
@@ -283,6 +284,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
       >
         Share feedback
       </button>
+      </div>
     </div>
   );
 }
