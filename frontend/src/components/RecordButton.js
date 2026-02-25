@@ -1,6 +1,9 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 
 const STATES = { IDLE: 'idle', RECORDING: 'recording', UPLOADING: 'uploading', DONE: 'done', ERROR: 'error' };
+
+const MIN_DURATION_S = 5;  // minimum seconds before stop is allowed
+const MAX_DURATION_S = 30; // auto-stop at this duration
 
 const FEEDING_OPTIONS = [
   { label: 'Under 30 min', value: 15 },
@@ -43,6 +46,7 @@ function ChipGroup({ options, selected, onChange }) {
 function RecordButton({ childId, apiCall, onComplete }) {
   const [state, setState] = useState(STATES.IDLE);
   const [duration, setDuration] = useState(0);
+  const [tooShort, setTooShort] = useState(false); // user tapped stop before MIN_DURATION_S
   const [error, setError] = useState(null);
   const [contextOpen, setContextOpen] = useState(false);
   const [sessionContext, setSessionContext] = useState({
@@ -53,10 +57,22 @@ function RecordButton({ childId, apiCall, onComplete }) {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const pendingStopRef = useRef(false); // set true when user taps stop too early
 
   const setCtx = (key, value) => setSessionContext(prev => ({ ...prev, [key]: value }));
 
   const hasContext = Object.values(sessionContext).some(v => v !== null);
+
+  const doStop = () => {
+    clearInterval(timerRef.current);
+    pendingStopRef.current = false;
+    if (mediaRecorderRef.current?.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+      mediaRecorderRef.current.onstop = () => uploadAudio();
+    }
+    setState(STATES.UPLOADING);
+  };
 
   const startRecording = async () => {
     try {
@@ -64,16 +80,22 @@ function RecordButton({ childId, apiCall, onComplete }) {
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
+      pendingStopRef.current = false;
 
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mediaRecorder.start(100);
       setState(STATES.RECORDING);
       setDuration(0);
+      setTooShort(false);
 
       timerRef.current = setInterval(() => {
         setDuration(d => {
-          if (d >= 30) { stopRecording(); return d; }
-          return d + 1;
+          const next = d + 1;
+          // Auto-stop at max duration
+          if (next >= MAX_DURATION_S) { doStop(); return next; }
+          // Auto-stop if user tapped stop early and we've now hit minimum
+          if (pendingStopRef.current && next >= MIN_DURATION_S) { doStop(); return next; }
+          return next;
         });
       }, 1000);
     } catch (err) {
@@ -83,13 +105,16 @@ function RecordButton({ childId, apiCall, onComplete }) {
   };
 
   const stopRecording = () => {
-    clearInterval(timerRef.current);
-    if (mediaRecorderRef.current?.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
-      mediaRecorderRef.current.onstop = () => uploadAudio();
-    }
-    setState(STATES.UPLOADING);
+    // If under minimum duration, flag it and keep recording until minimum is hit
+    setDuration(current => {
+      if (current < MIN_DURATION_S) {
+        setTooShort(true);
+        pendingStopRef.current = true;
+        return current; // don't stop yet
+      }
+      doStop();
+      return current;
+    });
   };
 
   const uploadAudio = async () => {
@@ -197,9 +222,19 @@ function RecordButton({ childId, apiCall, onComplete }) {
         <div className="recording-active">
           <div className="recording-indicator">
             <span className="pulse-dot" />
-            <span>Recording... {duration}s / 30s</span>
+            <span>Recording… {duration}s / {MAX_DURATION_S}s</span>
           </div>
-          <button className="stop-btn" onClick={stopRecording}>■ Stop</button>
+          {tooShort && (
+            <p className="recording-min-msg">
+              Continuing to {MIN_DURATION_S}s minimum for a useful analysis…
+            </p>
+          )}
+          <button
+            className={`stop-btn${duration < MIN_DURATION_S ? ' stop-btn--dim' : ''}`}
+            onClick={stopRecording}
+          >
+            ■ Stop{duration < MIN_DURATION_S ? ` (min ${MIN_DURATION_S}s)` : ''}
+          </button>
         </div>
       )}
       {state === STATES.UPLOADING && (

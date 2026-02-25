@@ -1,63 +1,118 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 
+// MASTER_INDEX.md §7-8 — five-stage feedback schema
+// Response-type options (used for pre-linguistic through toddler stages)
 const RESPONSE_TYPES = [
-  { key: 'hunger', label: '🍼 Tried feeding' },
-  { key: 'connection', label: '🤗 Comforted & held' },
-  { key: 'discomfort', label: '🩹 Checked for discomfort' },
-  { key: 'overstimulation', label: '🤫 Reduced stimulation' },
-  { key: 'fatigue', label: '😴 Started sleep routine' },
-  { key: 'exploration', label: '🎵 Played & talked' },
+  { key: 'hunger',         label: '🍼 Tried feeding' },
+  { key: 'connection',     label: '🤗 Comforted & held' },
+  { key: 'discomfort',     label: '🩹 Checked for discomfort' },
+  { key: 'overstimulation',label: '🤫 Reduced stimulation' },
+  { key: 'fatigue',        label: '😴 Started sleep routine' },
+  { key: 'exploration',    label: '🎵 Played & talked' },
 ];
 
-// Map developmental_stage string → UI mode
+const EFFECTIVENESS_OPTIONS = [
+  { key: 'helpful',     label: '✓ Helped' },
+  { key: 'neutral',     label: '~ Hard to tell' },
+  { key: 'ineffective', label: '✗ Didn\'t help' },
+];
+
+/**
+ * Five feedback modes per MASTER_INDEX.md §7-8:
+ *
+ *  INFANT   0–6m   NEWBORN, EARLY_VOCAL
+ *  BABBLE   6–12m  CANONICAL_BABBLE
+ *  PROTO    12–18m PROTO_WORDS
+ *  TODDLER  18–24m FIRST_WORDS, WORD_COMBINATIONS
+ *  LANGUAGE 24m+   EARLY_SENTENCES
+ */
 function getMode(developmentalStage) {
-  if (!developmentalStage) return 'transition';
-  if (['NEWBORN', 'EARLY_VOCAL'].includes(developmentalStage)) return 'pre_linguistic';
-  if (['CANONICAL_BABBLE', 'PROTO_WORDS'].includes(developmentalStage)) return 'transition';
-  return 'linguistic'; // FIRST_WORDS, WORD_COMBINATIONS, EARLY_SENTENCES
+  switch (developmentalStage) {
+    case 'NEWBORN':
+    case 'EARLY_VOCAL':
+      return 'INFANT';
+    case 'CANONICAL_BABBLE':
+      return 'BABBLE';
+    case 'PROTO_WORDS':
+      return 'PROTO';
+    case 'FIRST_WORDS':
+    case 'WORD_COMBINATIONS':
+      return 'TODDLER';
+    case 'EARLY_SENTENCES':
+      return 'LANGUAGE';
+    default:
+      return 'BABBLE'; // safe fallback
+  }
 }
 
-const STAGE_VERSION = { pre_linguistic: 1, transition: 2, linguistic: 3 };
+const STAGE_VERSION = { INFANT: 1, BABBLE: 2, PROTO: 3, TODDLER: 4, LANGUAGE: 5 };
 
-const WORD_FIELD_LABELS = {
-  pre_linguistic: 'Heard any sounds like \'baba\' or \'dada\'?',
-  transition: 'Did you hear a word?',
-  linguistic: 'What did your baby say?',
+const SOUND_FIELD_LABEL = {
+  INFANT:   'Heard any sounds like \'baba\' or \'dada\'?',
+  BABBLE:   'What sound did they make?',
+  PROTO:    'What sound did they make?',
+  TODDLER:  'What did they say?',
+  LANGUAGE: 'Write exactly what they said',
 };
+
+const SOUND_FIELD_PLACEHOLDER = {
+  INFANT:   'e.g. baba, dada, mama',
+  BABBLE:   'e.g. da, ba, ga',
+  PROTO:    'e.g. baba, dada',
+  TODDLER:  'e.g. mama, more, up',
+  LANGUAGE: 'e.g. I want milk, more juice please',
+};
+
+// Concept picker enabled from PROTO (12m+)
+const SHOWS_CONCEPTS = new Set(['PROTO', 'TODDLER', 'LANGUAGE']);
+// Effectiveness question absent for LANGUAGE (24m+)
+const SHOWS_EFFECTIVENESS = new Set(['INFANT', 'BABBLE', 'PROTO', 'TODDLER']);
+// Notes absent for INFANT (0–6m) per spec §8
+const SHOWS_NOTES = new Set(['BABBLE', 'PROTO', 'TODDLER', 'LANGUAGE']);
 
 function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
   const [open, setOpen] = useState(false);
   const [responseType, setResponseType] = useState('');
   const [effectiveness, setEffectiveness] = useState('');
   const [wordToken, setWordToken] = useState('');
+  const [transcription, setTranscription] = useState('');
   const [notes, setNotes] = useState('');
   const [concepts, setConcepts] = useState([]);
   const [selectedConcepts, setSelectedConcepts] = useState([]);
 
   const mode = getMode(developmentalStage);
-  const isLinguistic = mode === 'linguistic';
+  const isLanguage = mode === 'LANGUAGE';
+  const showConcepts = SHOWS_CONCEPTS.has(mode);
+  const showEffectiveness = SHOWS_EFFECTIVENESS.has(mode);
+  const showNotes = SHOWS_NOTES.has(mode);
 
-  // Fetch personal concepts for LINGUISTIC stage when form opens
+  // Fetch personal concept graph when picker is needed
   useEffect(() => {
-    if (!open || !isLinguistic || !childId || !apiCall) return;
+    if (!open || !showConcepts || !childId || !apiCall) return;
     apiCall(`/child/${childId}/concepts`)
       .then(data => setConcepts((data.concepts || []).slice(0, 8)))
-      .catch(() => {/* non-fatal — concept picker just won't appear */});
-  }, [open, isLinguistic, childId, apiCall]);
+      .catch(() => {});
+  }, [open, showConcepts, childId, apiCall]);
 
-  const canSubmit = !!responseType;
+  // LANGUAGE: submit requires transcript or notes; others require response_type
+  const canSubmit = isLanguage
+    ? !!(transcription.trim() || notes.trim() || wordToken.trim())
+    : !!responseType;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
-    const payload = { response_type: responseType };
-    if (effectiveness) payload.effectiveness = effectiveness;
-    if (wordToken.trim()) payload.word_token = wordToken.trim().toLowerCase();
+    const payload = {};
 
-    // Merge selected concept labels into notes
+    if (responseType)          payload.response_type = responseType;
+    if (effectiveness)         payload.effectiveness  = effectiveness;
+    if (wordToken.trim())      payload.word_token     = wordToken.trim().toLowerCase();
+    if (transcription.trim())  payload.transcription  = transcription.trim();
+
+    // Merge concept selections into notes
     let notesText = notes.trim();
     if (selectedConcepts.length > 0) {
-      const conceptNote = `[Concepts: ${selectedConcepts.join(', ')}]`;
-      notesText = notesText ? `${notesText} ${conceptNote}` : conceptNote;
+      const tag = `[Concepts: ${selectedConcepts.join(', ')}]`;
+      notesText = notesText ? `${notesText} ${tag}` : tag;
     }
     if (notesText) payload.notes = notesText;
 
@@ -65,18 +120,17 @@ function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
     onSubmit(payload);
   };
 
-  const toggleConcept = (label) => {
+  const toggleConcept = (label) =>
     setSelectedConcepts(prev =>
       prev.includes(label) ? prev.filter(l => l !== label) : [...prev, label]
     );
-  };
 
   if (!open) {
     return (
       <div className="feedback-reveal">
         <button className="feedback-reveal-btn" onClick={() => setOpen(true)}>
           What happened next?
-          <span className="feedback-reveal-hint">Share what you tried — helps me learn</span>
+          <span className="feedback-reveal-hint">Share what you tried — helps Qleam learn</span>
         </button>
       </div>
     );
@@ -89,49 +143,51 @@ function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
         <button className="feedback-skip-btn" onClick={() => setOpen(false)}>Skip</button>
       </div>
 
-      {/* What did you try */}
-      <div className="feedback-group">
-        <label className="feedback-label">What did you try?</label>
-        <div className="response-type-grid">
-          {RESPONSE_TYPES.map(rt => (
-            <button
-              key={rt.key}
-              type="button"
-              className={`response-type-btn${responseType === rt.key ? ' selected' : ''}`}
-              onClick={() => setResponseType(v => v === rt.key ? '' : rt.key)}
-            >
-              {rt.label}
-            </button>
-          ))}
+      {/* What did you try — absent for LANGUAGE (24m+): child expressed clearly */}
+      {!isLanguage && (
+        <div className="feedback-group">
+          <label className="feedback-label">What did you try?</label>
+          <div className="response-type-grid">
+            {RESPONSE_TYPES.map(rt => (
+              <button
+                key={rt.key}
+                type="button"
+                className={`response-type-btn${responseType === rt.key ? ' selected' : ''}`}
+                onClick={() => setResponseType(v => v === rt.key ? '' : rt.key)}
+              >
+                {rt.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* How did it work — optional */}
-      <div className="feedback-group">
-        <label className="feedback-label">How did it go? <span className="feedback-optional">(optional)</span></label>
-        <div className="effectiveness-row">
-          {[
-            { key: 'helpful', label: '✓ Helped' },
-            { key: 'neutral', label: '~ Hard to tell' },
-            { key: 'ineffective', label: '✗ Didn\'t help' },
-          ].map(e => (
-            <button
-              key={e.key}
-              type="button"
-              className={`effectiveness-btn${effectiveness === e.key ? ` selected ${e.key}` : ''}`}
-              onClick={() => setEffectiveness(v => v === e.key ? '' : e.key)}
-            >
-              {e.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Concept picker — LINGUISTIC stage only, when concepts are available */}
-      {isLinguistic && concepts.length > 0 && (
+      {/* How did it go — absent for LANGUAGE per spec §8 */}
+      {showEffectiveness && (
         <div className="feedback-group">
           <label className="feedback-label">
-            Things baby may be interested in?
+            How did it go? <span className="feedback-optional">(optional)</span>
+          </label>
+          <div className="effectiveness-row">
+            {EFFECTIVENESS_OPTIONS.map(e => (
+              <button
+                key={e.key}
+                type="button"
+                className={`effectiveness-btn${effectiveness === e.key ? ` selected ${e.key}` : ''}`}
+                onClick={() => setEffectiveness(v => v === e.key ? '' : e.key)}
+              >
+                {e.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Concept picker — starts at PROTO (12m+) per spec §8 */}
+      {showConcepts && concepts.length > 0 && (
+        <div className="feedback-group">
+          <label className="feedback-label">
+            {isLanguage ? 'What were they talking about?' : 'Things they may be interested in?'}
             <span className="feedback-optional"> (optional)</span>
           </label>
           <div className="concept-chips-row">
@@ -149,32 +205,57 @@ function FeedbackForm({ onSubmit, developmentalStage, childId, apiCall }) {
         </div>
       )}
 
-      {/* Word / sound field — label varies by stage */}
-      <div className="feedback-group">
-        <label className="feedback-label">
-          {WORD_FIELD_LABELS[mode]}
-          <span className="feedback-optional"> (optional)</span>
-        </label>
-        <input
-          type="text"
-          placeholder={mode === 'pre_linguistic' ? 'e.g. baba, dada, mama' : 'e.g. mama, more, up'}
-          value={wordToken}
-          onChange={e => setWordToken(e.target.value)}
-          className="word-input"
-        />
-      </div>
+      {/* LANGUAGE: transcription is primary input; others: word/sound field */}
+      {isLanguage ? (
+        <div className="feedback-group">
+          <label className="feedback-label">{SOUND_FIELD_LABEL.LANGUAGE}</label>
+          <textarea
+            className="transcript-input"
+            placeholder={SOUND_FIELD_PLACEHOLDER.LANGUAGE}
+            value={transcription}
+            onChange={e => setTranscription(e.target.value)}
+            rows={2}
+          />
+          <p className="transcript-primary-hint">What did they actually say?</p>
+        </div>
+      ) : (
+        <div className="feedback-group">
+          <label className="feedback-label">
+            {SOUND_FIELD_LABEL[mode]}
+            <span className="feedback-optional"> (optional)</span>
+          </label>
+          <input
+            type="text"
+            className="word-input"
+            placeholder={SOUND_FIELD_PLACEHOLDER[mode]}
+            value={wordToken}
+            onChange={e => setWordToken(e.target.value)}
+          />
+        </div>
+      )}
 
-      {/* Notes — optional */}
-      <div className="feedback-group">
-        <label className="feedback-label">What did you notice? <span className="feedback-optional">(optional)</span></label>
-        <textarea
-          className="notes-input"
-          placeholder="e.g. Baby calmed down quickly, seemed hungry after all..."
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          rows={2}
-        />
-      </div>
+      {/* Notes — absent for INFANT (0–6m) per spec §8 */}
+      {showNotes && (
+        <div className="feedback-group">
+          <label className="feedback-label">
+            What did you notice?
+            <span className="feedback-optional">
+              {mode === 'PROTO' || isLanguage ? '' : ' (optional)'}
+            </span>
+          </label>
+          <textarea
+            className="notes-input"
+            placeholder={
+              isLanguage
+                ? 'e.g. They seemed very excited, pointed at the dog…'
+                : 'e.g. Baby calmed down quickly, seemed hungry after all…'
+            }
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={2}
+          />
+        </div>
+      )}
 
       <button
         className="submit-feedback-btn"

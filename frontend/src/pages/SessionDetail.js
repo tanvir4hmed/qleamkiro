@@ -146,11 +146,20 @@ function SessionDetail() {
   const sessionCtx = session?.session_context;
   const healthFlag = HEALTH_FLAG_LABELS[sessionCtx?.health_state];
 
+  // Phase 10: stage-aware insight section label
+  const sessionTypeLabel = session?.session_type_label || (() => {
+    const stage = insight?.developmental_stage || session?.developmental_stage || '';
+    if (['EARLY_SENTENCES'].includes(stage)) return 'Language Session';
+    if (['FIRST_WORDS', 'WORD_COMBINATIONS'].includes(stage)) return 'Communication Session';
+    return 'Vocalization Analysis';
+  })();
+
   return (
     <div className="session-detail">
       <button className="back-btn" onClick={() => navigate('/')}>← Back</button>
 
       <h1>{childName ? `${childName}'s Session` : 'Session Analysis'}</h1>
+      <p className="session-type-label">{sessionTypeLabel}</p>
       <p className="session-time">{new Date(session?.timestamp).toLocaleString()}</p>
 
       {/* Health flag — shown when parent reported being unwell / fussy */}

@@ -295,11 +295,58 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .context-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--text-muted); line-height: 1.5; }
 .context-note-icon { flex-shrink: 0; font-size: 14px; margin-top: 1px; }
 
-/* ── Phase 9 — Dashboard additions ── */
-.child-btn.language-btn { border-color: #a29bfe; color: #6c5ce7; }
-.child-btn.language-btn:hover { background: #a29bfe; color: white; }
+/* ── Dashboard redesign (Phase 10) ── */
+.child-section-header { display: flex; align-items: flex-start; gap: 8px; }
+.child-selector { flex: 1; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Settings icon */
+.settings-icon-btn { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 16px; color: var(--text-muted); line-height: 1; flex-shrink: 0; transition: background 0.15s; }
+.settings-icon-btn:hover { background: var(--bg); color: var(--text); }
+
+/* Child navigation bar (Journey / Language) */
+.child-nav-bar { display: flex; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.child-nav-btn { padding: 6px 14px; border-radius: 20px; border: 1.5px solid var(--primary); background: transparent; color: var(--primary); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+.child-nav-btn:hover { background: var(--primary); color: white; }
+.child-nav-btn--language { border-color: #a29bfe; color: #6c5ce7; }
+.child-nav-btn--language:hover { background: #a29bfe; color: white; }
+
+/* Settings overlay + panel */
+.settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 200; display: flex; align-items: flex-start; justify-content: flex-end; padding: 16px; }
+.settings-panel { background: var(--surface); border-radius: var(--radius); box-shadow: 0 8px 32px rgba(0,0,0,0.16); width: min(360px, 94vw); max-height: calc(100vh - 32px); overflow-y: auto; display: flex; flex-direction: column; }
+.settings-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+.settings-header h2 { font-size: 18px; font-weight: 700; }
+.settings-close-btn { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--text-muted); padding: 4px 8px; border-radius: 6px; }
+.settings-close-btn:hover { background: var(--bg); }
+.settings-section { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.settings-section:last-child { border-bottom: none; }
+.settings-section h3 { font-size: 14px; font-weight: 600; color: var(--text); }
+.settings-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.settings-form { display: flex; flex-direction: column; gap: 8px; }
+.settings-input { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; width: 100%; background: var(--bg); }
+.settings-select { appearance: none; cursor: pointer; }
+.settings-dob-label { font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+.settings-action-btn { padding: 9px 14px; border-radius: 8px; border: none; font-size: 14px; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
+.settings-action-btn:disabled { opacity: 0.45; cursor: default; }
+.settings-action-btn--primary { background: var(--primary); color: white; }
+.settings-action-btn--primary:hover:not(:disabled) { background: var(--primary-dark); }
+.settings-action-btn--danger { background: var(--accent); color: white; }
+.settings-action-btn--danger:hover:not(:disabled) { opacity: 0.85; }
+.settings-error { font-size: 12px; color: var(--accent); background: rgba(255,107,107,0.08); border-radius: 6px; padding: 6px 10px; }
+
+/* Recording min-duration message */
+.recording-min-msg { font-size: 12px; color: var(--text-muted); text-align: center; margin: 4px 0; font-style: italic; }
+.stop-btn--dim { opacity: 0.6; }
+
+/* birth-date helpers */
 .birth-date-label { font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
 .birth-date-required { color: var(--accent); font-weight: 600; }
+
+/* Phase 10 — session type label */
+.session-type-label { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary); margin-top: -6px; margin-bottom: 4px; }
+
+/* Phase 10 — transcript field */
+.transcript-input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; resize: vertical; font-family: inherit; min-height: 56px; background: var(--bg); }
+.transcript-primary-hint { font-size: 12px; color: var(--primary); margin-top: 4px; }
 
 /* ── Phase 9 — Progress Page additions ── */
 .trend-chart-section h2 { font-size: 16px; margin-bottom: 4px; }
