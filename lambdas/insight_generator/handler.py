@@ -1535,14 +1535,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         event: {
             "child_id": str,
             "session_id": str,
-            "cluster_id": str
+            "cluster_id": str  # optional only for fast-reject sessions
         }
     """
     logger.info(f"Insight generator started for session {event.get('session_id')}")
 
     child_id = event["child_id"]
     session_id = event["session_id"]
-    cluster_id = event["cluster_id"]
+    cluster_id = event.get("cluster_id")
 
     # 1. Fetch all required data
     session = get_session(session_id)
@@ -1624,6 +1624,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     profile = get_child_profile(child_id)
     if not profile:
         raise ValueError(f"Child profile {child_id} not found")
+
+    if not cluster_id:
+        raise ValueError("cluster_id is required for non-rejection sessions")
 
     cluster = get_cluster(cluster_id)
     if not cluster:

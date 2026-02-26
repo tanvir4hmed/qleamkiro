@@ -8,7 +8,7 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
   role_arn = var.step_functions_role_arn
 
   definition = jsonencode({
-    Comment = "Qleam audio processing pipeline: Feature Extraction → Cluster Engine → Insight Generator → Developmental Tracker → Concept Decoder"
+    Comment = "Qleam audio processing pipeline with fast-reject short-circuit for critical-quality sessions"
     StartAt = "FeatureExtraction"
 
     States = {
@@ -38,7 +38,47 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
             ResultPath  = "$.error"
           }
         ]
-        Next = "ClusterEngine"
+        Next = "ShouldFastReject"
+      }
+
+      ShouldFastReject = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable      = "$.feature_result.fast_reject"
+            BooleanEquals = true
+            Next          = "InsightGeneratorFastReject"
+          }
+        ]
+        Default = "ClusterEngine"
+      }
+
+      InsightGeneratorFastReject = {
+        Type     = "Task"
+        Resource = var.insight_generator_lambda_arn
+        Comment  = "Generate immediate rejection insight and stop for critical-quality sessions"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id"   = ""
+        }
+        ResultPath = "$.insight_result"
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+            IntervalSeconds = 2
+            MaxAttempts     = 2
+            BackoffRate     = 2
+          }
+        ]
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "ProcessingFailed"
+            ResultPath  = "$.error"
+          }
+        ]
+        Next = "ProcessingComplete"
       }
 
       ClusterEngine = {

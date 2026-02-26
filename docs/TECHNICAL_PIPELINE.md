@@ -223,6 +223,8 @@ The pipeline is not static. As the child develops from pre-linguistic infant to 
 
 **Purpose:** Ensure the raw audio recording meets minimum quality standards for any analysis to proceed. This is the foundational gate — everything else depends on clean input.
 
+**Runtime optimization (implemented):** Critical failures (`no_signal`, `no_vocal_activity_detected`, `too_short`) trigger a fast-reject short-circuit. The pipeline generates a rejection insight immediately and skips expensive downstream stages (clustering, longitudinal tracking, concept decoding, speech analysis) for that session.
+
 **Input Specification:**
 ```
 {

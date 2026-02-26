@@ -42,7 +42,9 @@ from audio_utils import (
     audio_quality_gate,
     biological_validation,
     download_audio_from_s3,
-    extract_all_features,
+    extract_all_features_from_array,
+    load_audio_from_bytes,
+    voice_activity_detection,
 )
 
 # Phase 2 imports
@@ -370,26 +372,42 @@ def _enhance_baby_signal(y: np.ndarray) -> np.ndarray:
     return y_pre
 
 
+def _critical_quality_issues(quality_gate_result: Dict) -> list:
+    """
+    Return critical gate issues that warrant fast rejection.
+    """
+    if not isinstance(quality_gate_result, dict):
+        return []
+    critical_prefixes = ("no_signal", "no_vocal_activity_detected", "too_short:")
+    issues = quality_gate_result.get("issues", []) or []
+    return [
+        issue for issue in issues
+        if any(str(issue).startswith(prefix) for prefix in critical_prefixes)
+    ]
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     Feature Extraction Lambda handler — Phase 1–4.
 
-    Pipeline (corrected order for accuracy):
+    Pipeline (corrected order for accuracy + fast reject):
       0.  Download audio from S3
-      1.  Extract acoustic features on full audio (embedding, feature_scores, audio_array)
+      1.  Decode once + VAD trim
       2.  [Phase 1] Audio quality gate (SNR, clipping, silence, Lombard)
-      3.  [Phase 2] Diarization on full audio — speaker-segment labels
-      4.  Extract baby-only audio from diarization segments
-      5.  [Phase 1] Biological validation on BABY audio (clean, not adult-contaminated)
-      6.  [Phase 3] Rich feature extraction (~65 features) on BABY audio
-      7.  [Phase 4] Probabilistic age classification (Gaussian + voice-type + adult gate)
-      8.  Reconcile bio_result flags with probabilistic classifier
-      9.  [Phase 2] Load embeddings → enrolled baby identity verification
-      10. Get child profile → age + developmental stage selection
-      11. [Phase 2] Determine analysis routing
-      12. Update EMA baselines, deviation, readiness score
-      13. Update child profile
-      14. Save session
+      2b. Fast reject path for critical quality failures (skip expensive downstream layers)
+      3.  Extract acoustic features (embedding + 4 core scores)
+      4.  [Phase 2] Diarization on full audio — speaker-segment labels
+      5.  Extract baby-only audio from diarization segments
+      6.  [Phase 1] Biological validation on BABY audio (clean, not adult-contaminated)
+      7.  [Phase 3] Rich feature extraction (~65 features) on BABY audio
+      8.  [Phase 4] Probabilistic age classification (Gaussian + voice-type + adult gate)
+      9.  Reconcile bio_result flags with probabilistic classifier
+      10. [Phase 2] Load embeddings → enrolled baby identity verification
+      11. Get child profile → age + developmental stage selection
+      12. [Phase 2] Determine analysis routing
+      13. Update EMA baselines, deviation, readiness score
+      14. Update child profile
+      15. Save session
 
     Key accuracy improvement: running bio validation and rich feature extraction on
     baby-only audio (step 4) prevents adult voice contamination of acoustic features.
@@ -413,17 +431,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     audio_bytes = download_audio_from_s3(bucket, s3_audio_path)
 
-    # 1. Full-audio extraction: embedding (for enrollment), feature_scores, audio_array
-    extraction_result = extract_all_features(audio_bytes)
-    feature_scores   = extraction_result["feature_scores"]
-    embedding_vector = extraction_result["embedding_vector"]
-    duration_seconds = extraction_result["duration_seconds"]
-    audio_array      = extraction_result.get("audio_array")
-    sample_rate      = extraction_result.get("sample_rate", 22050)
+    # 1. Decode audio once (ffmpeg) and pre-trim silence.
+    decoded_audio, sample_rate = load_audio_from_bytes(audio_bytes, target_sr=22050)
+    duration_seconds = round(len(decoded_audio) / max(sample_rate, 1), 2)
+    audio_array = voice_activity_detection(decoded_audio, sample_rate)
+    if len(audio_array) < sample_rate * 0.5:
+        logger.warning("Very short voiced audio after VAD; falling back to full decoded audio")
+        audio_array = decoded_audio
 
-    logger.info(f"Extracted features: {feature_scores}")
-
-    # 2. [Phase 1] Audio quality gate — always run on full audio
+    # 2. [Phase 1] Audio quality gate
     quality_gate_result = {}
     if audio_array is not None:
         try:
@@ -434,6 +450,85 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 logger.info(f"Quality gate passed: SNR={quality_gate_result['snr_db']}dB silence={quality_gate_result['silence_ratio']:.0%}")
         except Exception as e:
             logger.warning(f"Quality gate error (non-blocking): {e}")
+
+    critical_issues = _critical_quality_issues(quality_gate_result)
+    if critical_issues and not quality_gate_result.get("passed", True):
+        logger.warning(
+            f"Fast reject path for {session_id}: critical quality issues={critical_issues}"
+        )
+        profile = get_or_create_child_profile(child_id)
+        age_days = compute_age_days(profile.get("birth_date"))
+        age_stage_info = developmental_stage_from_age(age_days)
+        developmental_stage = age_stage_info["stage"]
+        developmental_mode = age_stage_info["mode"]
+
+        feature_scores = {
+            "rhythm": 0.0,
+            "repetition": 0.0,
+            "emotional_intensity": 0.0,
+            "expressive_flow": 0.0,
+        }
+        routing_result = {
+            "mode": developmental_mode,
+            "stage": developmental_stage,
+            "analysis_type": "low_confidence",
+            "adult_evidence": [f"quality_gate_critical:{'|'.join(critical_issues)}"],
+        }
+        deviation = {
+            "deviation_flag": False,
+            "deviation_level": "none",
+            "deviation_score": 0.0,
+        }
+        save_session(
+            session_id=session_id,
+            child_id=child_id,
+            s3_audio_path=s3_audio_path,
+            feature_scores=feature_scores,
+            embedding_vector=[],
+            deviation=deviation,
+            duration_seconds=duration_seconds,
+            quality_gate=quality_gate_result,
+            biological={},
+            age_days_at_recording=age_days,
+            developmental_stage=developmental_stage,
+            developmental_mode=developmental_mode,
+            diarization={},
+            enrollment={},
+            routing=routing_result,
+            rich_features={},
+            session_context=session_context,
+            age_classification={},
+        )
+        return {
+            "status": "features_extracted",
+            "session_id": session_id,
+            "child_id": child_id,
+            "feature_scores": feature_scores,
+            "rich_features": {},
+            "embedding_vector": [],
+            "deviation": deviation,
+            "readiness_score": 0.0,
+            "duration_seconds": duration_seconds,
+            "quality_gate": quality_gate_result,
+            "biological": {},
+            "diarization": {},
+            "enrollment": {},
+            "routing": routing_result,
+            "developmental_stage": developmental_stage,
+            "developmental_mode": developmental_mode,
+            "session_context": session_context,
+            "age_classification": {},
+            "fast_reject": True,
+        }
+
+    # 3. Full-audio feature extraction on already-decoded array.
+    extraction_result = extract_all_features_from_array(audio_array, sample_rate, apply_vad=False)
+    feature_scores = extraction_result["feature_scores"]
+    embedding_vector = extraction_result["embedding_vector"]
+    duration_seconds = extraction_result["duration_seconds"]
+    audio_array = extraction_result.get("audio_array")
+    sample_rate = extraction_result.get("sample_rate", sample_rate)
+    logger.info(f"Extracted features: {feature_scores}")
 
     # 3. [Phase 2] Diarization on FULL audio — segment and label by speaker type
     # Running this FIRST allows us to isolate baby audio before bio/rich feature extraction.
@@ -667,4 +762,5 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "developmental_mode": developmental_mode,
         "session_context": session_context,
         "age_classification": age_classification_result,
+        "fast_reject": False,
     }

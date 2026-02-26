@@ -1357,14 +1357,59 @@ def biological_validation(
     }
 
 
+def extract_all_features_from_array(
+    y: np.ndarray,
+    sr: int,
+    apply_vad: bool = True,
+) -> Dict:
+    """
+    Full feature extraction pipeline from a decoded audio array.
+
+    Args:
+        y: Audio array
+        sr: Sample rate
+        apply_vad: Whether to trim silence before extracting features
+    """
+    duration = len(y) / max(sr, 1)
+
+    y_trimmed = voice_activity_detection(y, sr) if apply_vad else y
+    if len(y_trimmed) < sr * 0.5:  # Less than 0.5 seconds of voiced audio
+        logger.warning("Very short voiced audio detected")
+        y_trimmed = y  # Fall back to original
+
+    rhythm = extract_rhythm_score(y_trimmed, sr)
+    repetition = extract_repetition_score(y_trimmed, sr)
+    emotional_intensity = extract_emotional_intensity(y_trimmed, sr)
+    expressive_flow = extract_expressive_flow(y_trimmed, sr)
+    embedding = extract_embedding_vector(y_trimmed, sr)
+
+    feature_scores = {
+        "rhythm": round(rhythm, 4),
+        "repetition": round(repetition, 4),
+        "emotional_intensity": round(emotional_intensity, 4),
+        "expressive_flow": round(expressive_flow, 4),
+    }
+
+    logger.info(f"Feature scores: {feature_scores}")
+
+    return {
+        "feature_scores": feature_scores,
+        "embedding_vector": embedding,
+        "duration_seconds": round(duration, 2),
+        "sample_rate": sr,
+        # Trimmed audio array for in-memory downstream analysis.
+        "audio_array": y_trimmed,
+    }
+
+
 def extract_all_features(audio_bytes: bytes, sr: int = 22050) -> Dict:
     """
     Full feature extraction pipeline.
-    
+
     Args:
         audio_bytes: Raw audio bytes
         sr: Target sample rate
-    
+
     Returns:
         {
             "feature_scores": {rhythm, repetition, emotional_intensity, expressive_flow},
@@ -1374,40 +1419,6 @@ def extract_all_features(audio_bytes: bytes, sr: int = 22050) -> Dict:
         }
     """
     logger.info("Starting full feature extraction")
-    
-    # Load audio
     y, sr = load_audio_from_bytes(audio_bytes, target_sr=sr)
-    duration = len(y) / sr
-    
-    # VAD — trim silence
-    y_trimmed = voice_activity_detection(y, sr)
-    
-    if len(y_trimmed) < sr * 0.5:  # Less than 0.5 seconds of voiced audio
-        logger.warning("Very short voiced audio detected")
-        y_trimmed = y  # Fall back to original
-    
-    # Extract features
-    rhythm = extract_rhythm_score(y_trimmed, sr)
-    repetition = extract_repetition_score(y_trimmed, sr)
-    emotional_intensity = extract_emotional_intensity(y_trimmed, sr)
-    expressive_flow = extract_expressive_flow(y_trimmed, sr)
-    embedding = extract_embedding_vector(y_trimmed, sr)
-    
-    feature_scores = {
-        "rhythm": round(rhythm, 4),
-        "repetition": round(repetition, 4),
-        "emotional_intensity": round(emotional_intensity, 4),
-        "expressive_flow": round(expressive_flow, 4),
-    }
-    
-    logger.info(f"Feature scores: {feature_scores}")
-    
-    return {
-        "feature_scores": feature_scores,
-        "embedding_vector": embedding,
-        "duration_seconds": round(duration, 2),
-        "sample_rate": sr,
-        # Trimmed audio array for Phase 1 quality gate + bio validation.
-        # Stays in Lambda memory only — not serialised or persisted.
-        "audio_array": y_trimmed,
-    }
+    return extract_all_features_from_array(y=y, sr=sr, apply_vad=True)
+
