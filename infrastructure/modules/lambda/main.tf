@@ -14,6 +14,7 @@ locals {
     FEEDBACK_TABLE               = var.feedback_table
     CONCEPT_GRAPH_TABLE          = var.concept_graph_table
     MILESTONES_TABLE             = var.milestones_table
+    POPULATION_MODEL_TABLE       = var.population_model_table
     ALPHA_VALUE                  = tostring(var.alpha_value)
     CLUSTER_SIMILARITY_THRESHOLD = tostring(var.cluster_similarity_threshold)
     STEP_FUNCTION_ARN            = var.step_function_arn

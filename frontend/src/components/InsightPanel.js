@@ -1,25 +1,38 @@
-import React from 'react';
+﻿import React from 'react';
 
 const INTENT_COLORS = {
   hunger: '#FF6B6B',
-  connection: '#4ECDC4',
-  discomfort: '#FFE66D',
-  overstimulation: '#FF8B94',
   fatigue: '#A8E6CF',
+  pain: '#FF4D4D',
+  discomfort: '#FFE66D',
+  closeness: '#4ECDC4',
+  frustration: '#FF8B94',
+  happy: '#7CCB7C',
   exploration: '#88D8B0',
+  distress_unknown: '#C7C7C7',
+  non_baby_spoof_noise: '#8A8A8A',
+  // Backward compatibility
+  connection: '#4ECDC4',
+  overstimulation: '#FF8B94',
   unknown: '#C7C7C7',
 };
 
 const INTENT_ICONS = {
   hunger: '🍼',
-  connection: '💛',
-  discomfort: '😟',
-  overstimulation: '🌀',
   fatigue: '😴',
+  pain: '🩹',
+  discomfort: '😟',
+  closeness: '🤗',
+  frustration: '😣',
+  happy: '😊',
   exploration: '🔍',
+  distress_unknown: '📊',
+  non_baby_spoof_noise: '🚫',
+  // Backward compatibility
+  connection: '🤗',
+  overstimulation: '😣',
   unknown: '📊',
 };
-
 function ConfidenceBar({ confidence }) {
   const pct = Math.round((confidence || 0) * 100);
   const color = pct >= 60 ? '#4ECDC4' : pct >= 30 ? '#FFE66D' : '#C7C7C7';
@@ -29,7 +42,7 @@ function ConfidenceBar({ confidence }) {
       <div className="confidence-bar-wrapper">
         <div className="confidence-bar" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
-      <span className="confidence-label">{pct}% — {label}</span>
+      <span className="confidence-label">{pct}% â€” {label}</span>
     </div>
   );
 }
@@ -70,8 +83,8 @@ function InsightPanel({ insight }) {
     speech_transcript,
   } = insight;
 
-  const intentKey = probable_intent?.key || 'unknown';
-  const color = INTENT_COLORS[intentKey] || INTENT_COLORS.unknown;
+  const intentKey = probable_intent?.key || 'distress_unknown';
+  const color = INTENT_COLORS[intentKey] || INTENT_COLORS.distress_unknown;
   const icon = INTENT_ICONS[intentKey] || '📊';
   const sections = insight_sections || null;
   const topEmotions = emotion_profile?.top_states || [];
@@ -138,7 +151,7 @@ function InsightPanel({ insight }) {
           {sections.what_i_hear && (
             <div className="insight-block insight-block--hear">
               <div className="insight-block-header">
-                <span className="insight-block-icon">👂</span>
+                <span className="insight-block-icon">ðŸ‘‚</span>
                 <h4>What I'm hearing</h4>
               </div>
               <p>{sections.what_i_hear}</p>
@@ -148,7 +161,7 @@ function InsightPanel({ insight }) {
           {sections.what_it_means && (
             <div className="insight-block insight-block--means">
               <div className="insight-block-header">
-                <span className="insight-block-icon">💭</span>
+                <span className="insight-block-icon">ðŸ’­</span>
                 <h4>What it might mean</h4>
               </div>
               <p>{sections.what_it_means}</p>
@@ -158,7 +171,7 @@ function InsightPanel({ insight }) {
           {sections.what_to_try && sections.what_to_try.length > 0 && (
             <div className="insight-block insight-block--try">
               <div className="insight-block-header">
-                <span className="insight-block-icon">✋</span>
+                <span className="insight-block-icon">âœ‹</span>
                 <h4>What you can try</h4>
               </div>
               <ol className="try-list">
@@ -255,3 +268,4 @@ function InsightPanel({ insight }) {
 }
 
 export default InsightPanel;
+

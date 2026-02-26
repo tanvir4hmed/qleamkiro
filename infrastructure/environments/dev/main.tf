@@ -210,6 +210,7 @@ module "lambda" {
   feedback_table        = module.dynamodb.feedback_table_name
   concept_graph_table   = module.dynamodb.concept_graph_table_name
   milestones_table      = module.dynamodb.milestones_table_name
+  population_model_table = module.dynamodb.population_model_table_name
 
   alpha_value                    = var.alpha_value
   cluster_similarity_threshold   = var.cluster_similarity_threshold

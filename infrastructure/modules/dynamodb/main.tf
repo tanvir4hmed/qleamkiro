@@ -304,3 +304,32 @@ resource "aws_dynamodb_table" "milestones" {
     Table = "Milestones"
   }
 }
+
+# -----------------------------------------------------------------------------
+# PopulationModel Table
+# Stage-level online/federated priors used by insight_generator evidence model
+# PK: stage
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "population_model" {
+  name         = "${var.project}-${var.environment}-PopulationModel"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "stage"
+
+  attribute {
+    name = "stage"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-PopulationModel"
+    Table = "PopulationModel"
+  }
+}

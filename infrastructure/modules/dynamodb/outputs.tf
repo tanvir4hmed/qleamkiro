@@ -68,6 +68,16 @@ output "milestones_table_arn" {
   value       = aws_dynamodb_table.milestones.arn
 }
 
+output "population_model_table_name" {
+  description = "PopulationModel DynamoDB table name"
+  value       = aws_dynamodb_table.population_model.name
+}
+
+output "population_model_table_arn" {
+  description = "PopulationModel DynamoDB table ARN"
+  value       = aws_dynamodb_table.population_model.arn
+}
+
 output "all_table_names" {
   description = "Map of all DynamoDB table names"
   value = {
@@ -78,5 +88,6 @@ output "all_table_names" {
     feedback        = aws_dynamodb_table.feedback.name
     concept_graph   = aws_dynamodb_table.concept_graph.name
     milestones      = aws_dynamodb_table.milestones.name
+    population_model = aws_dynamodb_table.population_model.name
   }
 }

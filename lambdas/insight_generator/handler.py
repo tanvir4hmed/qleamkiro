@@ -1,12 +1,12 @@
-"""
-Qleam — Insight Generator Lambda
+﻿"""
+Qleam â€” Insight Generator Lambda
 Translates system state into structured, non-diagnostic parent guidance.
 
-Phase 4 — Three-Source Evidence Model:
-- 60% Acoustic signal    — real-time audio features (summary + Phase 3 rich features)
-- 15% Research priors    — developmental stage norms + session context (feeding, health)
-- 25% Feedback history   — parent reinforcement over time
-  → Acoustic is ground truth; feedback personalises without dominating early sessions.
+Phase 4 â€” Three-Source Evidence Model:
+- 60% Acoustic signal    â€” real-time audio features (summary + Phase 3 rich features)
+- 15% Research priors    â€” developmental stage norms + session context (feeding, health)
+- 25% Feedback history   â€” parent reinforcement over time
+  â†’ Acoustic is ground truth; feedback personalises without dominating early sessions.
 - Insight now includes evidence breakdown for transparency.
 
 Trigger: Step Function third state
@@ -49,6 +49,7 @@ from constants import (
 )
 from normalization import normalize_probability_distribution
 from evidence_model import determine_probable_intent_v2
+from intent_taxonomy import canonical_intent_key, canonical_intent_keys
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -158,7 +159,7 @@ def get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]
         if not item:
             return None
         if not item.get("is_reliable"):
-            logger.debug(f"Population prior for {developmental_stage} exists but not reliable — using literature priors")
+            logger.debug(f"Population prior for {developmental_stage} exists but not reliable â€” using literature priors")
             return None
         prior = item.get("population_prior")
         if prior and isinstance(prior, dict):
@@ -169,14 +170,7 @@ def get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]
     return None
 
 
-_CORE_INTENT_KEYS = (
-    "hunger",
-    "discomfort",
-    "connection",
-    "fatigue",
-    "overstimulation",
-    "exploration",
-)
+_CORE_INTENT_KEYS = tuple(canonical_intent_keys(include_technical=False))
 
 
 def invoke_sagemaker_intent_endpoint(session: Dict, developmental_stage: str) -> Dict[str, Any]:
@@ -217,9 +211,10 @@ def invoke_sagemaker_intent_endpoint(session: Dict, developmental_stage: str) ->
         cleaned: Dict[str, float] = {}
         if isinstance(dist, dict):
             for k, v in dist.items():
-                if k in _CORE_INTENT_KEYS:
+                key = canonical_intent_key(k, allow_technical=False)
+                if key and key in _CORE_INTENT_KEYS:
                     try:
-                        cleaned[k] = max(0.0, float(v))
+                        cleaned[key] = max(0.0, float(v))
                     except Exception:
                         continue
 
@@ -319,71 +314,112 @@ def transcribe_session_audio(session: Dict) -> Optional[Dict[str, str]]:
 
 INTENT_SECTIONS = {
     "hunger": {
-        "what_i_hear": "Baby's sounds show a rhythmic, building intensity — a classic early hunger signal.",
-        "what_it_means": "This rhythmic, escalating pattern often suggests hunger or a feeding need.",
+        "what_i_hear": "Baby's sounds show rhythmic, building intensity, a classic hunger-like signal.",
+        "what_it_means": "This pattern often suggests hunger or feeding need.",
         "what_to_try": [
-            "Offer feeding and watch for rooting or hand-to-mouth movement",
-            "Check when baby last fed — is it close to their usual interval?",
-            "Try gentle tummy rubs to ease any digestive discomfort",
-        ],
-    },
-    "connection": {
-        "what_i_hear": "Baby's sounds are calm and flowing — gentle vocalizations typical of social engagement.",
-        "what_it_means": "This calm, fluid pattern often appears when babies are seeking interaction and warmth.",
-        "what_to_try": [
-            "Make gentle eye contact and mirror baby's sounds back to them",
-            "Talk or sing softly — babies love responsive back-and-forth",
-            "Hold baby close and respond warmly to each vocalization",
-        ],
-    },
-    "discomfort": {
-        "what_i_hear": "Baby's sounds show high intensity with irregular, persistent bursts — often linked to physical discomfort.",
-        "what_it_means": "This irregular, intense pattern may indicate physical discomfort — worth checking the basics.",
-        "what_to_try": [
-            "Check diaper, temperature, and clothing for anything irritating",
-            "Try a different hold or position — sometimes that's all it takes",
-            "Offer a gentle clockwise belly massage to ease gas",
-        ],
-    },
-    "overstimulation": {
-        "what_i_hear": "Baby's sounds are sustained and intense — a pattern sometimes seen with sensory overload.",
-        "what_it_means": "Babies sometimes vocalize like this when their nervous system needs a break from stimulation.",
-        "what_to_try": [
-            "Move to a quieter, dimmer room and slow everything down",
-            "Hold baby firmly against your chest for calming deep pressure",
-            "Reduce eye contact briefly — even gentle gaze can be too much when overwhelmed",
+            "Offer feeding and watch hand-to-mouth cues",
+            "Check time since last feeding",
+            "Try gentle tummy comfort if needed",
         ],
     },
     "fatigue": {
-        "what_i_hear": "Baby's sounds have a repetitive, fussing quality with short bursts — a common tired-baby pattern.",
-        "what_it_means": "This fussy, repetitive pattern is commonly seen when babies are overtired and need rest.",
+        "what_i_hear": "Baby's sounds are repetitive with short fussy bursts, often a tiredness profile.",
+        "what_it_means": "This pattern commonly appears when baby is sleepy or overtired.",
         "what_to_try": [
-            "Create a calm sleep space — dim lights and reduce noise",
-            "Start your soothing routine: swaddle, rock, or try white noise",
-            "Watch for tired signs: rubbing eyes, yawning, or blank staring",
+            "Start a calm sleep routine",
+            "Reduce light and noise",
+            "Use consistent soothing rhythm",
+        ],
+    },
+    "pain": {
+        "what_i_hear": "Baby's sounds are sharp and highly strained, which may indicate pain-like distress.",
+        "what_it_means": "This profile can occur with acute discomfort and needs prompt calming checks.",
+        "what_to_try": [
+            "Check immediate pain triggers",
+            "Use close soothing contact",
+            "Seek medical advice if distress remains high",
+        ],
+    },
+    "discomfort": {
+        "what_i_hear": "Baby's sounds are intense and irregular, often linked to physical discomfort.",
+        "what_it_means": "This pattern may reflect gas, wet diaper, temperature discomfort, or position issues.",
+        "what_to_try": [
+            "Check diaper, temperature, and clothing",
+            "Try a different hold or position",
+            "Use gentle belly soothing",
+        ],
+    },
+    "closeness": {
+        "what_i_hear": "Baby's sounds are socially directed and softer, often asking for closeness.",
+        "what_it_means": "Many babies use this pattern when they want cuddle, reassurance, and responsive contact.",
+        "what_to_try": [
+            "Hold baby close and respond warmly",
+            "Mirror sounds and pause for turn-taking",
+            "Use skin-to-skin if comfortable",
+        ],
+    },
+    "frustration": {
+        "what_i_hear": "Baby's sounds are tense and irregular with rising effort, a frustration-like profile.",
+        "what_it_means": "This can happen when baby is overloaded or blocked and needs regulation support.",
+        "what_to_try": [
+            "Reduce stimulation and simplify the scene",
+            "Use slow rhythmic soothing",
+            "Allow a short calm reset",
+        ],
+    },
+    "happy": {
+        "what_i_hear": "Baby's sounds are clear and flowing with social energy, often happy/content.",
+        "what_it_means": "This pattern is commonly associated with comfort and positive engagement.",
+        "what_to_try": [
+            "Continue warm interaction",
+            "Reinforce with smiles and mirroring",
+            "Use this moment for playful language input",
         ],
     },
     "exploration": {
-        "what_i_hear": "Baby's sounds are varied and flowing — this vocal play is typical of an alert, curious state.",
-        "what_it_means": "These varied sounds often mean baby is alert and actively engaging with their world.",
+        "what_i_hear": "Baby's sounds are varied and playful, typical of neutral/cooing exploration.",
+        "what_it_means": "This often means baby is alert and experimenting with vocal control.",
         "what_to_try": [
-            "Mirror baby's sounds back gently — this is early proto-conversation",
-            "Show interesting objects or faces at 20–30cm distance",
-            "This is a great time for gentle, interactive play",
+            "Mirror sounds back gently",
+            "Offer simple visual focus objects",
+            "Keep interactive vocal play going",
         ],
+    },
+    "distress_unknown": {
+        "what_i_hear": "This distress pattern is currently mixed and still being learned.",
+        "what_it_means": "The system cannot yet separate this cleanly into one need, so it stays as fallback distress.",
+        "what_to_try": [
+            "Use a calm checklist: feeding, rest, comfort",
+            "Record again in lower-noise conditions",
+            "Continue feedback so this pattern gets personalized",
+        ],
+    },
+    "non_baby_spoof_noise": {
+        "what_i_hear": "The recording looks non-baby, spoof-like, or mostly background/noise.",
+        "what_it_means": "This sample is treated as technical/non-baby and not used for baby intent interpretation.",
+        "what_to_try": [
+            "Record closer to the baby",
+            "Reduce adult speech and TV/background noise",
+            "Retry when baby is actively vocalizing",
+        ],
+    },
+    # Backward compatibility aliases
+    "connection": {
+        "what_i_hear": "Baby's sounds are socially directed.",
+        "what_it_means": "This maps to closeness/comfort seeking.",
+        "what_to_try": ["Hold baby close", "Use warm voice", "Mirror sounds"],
+    },
+    "overstimulation": {
+        "what_i_hear": "Baby's sounds are intense and irregular.",
+        "what_it_means": "This maps to frustration/regulation support needs.",
+        "what_to_try": ["Reduce stimulation", "Use calming rhythm", "Allow reset"],
     },
     "unknown": {
-        "what_i_hear": "Baby's sound pattern is still being learned — more sessions will build a clearer picture.",
-        "what_it_means": "We're still learning this baby's unique patterns. Each session improves accuracy.",
-        "what_to_try": [
-            "Record more sessions to help build a reliable baseline",
-            "Try the basics: check feeding, comfort, connection, and rest",
-            "Trust your instincts — you know your baby best",
-        ],
+        "what_i_hear": "Pattern still uncertain.",
+        "what_it_means": "This maps to distress-unknown fallback.",
+        "what_to_try": ["Record more", "Use calm checklist", "Share feedback"],
     },
 }
-
-
 def _age_band_from_stage(stage: str) -> str:
     stage = (stage or "").upper().strip()
     if stage in ("NEWBORN",):
@@ -400,11 +436,11 @@ def _age_band_from_stage(stage: str) -> str:
 
 
 _AGE_BAND_CONTEXT = {
-    "0-3m": "At 0–3 months, most vocalizations are need-based and reflexive.",
-    "3-6m": "At 3–6 months, social coos appear alongside need-based sounds.",
-    "6-12m": "At 6–12 months, babbling and repetition become common.",
-    "12-24m": "At 12–24 months, early words can appear alongside need-based sounds.",
-    "24-36m": "At 24–36 months, short phrases emerge but need-based sounds still occur.",
+    "0-3m": "At 0â€“3 months, most vocalizations are need-based and reflexive.",
+    "3-6m": "At 3â€“6 months, social coos appear alongside need-based sounds.",
+    "6-12m": "At 6â€“12 months, babbling and repetition become common.",
+    "12-24m": "At 12â€“24 months, early words can appear alongside need-based sounds.",
+    "24-36m": "At 24â€“36 months, short phrases emerge but need-based sounds still occur.",
 }
 
 _AGE_BAND_TRY = {
@@ -423,7 +459,7 @@ def get_rule_based_sections(
     child_name: str = "",
 ) -> Dict:
     """Return structured rule-based insight sections with age-aware context."""
-    base = INTENT_SECTIONS.get(intent_key, INTENT_SECTIONS["unknown"])
+    base = INTENT_SECTIONS.get(intent_key, INTENT_SECTIONS["distress_unknown"])
     age_band = _age_band_from_stage(developmental_stage)
     age_context = _AGE_BAND_CONTEXT.get(age_band, "")
     age_try = _AGE_BAND_TRY.get(age_band)
@@ -475,16 +511,16 @@ LINGUISTIC_FALLBACK_INSIGHTS = {
         "what_i_hear": "Your child is producing clear, intentional word-like sounds with real communicative purpose.",
         "what_it_means": "Each session helps track their vocabulary growth. These are the building blocks of language.",
         "what_to_try": [
-            "Respond to every word attempt — acknowledgement encourages more speech",
+            "Respond to every word attempt â€” acknowledgement encourages more speech",
             "Name objects together during play to expand vocabulary",
             "Read simple picture books and point to objects as you name them",
         ],
     },
     "WORD_COMBINATIONS": {
-        "what_i_hear": "Your child is linking sounds and words in multi-word patterns — a key leap in language.",
+        "what_i_hear": "Your child is linking sounds and words in multi-word patterns â€” a key leap in language.",
         "what_it_means": "Two-word combinations show the grammar system is developing. This is a major milestone.",
         "what_to_try": [
-            "Expand what your child says — if they say 'more milk', respond 'yes, more cold milk'",
+            "Expand what your child says â€” if they say 'more milk', respond 'yes, more cold milk'",
             "Ask open questions that need more than one word to answer",
             "Narrate everyday activities: 'We're washing the big red apple'",
         ],
@@ -549,10 +585,10 @@ CHILD'S DEVELOPMENTAL STAGE: {stage_label}
 
 ACOUSTIC MEASUREMENTS FROM THIS SESSION:
 - Syllable rate: {syllable_rate} syllables/second
-- Pause ratio: {pause_ratio} (proportion of silence — higher = more pauses between utterances)
+- Pause ratio: {pause_ratio} (proportion of silence â€” higher = more pauses between utterances)
 - Pitch range: {f0_range} Hz (wider = more expressive prosody)
 - Voice clarity (HNR): {hnr_db} dB (higher = cleaner, more resonant speech)
-- Canonical babbling ratio: {cbr} (residual babble — lower at this stage is normal)
+- Canonical babbling ratio: {cbr} (residual babble â€” lower at this stage is normal)
 {transcript_note}
 
 Return ONLY a JSON object with exactly these three fields:
@@ -656,7 +692,7 @@ def _generate_linguistic_insight(
 ) -> dict:
     """
     Generate and store language-development insight for LINGUISTIC-mode sessions.
-    Skips intent classification — focuses on language metrics instead.
+    Skips intent classification â€” focuses on language metrics instead.
     """
     use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
     transcript = transcribe_session_audio(session or {}) if session else None
@@ -712,7 +748,7 @@ def _generate_linguistic_insight(
 def classify_intent_from_features(feature_scores: Dict[str, float]) -> Dict[str, float]:
     """
     Pure acoustic feature-based intent classification.
-    Does NOT use parent feedback — derived entirely from audio signal.
+    Does NOT use parent feedback â€” derived entirely from audio signal.
 
     Feature semantics (all 0.0-1.0):
     - emotional_intensity: pitch variance + energy variance (0=calm, 1=distressed)
@@ -923,7 +959,7 @@ def compute_private_language_signal(
 
 
 # =============================================================================
-# [Phase 4] Three-Source Evidence Model — replaces 70/30 two-source model
+# [Phase 4] Three-Source Evidence Model â€” replaces 70/30 two-source model
 # =============================================================================
 
 def determine_cluster_stability(cluster: Dict) -> str:
@@ -1116,7 +1152,7 @@ Guidelines:
     except Exception as e:
         logger.warning(f"Bedrock failed, using rule-based: {e}")
         return get_rule_based_sections(
-            probable_intent.get("key", "unknown"),
+            probable_intent.get("key", "distress_unknown"),
             developmental_stage=developmental_stage,
             feature_narrative=feature_narrative,
             child_name=child_name,
@@ -1173,7 +1209,7 @@ def build_insight(
     cluster: Dict,
     semantic_bridge: Optional[Dict],
 ) -> Dict:
-    """Build the enhanced structured insight output (Phase 4 — Three-Source Evidence Model)."""
+    """Build the enhanced structured insight output (Phase 4 â€” Three-Source Evidence Model)."""
 
     feature_scores  = session.get("feature_scores", {})
     deviation_level = session.get("deviation_level", "none")
@@ -1197,7 +1233,7 @@ def build_insight(
     acoustic_reliability = _estimate_acoustic_reliability(session)
     child_name           = str(profile.get("name") or "")
 
-    # 1. Feature narrative — always computed from audio data, no feedback involved
+    # 1. Feature narrative â€” always computed from audio data, no feedback involved
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
     emotion_profile = compute_emotion_profile(feature_scores, rich_features)
 
@@ -1316,9 +1352,9 @@ def _build_rejection_insight(
     Lightweight insight returned when recording cannot be analysed.
 
     reason values:
-      "quality"     — no signal / no vocal activity / too short
-      "adult"       — biological validation flagged adult voice
-      "mismatch"    — speaker type doesn't match expected child
+      "quality"     â€” no signal / no vocal activity / too short
+      "adult"       â€” biological validation flagged adult voice
+      "mismatch"    â€” speaker type doesn't match expected child
     """
     if reason == "adult" or reason == "mismatch":
         transcript_note = ""
@@ -1376,7 +1412,7 @@ def _build_rejection_insight(
         what_to_try = [
             "Wait for your baby to make sounds naturally, then record",
             "Make sure you're close to your baby (20-30 cm) during recording",
-            "Stay quiet yourself — only record the baby's vocalizations",
+            "Stay quiet yourself â€” only record the baby's vocalizations",
             "If someone else was speaking, try a new recording with just the baby",
         ]
     else:
@@ -1386,16 +1422,16 @@ def _build_rejection_insight(
             "captured background noise rather than your baby's voice."
         )
         what_to_try = [
-            "Hold the phone 20–30 cm from your baby's mouth",
+            "Hold the phone 20â€“30 cm from your baby's mouth",
             "Record somewhere quieter if possible",
             "Try again when baby is actively making sounds",
-            "Make sure baby is cooing, babbling, or crying — not silent",
+            "Make sure baby is cooing, babbling, or crying â€” not silent",
         ]
         label = "No baby sounds detected"
 
     return {
         "probable_intent": {
-            "key": "unknown",
+            "key": "non_baby_spoof_noise",
             "label": label,
             "confidence": 0.0,
             "confidence_tier": "low",
@@ -1409,7 +1445,7 @@ def _build_rejection_insight(
         "speaker_type_detected": speaker_type,
         "speaker_category_detected": speaker_category,
         "speaker_gate": (session.get("speaker_gate") or {}).get("status"),
-        # No developmental_stage — don't show a misleading stage label on rejected sessions
+        # No developmental_stage â€” don't show a misleading stage label on rejected sessions
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1457,6 +1493,28 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
     total_segments = int(diarization.get("total_segments", 0) or 0)
     baby_fraction = float(diarization.get("baby_audio_fraction", 1.0) or 1.0)
     adult_fraction = float(diarization.get("adult_audio_fraction", 0.0) or 0.0)
+    age_days = session.get("age_days_at_recording")
+    age_classification = session.get("age_classification", {}) or {}
+    age_class = str(age_classification.get("final_class", "") or "").lower().strip()
+    age_conf = float(age_classification.get("confidence", 0.0) or 0.0)
+
+    if (
+        isinstance(age_days, (int, float))
+        and age_days <= 270
+        and age_class in ("toddler", "child")
+        and age_conf >= 0.72
+    ):
+        return {
+            "status": "AGE_MISMATCH_REJECT",
+            "speaker_type": "child",
+            "speaker_category": age_class,
+            "bio_confidence": round(max(bio_confidence, age_conf), 3),
+            "spoof_likelihood": round(spoof_likelihood, 3),
+            "adult_fraction": round(adult_fraction, 3),
+            "baby_fraction": round(baby_fraction, 3),
+            "age_days": int(age_days),
+            "age_class_confidence": round(age_conf, 3),
+        }
 
     adult_bio_suspected = (
         biological.get("mimicry_suspected") is True
@@ -1549,9 +1607,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not session:
         raise ValueError(f"Session {session_id} not found")
 
-    # 1a. Quality gate check — reject recordings with no vocal content
+    # 1a. Quality gate check â€” reject recordings with no vocal content
     # Only truly critical issues block analysis.
-    # too_silent alone is NOT critical — 1s of sound in a 5s recording is still analysable.
+    # too_silent alone is NOT critical â€” 1s of sound in a 5s recording is still analysable.
     _CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
     quality_gate = session.get("quality_gate", {})
     gate_issues = quality_gate.get("issues", [])
@@ -1588,6 +1646,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             reason="adult",
             speaker_type=speaker_gate.get("speaker_type", "unknown"),
             speaker_category=speaker_gate.get("speaker_category", "unknown"),
+        )
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
+        }
+
+    if speaker_gate["status"] == "AGE_MISMATCH_REJECT":
+        logger.warning(
+            f"Age mismatch rejection for session {session_id}: "
+            f"registered_age_days={speaker_gate.get('age_days')} "
+            f"detected={speaker_gate.get('speaker_category')} "
+            f"conf={speaker_gate.get('age_class_confidence', 0.0):.2f}"
+        )
+        rejection_insight = _build_rejection_insight(
+            session,
+            reason="mismatch",
+            speaker_type=speaker_gate.get("speaker_type", "child"),
+            speaker_category=speaker_gate.get("speaker_category", "child"),
         )
         save_insight_to_session(session_id, rejection_insight)
         return {
@@ -1655,5 +1733,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "session_id": session_id,
         "insight": insight,
     }
+
+
 
 

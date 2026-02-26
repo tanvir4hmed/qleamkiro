@@ -1,14 +1,17 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 
-// MASTER_INDEX.md §7-8 — five-stage feedback schema
-// Base response types — labels adapt per mode below
+// MASTER_INDEX.md Â§7-8 â€” five-stage feedback schema
+// Base response types â€” labels adapt per mode below
 const BASE_RESPONSE_TYPES = [
-  { key: 'hunger',         labels: { INFANT: '🍼 Tried feeding',       BABBLE: '🍼 Tried feeding',    PROTO: '🍼 Gave food or drink', TODDLER: '🍼 Gave food or snack' } },
-  { key: 'connection',     labels: { INFANT: '🤗 Held & comforted',    BABBLE: '🤗 Held & played',    PROTO: '🤗 Played together',    TODDLER: '🤗 Gave attention & play' } },
-  { key: 'discomfort',     labels: { INFANT: '🩹 Checked for pain',    BABBLE: '🩹 Checked discomfort', PROTO: '🩹 Checked for pain',  TODDLER: '🩹 Checked & comforted' } },
-  { key: 'overstimulation',labels: { INFANT: '🤫 Quieted the space',  BABBLE: '🤫 Reduced stimulation', PROTO: '🤫 Took a calm break', TODDLER: '🤫 Took a quiet break' } },
-  { key: 'fatigue',        labels: { INFANT: '😴 Started sleep routine', BABBLE: '😴 Started nap routine', PROTO: '😴 Tried to nap',    TODDLER: '😴 Put down for nap' } },
-  { key: 'exploration',    labels: { INFANT: '🎵 Sang & talked',       BABBLE: '🎵 Played & explored', PROTO: '🎵 Explored together', TODDLER: '🎵 Read / played together' } },
+  { key: 'hunger',           labels: { INFANT: 'Fed baby', BABBLE: 'Fed baby', PROTO: 'Gave food or drink', TODDLER: 'Gave meal/snack' } },
+  { key: 'fatigue',          labels: { INFANT: 'Sleep routine', BABBLE: 'Nap routine', PROTO: 'Tried to nap', TODDLER: 'Sleep/nap support' } },
+  { key: 'pain',             labels: { INFANT: 'Checked pain', BABBLE: 'Checked pain', PROTO: 'Pain comfort check', TODDLER: 'Pain support check' } },
+  { key: 'discomfort',       labels: { INFANT: 'Checked discomfort', BABBLE: 'Checked discomfort', PROTO: 'Comfort check', TODDLER: 'Physical comfort check' } },
+  { key: 'closeness',        labels: { INFANT: 'Held/cuddled', BABBLE: 'Held and soothed', PROTO: 'Close comfort', TODDLER: 'Comfort and closeness' } },
+  { key: 'frustration',      labels: { INFANT: 'Calmed overload', BABBLE: 'Reduced stimulation', PROTO: 'Calm reset', TODDLER: 'Regulation support' } },
+  { key: 'happy',            labels: { INFANT: 'Playful bonding', BABBLE: 'Happy interaction', PROTO: 'Positive play', TODDLER: 'Engaged play' } },
+  { key: 'exploration',      labels: { INFANT: 'Sound play', BABBLE: 'Vocal play', PROTO: 'Exploration play', TODDLER: 'Speech/play exploration' } },
+  { key: 'distress_unknown', labels: { INFANT: 'Tried basics', BABBLE: 'Tried basics', PROTO: 'Used checklist', TODDLER: 'Used checklist' } },
 ];
 
 // Get response type list with mode-appropriate labels
@@ -28,18 +31,18 @@ function orderByIntent(types, intentKey) {
 }
 
 const EFFECTIVENESS_OPTIONS = [
-  { key: 'helpful',     label: '✓ Helped' },
+  { key: 'helpful',     label: 'âœ“ Helped' },
   { key: 'neutral',     label: '~ Hard to tell' },
-  { key: 'ineffective', label: '✗ Didn\'t help' },
+  { key: 'ineffective', label: 'âœ— Didn\'t help' },
 ];
 
 /**
- * Five feedback modes per MASTER_INDEX.md §7-8:
+ * Five feedback modes per MASTER_INDEX.md Â§7-8:
  *
- *  INFANT   0–6m   NEWBORN, EARLY_VOCAL
- *  BABBLE   6–12m  CANONICAL_BABBLE
- *  PROTO    12–18m PROTO_WORDS
- *  TODDLER  18–24m FIRST_WORDS, WORD_COMBINATIONS
+ *  INFANT   0â€“6m   NEWBORN, EARLY_VOCAL
+ *  BABBLE   6â€“12m  CANONICAL_BABBLE
+ *  PROTO    12â€“18m PROTO_WORDS
+ *  TODDLER  18â€“24m FIRST_WORDS, WORD_COMBINATIONS
  *  LANGUAGE 24m+   EARLY_SENTENCES
  */
 function getMode(developmentalStage) {
@@ -83,7 +86,7 @@ const SOUND_FIELD_PLACEHOLDER = {
 const SHOWS_CONCEPTS = new Set(['PROTO', 'TODDLER', 'LANGUAGE']);
 // Effectiveness question absent for LANGUAGE (24m+)
 const SHOWS_EFFECTIVENESS = new Set(['INFANT', 'BABBLE', 'PROTO', 'TODDLER']);
-// Notes absent for INFANT (0–6m) per spec §8
+// Notes absent for INFANT (0â€“6m) per spec Â§8
 const SHOWS_NOTES = new Set(['BABBLE', 'PROTO', 'TODDLER', 'LANGUAGE']);
 
 function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCall }) {
@@ -147,7 +150,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
       <div className="feedback-reveal">
         <button className="feedback-reveal-btn" onClick={() => setOpen(true)}>
           <span>What happened next?</span>
-          <span className="feedback-reveal-hint">Share what you tried — helps Qleam learn</span>
+          <span className="feedback-reveal-hint">Share what you tried â€” helps Qleam learn</span>
         </button>
       </div>
     );
@@ -161,7 +164,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         <button className="feedback-skip-btn" onClick={() => setOpen(false)}>Skip</button>
       </div>
 
-      {/* What did you try — absent for LANGUAGE (24m+): child expressed clearly */}
+      {/* What did you try â€” absent for LANGUAGE (24m+): child expressed clearly */}
       {!isLanguage && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -182,7 +185,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         </div>
       )}
 
-      {/* How did it go — absent for LANGUAGE per spec §8 */}
+      {/* How did it go â€” absent for LANGUAGE per spec Â§8 */}
       {showEffectiveness && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -203,7 +206,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         </div>
       )}
 
-      {/* Concept picker — starts at PROTO (12m+) per spec §8 */}
+      {/* Concept picker â€” starts at PROTO (12m+) per spec Â§8 */}
       {showConcepts && concepts.length > 0 && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -254,7 +257,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         </div>
       )}
 
-      {/* Notes — absent for INFANT (0–6m) per spec §8 */}
+      {/* Notes â€” absent for INFANT (0â€“6m) per spec Â§8 */}
       {showNotes && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -267,8 +270,8 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
             className="notes-input"
             placeholder={
               isLanguage
-                ? 'e.g. They seemed very excited, pointed at the dog…'
-                : 'e.g. Baby calmed down quickly, seemed hungry after all…'
+                ? 'e.g. They seemed very excited, pointed at the dogâ€¦'
+                : 'e.g. Baby calmed down quickly, seemed hungry after allâ€¦'
             }
             value={notes}
             onChange={e => setNotes(e.target.value)}
@@ -290,3 +293,4 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
 }
 
 export default FeedbackForm;
+

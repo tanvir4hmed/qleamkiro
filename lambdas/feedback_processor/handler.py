@@ -23,7 +23,18 @@ import boto3
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
 sys.path.insert(0, "/var/task/shared")
 
-from constants import CHILD_PROFILE_TABLE, FEEDBACK_TABLE, SESSION_TABLE, SOUND_CLUSTER_TABLE
+from constants import (
+    CHILD_PROFILE_TABLE,
+    FEEDBACK_TABLE,
+    FL_DELTA_QUALITY_GATE,
+    FL_FRS_QUALITY_GATE,
+    FL_MIN_PARTICIPANTS,
+    FL_RESEARCH_FLOOR,
+    POPULATION_MODEL_TABLE,
+    SESSION_TABLE,
+    SOUND_CLUSTER_TABLE,
+)
+from intent_taxonomy import canonical_intent_key, canonical_intent_keys, normalize_intent_distribution
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -34,10 +45,11 @@ child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
 sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
+population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
 lambda_client = boto3.client("lambda")
 
 # All intent keys — must match evidence_model.py
-_ALL_INTENTS = ["hunger", "discomfort", "connection", "fatigue", "overstimulation", "exploration"]
+_ALL_INTENTS = list(canonical_intent_keys(include_technical=False))
 
 # ---------------------------------------------------------------------------
 # Fraud-detection thresholds
@@ -329,6 +341,10 @@ def save_feedback(
     developmental_stage: str = "",
     stage_version: int = 0,
     fraud_signals: Optional[Dict] = None,
+    canonical_intent: str = "",
+    training_eligible: Optional[bool] = None,
+    training_stage: str = "",
+    training_weight: Optional[float] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     feedback_item: Dict[str, Any] = {
@@ -357,6 +373,14 @@ def save_feedback(
         feedback_item["stage_version"] = stage_version
     if fraud_signals:
         feedback_item["fraud_signals"] = fraud_signals
+    if canonical_intent:
+        feedback_item["canonical_intent"] = canonical_intent
+    if training_eligible is not None:
+        feedback_item["training_eligible"] = bool(training_eligible)
+    if training_stage:
+        feedback_item["training_stage"] = training_stage
+    if training_weight is not None:
+        feedback_item["training_weight"] = _float_to_decimal(training_weight)
 
     feedback_table.put_item(Item=feedback_item)
     logger.info(f"Saved feedback {feedback_id} alignment={alignment_score} frs={frs_before}→{frs_after}")
@@ -399,6 +423,66 @@ def update_context_reliability(child_id: str, alignment_score: float, session: D
         f"α={alpha} signal={fraud_signal}"
     )
     return fraud_signal
+
+
+def _blend_with_research_floor(distribution: Dict[str, float]) -> Dict[str, float]:
+    """Apply the research floor so online learning cannot fully override priors."""
+    uniform = 1.0 / max(len(_ALL_INTENTS), 1)
+    blended = {
+        k: FL_RESEARCH_FLOOR * uniform + (1.0 - FL_RESEARCH_FLOOR) * float(distribution.get(k, uniform))
+        for k in _ALL_INTENTS
+    }
+    return normalize_intent_distribution(blended, include_technical=False, fill_missing=True)
+
+
+def _online_update_population_prior(stage: str, intent_key: str, sample_weight: float) -> None:
+    """
+    Incrementally update PopulationModel priors from high-trust feedback samples.
+    """
+    if not stage or not intent_key:
+        return
+
+    stage_key = stage.upper().strip()
+    if sample_weight <= 0:
+        return
+
+    try:
+        current = _decimal_to_float(
+            population_model_table.get_item(Key={"stage": stage_key}).get("Item", {})
+        )
+        counts_raw = current.get("intent_counts") or {}
+        counts = {k: float(counts_raw.get(k, 0.0) or 0.0) for k in _ALL_INTENTS}
+        counts[intent_key] = counts.get(intent_key, 0.0) + float(sample_weight)
+
+        total = sum(counts.values())
+        if total <= 0:
+            return
+
+        raw_prior = {k: counts[k] / total for k in _ALL_INTENTS}
+        population_prior = _blend_with_research_floor(raw_prior)
+        n_participants = int(current.get("n_participants", 0) or 0) + 1
+        is_reliable = n_participants >= FL_MIN_PARTICIPANTS
+        now = datetime.now(timezone.utc).isoformat()
+
+        record = dict(current) if isinstance(current, dict) else {}
+        record.update(
+            {
+                "stage": stage_key,
+                "intent_counts": counts,
+                "population_prior": population_prior,
+                "n_participants": n_participants,
+                "is_reliable": is_reliable,
+                "aggregated_at": now,
+                "updated_by": "feedback_online_v1",
+            }
+        )
+        population_model_table.put_item(Item=_float_to_decimal(record))
+        logger.info(
+            f"Online population prior updated: stage={stage_key} n={n_participants} "
+            f"intent={intent_key} w={sample_weight:.3f}"
+        )
+    except Exception as e:
+        logger.warning(f"Online population prior update skipped for stage={stage_key}: {e}")
 
 
 def invoke_reinforcement_engine(payload: Dict) -> None:
@@ -457,7 +541,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     logger.info(f"Feedback processor started for session {event.get('session_id')}")
 
     session_id = event["session_id"]
-    response_type = event.get("response_type", "")
+    raw_response_type = str(event.get("response_type", "") or "").strip()
+    canonical_response_type = canonical_intent_key(raw_response_type, allow_technical=False)
+    response_type = canonical_response_type or raw_response_type.lower().replace(" ", "_")
     effectiveness = event.get("effectiveness", "neutral")
     word_token = event.get("word_token", "")
     notes = str(event.get("notes", "") or "").strip()[:500]  # cap at 500 chars
@@ -485,7 +571,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     fraud_signal_frs: str = "NONE"
     fraud_signal_crs: str = "NONE"
 
-    efp = session.get("efp")
+    raw_efp = session.get("efp")
+    efp = (
+        normalize_intent_distribution(raw_efp or {}, include_technical=False, fill_missing=True)
+        if isinstance(raw_efp, dict) and raw_efp
+        else {}
+    )
     if efp and response_type and response_type in _ALL_INTENTS:
         try:
             scores = compute_delta_score(efp, response_type)
@@ -516,6 +607,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             except Exception as e:
                 logger.warning(f"Context reliability update failed (non-fatal): {e}")
 
+    training_stage = (developmental_stage or session.get("developmental_stage") or "").upper().strip()
+    training_eligible = bool(
+        response_type in _ALL_INTENTS
+        and effectiveness == "helpful"
+        and delta_score is not None
+        and frs_after is not None
+        and delta_score >= FL_DELTA_QUALITY_GATE
+        and frs_after >= FL_FRS_QUALITY_GATE
+        and fraud_signal_frs == "NONE"
+    )
+    training_weight: Optional[float] = None
+    if training_eligible:
+        training_weight = round(
+            max(0.05, min(1.0, 0.65 * float(delta_score) + 0.35 * float(frs_after))),
+            4,
+        )
+        _online_update_population_prior(training_stage, response_type, training_weight)
+
     # Build fraud_signals summary (only persisted when a signal was detected)
     detected_signals: Dict = {}
     if fraud_signal_frs != "NONE":
@@ -541,6 +650,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         developmental_stage=developmental_stage,
         stage_version=stage_version,
         fraud_signals=detected_signals if detected_signals else None,
+        canonical_intent=response_type if response_type in _ALL_INTENTS else "",
+        training_eligible=training_eligible,
+        training_stage=training_stage,
+        training_weight=training_weight,
     )
 
     # 4. Trigger reinforcement engine (async) if cluster exists
@@ -549,7 +662,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "child_id": child_id,
             "session_id": session_id,
             "cluster_id": cluster_id,
-            "response_type": response_type,
+            "response_type": response_type if response_type in _ALL_INTENTS else raw_response_type,
             "effectiveness": effectiveness,
             "word_token": word_token if word_token else None,
         }
@@ -571,5 +684,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "reinforcement_triggered": cluster_id is not None,
         "delta_score": delta_score,
         "frs_updated": frs_after is not None,
+        "training_eligible": training_eligible,
+        "training_stage": training_stage or None,
         "fraud_signals": detected_signals if detected_signals else None,
     }

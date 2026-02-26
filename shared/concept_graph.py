@@ -14,19 +14,26 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# 11 universal concepts pre-populated for every child at registration
+# Universal concepts pre-populated for every child at registration
 UNIVERSAL_CONCEPTS = [
+    # Canonical v2 baby-state taxonomy
     "hunger",
-    "thirst",
     "sleep",
-    "discomfort",
     "pain",
-    "cold",
-    "hot",
+    "discomfort",
+    "closeness",
+    "frustration",
+    "happy",
+    "exploration",
+    "distress_unknown",
+    # Additional universal needs/context concepts
+    "thirst",
+    "comfort",
     "connection",
     "attention",
-    "comfort",
     "fear",
+    "cold",
+    "hot",
 ]
 
 
@@ -54,7 +61,7 @@ def _decimal_to_float(val: Any) -> Any:
 
 def pre_populate_universal_concepts(child_id: str, table) -> None:
     """
-    Write 11 universal concepts for a newly registered child.
+    Write universal concepts for a newly registered child.
     Called from api_handler.create_child() immediately after profile creation.
     Uses batch_writer for efficiency.
     """

@@ -1,36 +1,37 @@
-"""
-Qleam — Three-Source Evidence Model (Phase 4)
+﻿"""
+Qleam â€” Three-Source Evidence Model (Phase 4)
 
 Determines probable infant intent by blending three independent evidence sources:
 
-  Source 1 (60%) — Acoustic signal:
+  Source 1 (60%) â€” Acoustic signal:
       Real-time audio features from this session.
       Uses 4 summary scores (emotional_intensity, rhythm, repetition, expressive_flow)
       augmented by Phase 3 rich features (cry_fraction, jitter_percent, hnr_db,
       syllable_rate, pause_ratio).  This source is immune to parent bias.
 
-  Source 2 (15%) — Research priors:
+  Source 2 (15%) â€” Research priors:
       Developmental-stage-specific probability distributions grounded in peer-reviewed
-      infant vocalization research.  Adjusted by session context (Phase 3) — feeding
+      infant vocalization research.  Adjusted by session context (Phase 3) â€” feeding
       time and health state shift the prior before blending.
 
-  Source 3 (25%) — Feedback history:
+  Source 3 (25%) â€” Feedback history:
       Parent reinforcement over many sessions, maintained by reinforcement_engine.
       Capped at 25% so a small number of incorrect feedback events cannot mislead
       the model.
 
 Design principles:
-  - Acoustic signal is ground truth — it cannot be overridden.
+  - Acoustic signal is ground truth â€” it cannot be overridden.
   - Research priors solve the cold-start problem and add domain knowledge.
   - Feedback personalises over time without dominating early sessions.
   - Confidence accounts for history depth, reinforcement quality, semantic alignment,
     and cross-source agreement.
-  - Confidence is hard-capped at 0.92 — Qleam never claims certainty.
+  - Confidence is hard-capped at 0.92 â€” Qleam never claims certainty.
 """
 import logging
 from typing import Dict, Optional
 
 from normalization import normalize_probability_distribution
+from intent_taxonomy import normalize_intent_distribution
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _base_weights_for_stage(developmental_stage: str) -> Dict[str, float]:
     return _STAGE_BASE_WEIGHTS.get(stage, _STAGE_BASE_WEIGHTS["UNKNOWN"])
 
 # ---------------------------------------------------------------------------
-# Source 1 — Acoustic Intent Classifier
+# Source 1 â€” Acoustic Intent Classifier
 # ---------------------------------------------------------------------------
 
 def compute_acoustic_intent_scores(
@@ -71,162 +72,168 @@ def compute_acoustic_intent_scores(
     Classify infant intent from acoustic features.
 
     Primary signal (4 summary scores):
-        emotional_intensity — pitch variance + energy variance (0=calm, 1=distressed)
-        rhythm              — regularity of sound bursts  (1=rhythmic, 0=irregular)
-        repetition          — MFCC self-similarity        (1=repeated, 0=varied)
-        expressive_flow     — vocalization continuity     (1=continuous, 0=bursts)
+        emotional_intensity - pitch variance + energy variance (0=calm, 1=distressed)
+        rhythm              - regularity of sound bursts  (1=rhythmic, 0=irregular)
+        repetition          - MFCC self-similarity        (1=repeated, 0=varied)
+        expressive_flow     - vocalization continuity     (1=continuous, 0=bursts)
 
     Augmented signal (Phase 3 rich features, used when available):
-        cry_fraction    — fraction of voiced frames with F0 > 350 Hz
-                          (high → hunger / discomfort cry pattern)
-        jitter_percent  — cycle-to-cycle F0 perturbation %
-                          (high → distressed / discomfort)
-        hnr_db          — Harmonics-to-Noise Ratio in dB
-                          (high → clean harmonic voice → social / connection)
-        syllable_rate   — onset detections per second
-                          (high → active babbling → exploration)
-        pause_ratio     — fraction of silent energy frames
-                          (low → sustained vocalization → exploration / hunger)
+        cry_fraction, jitter_percent, hnr_db, syllable_rate, pause_ratio
 
     Returns:
-        Normalized probability distribution over intent labels.
+        Normalized probability distribution over v2 intent labels.
     """
     rf = rich_features or {}
 
-    ei  = feature_scores.get("emotional_intensity", 0.5)
-    rh  = feature_scores.get("rhythm", 0.5)
-    rep = feature_scores.get("repetition", 0.5)
-    ef  = feature_scores.get("expressive_flow", 0.5)
+    ei = float(feature_scores.get("emotional_intensity", 0.5))
+    rh = float(feature_scores.get("rhythm", 0.5))
+    rep = float(feature_scores.get("repetition", 0.5))
+    ef = float(feature_scores.get("expressive_flow", 0.5))
 
-    # --- Base scores (derived from infant vocalization research) ---
-    hunger         = ei * 0.50 + rh * 0.40 + rep * 0.10
-    discomfort     = ei * 0.60 + (1.0 - rh) * 0.25 + rep * 0.15
-    connection     = (1.0 - ei) * 0.45 + ef * 0.45 + rh * 0.10
-    moderate_ei    = max(0.0, 1.0 - abs(ei - 0.45) * 2.2)
-    fatigue        = rep * 0.35 + (1.0 - ef) * 0.35 + moderate_ei * 0.30
-    overstimulation = ei * 0.50 + (1.0 - rh) * 0.30 + ef * 0.20
-    exploration    = (1.0 - ei) * 0.35 + (1.0 - rep) * 0.35 + ef * 0.30
+    cry_fraction = float(rf.get("cry_fraction", 0.0))
+    jitter_pct = float(rf.get("jitter_percent", 0.0))
+    hnr_db = float(rf.get("hnr_db", 0.0))
+    syllable_rate = float(rf.get("syllable_rate", 0.0))
+    pause_ratio = float(rf.get("pause_ratio", 0.5))
 
-    # --- Rich feature augmentations ---
-    cry_fraction   = float(rf.get("cry_fraction",   0.0))
-    jitter_pct     = float(rf.get("jitter_percent", 0.0))
-    hnr_db         = float(rf.get("hnr_db",         0.0))
-    syllable_rate  = float(rf.get("syllable_rate",  0.0))
-    pause_ratio    = float(rf.get("pause_ratio",    0.5))
+    distress = max(0.0, min(1.0, ei * 0.65 + min(cry_fraction, 0.8) * 0.35))
+    calm = max(0.0, min(1.0, 1.0 - ei))
+    irregular = max(0.0, min(1.0, 1.0 - rh))
+    bursty = max(0.0, min(1.0, 1.0 - ef))
+    social_harmonic = max(0.0, min(1.0, hnr_db / 20.0))
+    high_jitter = max(0.0, min(1.0, (jitter_pct - 3.0) / 17.0))
+    high_pause = max(0.0, min(1.0, (pause_ratio - 0.45) / 0.55))
+    syllable_activity = max(0.0, min(1.0, syllable_rate / 6.0))
 
-    # High cry fraction → hunger & discomfort boost
-    if cry_fraction > 0.20:
-        boost = min(cry_fraction, 0.60)
-        hunger     += boost * 0.35
-        discomfort += boost * 0.20
+    hunger = distress * 0.36 + rh * 0.24 + rep * 0.14 + min(cry_fraction, 0.8) * 0.26
+    fatigue = calm * 0.20 + rep * 0.26 + bursty * 0.30 + high_pause * 0.24
+    pain = distress * 0.40 + high_jitter * 0.35 + irregular * 0.15 + min(cry_fraction, 0.8) * 0.10
+    discomfort = distress * 0.34 + irregular * 0.24 + high_jitter * 0.20 + rep * 0.12 + min(cry_fraction, 0.6) * 0.10
+    closeness = calm * 0.30 + ef * 0.30 + social_harmonic * 0.25 + (1.0 - high_pause) * 0.15
+    frustration = ei * 0.34 + irregular * 0.22 + rep * 0.20 + bursty * 0.14 + high_jitter * 0.10
+    happy = calm * 0.28 + ef * 0.24 + social_harmonic * 0.32 + syllable_activity * 0.16
+    exploration = calm * 0.24 + (1.0 - rep) * 0.26 + ef * 0.20 + syllable_activity * 0.18 + social_harmonic * 0.12
 
-    # High jitter → distress signal → discomfort boost
-    if jitter_pct > 5.0:
-        jitter_boost = min((jitter_pct - 5.0) / 15.0, 0.25)
-        discomfort   += jitter_boost
-
-    # High HNR → clean harmonics → social / connection boost
-    if hnr_db > 5.0:
-        hnr_boost  = min(hnr_db / 50.0, 0.20)
-        connection += hnr_boost
-
-    # High syllable rate → active babbling → exploration boost
-    if syllable_rate > 2.5:
-        syllable_boost = min((syllable_rate - 2.5) / 7.0, 0.20)
-        exploration    += syllable_boost
-
-    # Low pause ratio → sustained vocalization → exploration / hunger, not fatigue
-    if pause_ratio < 0.30:
-        sustained_boost  = (0.30 - pause_ratio) * 0.40
-        exploration      += sustained_boost * 0.50
-        hunger           += sustained_boost * 0.30
-        fatigue          -= sustained_boost * 0.30
+    distress_competitors = max(hunger, pain, discomfort, frustration)
+    distress_unknown = (
+        distress * 0.55
+        + irregular * 0.15
+        + high_jitter * 0.10
+        + (0.35 if distress_competitors < 0.55 else 0.05)
+        + (0.10 if abs(discomfort - frustration) < 0.05 else 0.0)
+    )
 
     raw = {
-        "hunger":          max(0.0, hunger),
-        "discomfort":      max(0.0, discomfort),
-        "connection":      max(0.0, connection),
-        "fatigue":         max(0.0, fatigue),
-        "overstimulation": max(0.0, overstimulation),
-        "exploration":     max(0.0, exploration),
+        "hunger": max(0.0, hunger),
+        "fatigue": max(0.0, fatigue),
+        "pain": max(0.0, pain),
+        "discomfort": max(0.0, discomfort),
+        "closeness": max(0.0, closeness),
+        "frustration": max(0.0, frustration),
+        "happy": max(0.0, happy),
+        "exploration": max(0.0, exploration),
+        "distress_unknown": max(0.0, distress_unknown),
     }
 
-    return normalize_probability_distribution(raw)
-
+    return normalize_intent_distribution(raw, include_technical=False, fill_missing=True)
 
 # ---------------------------------------------------------------------------
-# Source 2 — Research Priors (developmental norms + session context)
+# Source 2 â€” Research Priors (developmental norms + session context)
 # ---------------------------------------------------------------------------
 
 # Stage-specific base priors.
 # Interpretation of published infant vocalization literature:
 #   - Newborns vocalize predominantly to signal distress (hunger, discomfort).
-#   - Social/exploratory vocalizations emerge and dominate from 3–6 months onward.
-#   - By 12–24 months, exploration and proto-linguistic intent dominate.
+#   - Social/exploratory vocalizations emerge and dominate from 3â€“6 months onward.
+#   - By 12â€“24 months, exploration and proto-linguistic intent dominate.
 _STAGE_PRIORS: Dict[str, Dict[str, float]] = {
-    "NEWBORN": {            # 0–90 days
-        "hunger":          0.30,
-        "discomfort":      0.30,
-        "connection":      0.20,
-        "fatigue":         0.12,
-        "overstimulation": 0.05,
-        "exploration":     0.03,
+    "NEWBORN": {            # 0â€“90 days
+        "hunger": 0.24,
+        "fatigue": 0.10,
+        "pain": 0.15,
+        "discomfort": 0.20,
+        "closeness": 0.11,
+        "frustration": 0.07,
+        "happy": 0.03,
+        "exploration": 0.03,
+        "distress_unknown": 0.07,
     },
-    "EARLY_VOCAL": {        # 91–180 days
-        "hunger":          0.22,
-        "discomfort":      0.22,
-        "connection":      0.28,
-        "fatigue":         0.10,
-        "overstimulation": 0.05,
-        "exploration":     0.13,
+    "EARLY_VOCAL": {        # 91â€“180 days
+        "hunger": 0.20,
+        "fatigue": 0.11,
+        "pain": 0.12,
+        "discomfort": 0.18,
+        "closeness": 0.14,
+        "frustration": 0.08,
+        "happy": 0.05,
+        "exploration": 0.07,
+        "distress_unknown": 0.05,
     },
-    "CANONICAL_BABBLE": {   # 181–270 days
-        "hunger":          0.15,
-        "discomfort":      0.15,
-        "connection":      0.25,
-        "fatigue":         0.10,
-        "overstimulation": 0.05,
-        "exploration":     0.30,
+    "CANONICAL_BABBLE": {   # 181â€“270 days
+        "hunger": 0.14,
+        "fatigue": 0.10,
+        "pain": 0.08,
+        "discomfort": 0.14,
+        "closeness": 0.14,
+        "frustration": 0.11,
+        "happy": 0.09,
+        "exploration": 0.15,
+        "distress_unknown": 0.05,
     },
-    "PROTO_WORDS": {        # 271–365 days
-        "hunger":          0.10,
-        "discomfort":      0.10,
-        "connection":      0.25,
-        "fatigue":         0.08,
-        "overstimulation": 0.05,
-        "exploration":     0.42,
+    "PROTO_WORDS": {        # 271â€“365 days
+        "hunger": 0.10,
+        "fatigue": 0.08,
+        "pain": 0.06,
+        "discomfort": 0.10,
+        "closeness": 0.14,
+        "frustration": 0.12,
+        "happy": 0.12,
+        "exploration": 0.23,
+        "distress_unknown": 0.05,
     },
-    "FIRST_WORDS": {        # 366–548 days
-        "hunger":          0.08,
-        "discomfort":      0.08,
-        "connection":      0.23,
-        "fatigue":         0.08,
-        "overstimulation": 0.05,
-        "exploration":     0.48,
+    "FIRST_WORDS": {        # 366â€“548 days
+        "hunger": 0.08,
+        "fatigue": 0.08,
+        "pain": 0.05,
+        "discomfort": 0.08,
+        "closeness": 0.13,
+        "frustration": 0.11,
+        "happy": 0.14,
+        "exploration": 0.28,
+        "distress_unknown": 0.05,
     },
-    "WORD_COMBINATIONS": {  # 549–730 days
-        "hunger":          0.07,
-        "discomfort":      0.07,
-        "connection":      0.22,
-        "fatigue":         0.08,
-        "overstimulation": 0.05,
-        "exploration":     0.51,
+    "WORD_COMBINATIONS": {  # 549â€“730 days
+        "hunger": 0.07,
+        "fatigue": 0.07,
+        "pain": 0.04,
+        "discomfort": 0.07,
+        "closeness": 0.12,
+        "frustration": 0.10,
+        "happy": 0.16,
+        "exploration": 0.32,
+        "distress_unknown": 0.05,
     },
     "EARLY_SENTENCES": {    # 731+ days
-        "hunger":          0.06,
-        "discomfort":      0.06,
-        "connection":      0.22,
-        "fatigue":         0.07,
-        "overstimulation": 0.04,
-        "exploration":     0.55,
+        "hunger": 0.06,
+        "fatigue": 0.06,
+        "pain": 0.03,
+        "discomfort": 0.06,
+        "closeness": 0.10,
+        "frustration": 0.09,
+        "happy": 0.18,
+        "exploration": 0.37,
+        "distress_unknown": 0.05,
     },
     "UNKNOWN": {
-        "hunger":          0.17,
-        "discomfort":      0.17,
-        "connection":      0.22,
-        "fatigue":         0.10,
-        "overstimulation": 0.05,
-        "exploration":     0.29,
+        "hunger": 0.13,
+        "fatigue": 0.09,
+        "pain": 0.08,
+        "discomfort": 0.13,
+        "closeness": 0.13,
+        "frustration": 0.10,
+        "happy": 0.10,
+        "exploration": 0.16,
+        "distress_unknown": 0.08,
     },
 }
 
@@ -254,17 +261,17 @@ def compute_research_priors(
     the research prior.  context_reliability starts at 0.8 and is updated via EMA in the
     feedback_processor as parent-provided context is validated against actual outcomes.
 
-        feeding_minutes_ago >= 120  → hunger += 0.15 × cr  (not fed in > 2 hours)
-        feeding_minutes_ago <= 30   → hunger -= 0.10 × cr  (recently fed)
-        health_state == "sick"      → discomfort += 0.15 × cr, overstimulation += 0.05 × cr
-        health_state == "teething"  → discomfort += 0.20 × cr
+        feeding_minutes_ago >= 120  â†’ hunger += 0.15 Ã— cr  (not fed in > 2 hours)
+        feeding_minutes_ago <= 30   â†’ hunger -= 0.10 Ã— cr  (recently fed)
+        health_state == "sick"      â†’ discomfort/pain/distress_unknown are boosted
+        health_state == "teething"  â†’ pain/discomfort are boosted
 
     All adjustments are applied before normalization so distribution always sums to 1.
 
     Args:
         developmental_stage: One of the stage names from DEVELOPMENTAL_STAGE_MAP.
         session_context:     Optional Phase 3 context dict from session record.
-        context_reliability: How much to trust parent-provided context (0.2–1.0, default 0.8).
+        context_reliability: How much to trust parent-provided context (0.2â€“1.0, default 0.8).
         population_prior:    Phase 8 FL population model prior (already DP-protected +
                              research-floor-blended by federated_aggregator). When provided
                              and reliable, replaces static literature priors.
@@ -276,10 +283,10 @@ def compute_research_priors(
 
     # Phase 8: use FL population prior if supplied, otherwise fall back to literature
     if population_prior and len(population_prior) >= 3:
-        priors = dict(population_prior)
+        priors = normalize_intent_distribution(population_prior, include_technical=False, fill_missing=True)
         logger.debug(f"Using FL population prior for stage={stage}")
     else:
-        priors = dict(_STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]))
+        priors = normalize_intent_distribution(_STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]), include_technical=False, fill_missing=True)
 
     if session_context:
         cr = max(0.2, min(1.0, context_reliability))   # clamp to safe range
@@ -295,14 +302,16 @@ def compute_research_priors(
         # --- Health state adjustment ---
         health = str(session_context.get("health_state", "")).lower().strip()
         if health == "sick":
-            priors["discomfort"]      += 0.15 * cr
-            priors["overstimulation"] += 0.05 * cr
+            priors["discomfort"] += 0.12 * cr
+            priors["pain"] += 0.08 * cr
+            priors["distress_unknown"] += 0.03 * cr
         elif health == "teething":
-            priors["discomfort"] += 0.20 * cr
+            priors["pain"] += 0.12 * cr
+            priors["discomfort"] += 0.10 * cr
 
     # Ensure all non-negative after adjustments
     priors = {k: max(0.0, v) for k, v in priors.items()}
-    return normalize_probability_distribution(priors)
+    return normalize_intent_distribution(priors, include_technical=False, fill_missing=True)
 
 
 # ---------------------------------------------------------------------------
@@ -321,9 +330,9 @@ def blend_evidence_sources(
     Blend three evidence sources with the given weights.
 
     Default weights (overridden by dynamic FRS weighting in determine_probable_intent_v2):
-        Acoustic  60% — real-time audio (primary truth source, immune to bias)
-        Research  15% — developmental science (cold-start + domain knowledge)
-        Feedback  25% — parent reinforcement history (long-term personalisation)
+        Acoustic  60% â€” real-time audio (primary truth source, immune to bias)
+        Research  15% â€” developmental science (cold-start + domain knowledge)
+        Feedback  25% â€” parent reinforcement history (long-term personalisation)
 
     Returns:
         Normalized blended probability distribution over all intent keys.
@@ -359,15 +368,15 @@ def compute_intent_confidence(
     Compute confidence for the top blended intent.
 
     Factors:
-      1. Blend strength          — top probability in the blended distribution
-      2. Session history         — cluster frequency_count (saturates at 10 sessions)
-      3. Reinforcement quality   — cluster.reinforcement_weight (parent confirmation)
-      4. Semantic alignment      — cluster.semantic_alignment_score (word detected)
-      5. Cross-source agreement  — acoustic AND research agree on top intent → +0.05
+      1. Blend strength          â€” top probability in the blended distribution
+      2. Session history         â€” cluster frequency_count (saturates at 10 sessions)
+      3. Reinforcement quality   â€” cluster.reinforcement_weight (parent confirmation)
+      4. Semantic alignment      â€” cluster.semantic_alignment_score (word detected)
+      5. Cross-source agreement  â€” acoustic AND research agree on top intent â†’ +0.05
 
     Caps (applied after calculation):
-      - Default ceiling: 0.92 — Qleam never claims certainty
-      - Sessions 1–5: max 0.40 (still learning this baby's unique patterns)
+      - Default ceiling: 0.92 â€” Qleam never claims certainty
+      - Sessions 1â€“5: max 0.40 (still learning this baby's unique patterns)
       - Weak signal (top acoustic score < 0.30): max 0.35
       - Floor: 0.10
 
@@ -432,7 +441,7 @@ def determine_probable_intent_v2(
     Supersedes the Phase 2 two-source model (70% acoustic + 30% feedback).
     Default split: 60% acoustic + 15% research priors + 25% feedback history.
     Feedback weight is dynamically scaled by parent_trust_score (FRS):
-        effective_feedback_w = 0.25 × max(0.1, FRS)
+        effective_feedback_w = 0.25 Ã— max(0.1, FRS)
         remaining weight redistributed proportionally to acoustic + research.
 
     Args:
@@ -442,15 +451,15 @@ def determine_probable_intent_v2(
         developmental_stage:  Baby's current developmental stage (e.g. "CANONICAL_BABBLE")
         session_context:      Phase 3 context dict (feeding_minutes_ago, health_state, etc.)
         session_count:        Total sessions recorded for this child (drives confidence caps)
-        parent_trust_score:   Parent Feedback Reliability Score — FRS in [0, 1] (default 0.5)
-        context_reliability:  How much to trust parent-provided context data (0.2–1.0, default 0.8)
+        parent_trust_score:   Parent Feedback Reliability Score â€” FRS in [0, 1] (default 0.5)
+        context_reliability:  How much to trust parent-provided context data (0.2â€“1.0, default 0.8)
         acoustic_reliability: Signal-quality confidence in [0, 1] from quality+diarization checks.
 
     Returns:
         {
             "label":       str,   # Human-readable intent label
             "key":         str,   # Intent key (e.g. "hunger")
-            "confidence":  float, # 0.10–0.92 (capped by session count + signal strength)
+            "confidence":  float, # 0.10â€“0.92 (capped by session count + signal strength)
             "top_intents": [...], # Top 3 [{key, label, weight}]
             "evidence": {         # Source breakdown (transparency layer)
                 "acoustic":  {intent: weight, ...},
@@ -471,9 +480,7 @@ def determine_probable_intent_v2(
     # --- Source 1: Acoustic ---
     # Optional override from managed endpoint inference (e.g., SageMaker).
     if external_acoustic_scores:
-        acoustic_scores = normalize_probability_distribution(
-            {k: max(0.0, float(v)) for k, v in external_acoustic_scores.items()}
-        )
+        acoustic_scores = normalize_intent_distribution(external_acoustic_scores, include_technical=False, fill_missing=True)
     else:
         acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
 
@@ -483,7 +490,7 @@ def determine_probable_intent_v2(
     )
 
     # --- Source 3: Feedback history (maintained by reinforcement_engine) ---
-    feedback_intents: Dict[str, float] = cluster.get("probable_intents") or {}
+    feedback_intents: Dict[str, float] = normalize_intent_distribution(cluster.get("probable_intents") or {}, include_technical=False, fill_missing=True)
 
     # --- Phase 4+: Stage-aware base weights + dynamic feedback scaling by FRS ---
     stage = (developmental_stage or "UNKNOWN").upper().strip()
@@ -570,3 +577,5 @@ def determine_probable_intent_v2(
             "agreement": agreement,
         },
     }
+
+

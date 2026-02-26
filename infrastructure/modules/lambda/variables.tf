@@ -67,6 +67,11 @@ variable "milestones_table" {
   type        = string
 }
 
+variable "population_model_table" {
+  description = "DynamoDB PopulationModel table name"
+  type        = string
+}
+
 variable "alpha_value" {
   description = "EMA alpha value for baseline aggregation"
   type        = number
