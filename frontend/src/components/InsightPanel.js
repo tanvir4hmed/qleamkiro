@@ -62,12 +62,15 @@ function InsightPanel({ insight }) {
     insight_sections,
     feature_narrative,
     suggested_response,
+    emotion_profile,
+    private_language_signal,
   } = insight;
 
   const intentKey = probable_intent?.key || 'unknown';
   const color = INTENT_COLORS[intentKey] || INTENT_COLORS.unknown;
   const icon = INTENT_ICONS[intentKey] || '📊';
   const sections = insight_sections || null;
+  const topEmotions = emotion_profile?.top_states || [];
 
   // Alt intents (excluding top one)
   const altIntents = probable_intent?.top_intents?.slice(1, 3) || [];
@@ -94,6 +97,18 @@ function InsightPanel({ insight }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Emotion profile */}
+      {topEmotions.length > 0 && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Emotional cues: </span>
+          {topEmotions.map((e) => (
+            <span key={e.key} className="alt-intent-chip">
+              {e.key.replace(/_/g, ' ')} {Math.round((e.score || 0) * 100)}%
+            </span>
+          ))}
         </div>
       )}
 
@@ -146,6 +161,33 @@ function InsightPanel({ insight }) {
         <details className="narrative-details">
           <summary>Audio characteristics</summary>
           <NarrativeGrid narrative={feature_narrative} />
+        </details>
+      )}
+
+      {/* Private language signal */}
+      {private_language_signal && (
+        <details className="narrative-details">
+          <summary>Private language signal</summary>
+          <div className="narrative-grid">
+            <div className="narrative-item">
+              <span className="narrative-key">Status</span>
+              <span className="narrative-val">{private_language_signal.level || 'forming'}</span>
+            </div>
+            <div className="narrative-item">
+              <span className="narrative-key">Pattern repeats</span>
+              <span className="narrative-val">{private_language_signal.cluster_frequency || 0}</span>
+            </div>
+            {private_language_signal.word_candidate && (
+              <div className="narrative-item">
+                <span className="narrative-key">Word candidate</span>
+                <span className="narrative-val">{private_language_signal.word_candidate}</span>
+              </div>
+            )}
+            <div className="narrative-item">
+              <span className="narrative-key">What this means</span>
+              <span className="narrative-val">{private_language_signal.message}</span>
+            </div>
+          </div>
         </details>
       )}
     </div>

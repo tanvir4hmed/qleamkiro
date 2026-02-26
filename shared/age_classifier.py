@@ -316,13 +316,14 @@ def apply_conservative_adult_gate(
     probability into child (70 %) and toddler (30 %) — conservative fallback.
 
     Gate conditions (ALL required):
-      1. f0_mean       < 180 Hz       — below sustained child range
+      1. f0_mean       < 180 Hz  OR  (overlap-zone adult cues)
       2. vtl_cm        > 13.0 cm      — adult vocal tract (when VTL available)
       3. hnr_db        > 14 dB        — clear harmonic structure
       4. jitter_percent < 2.5 %       — stable pitch
       5. cry_fraction  < 0.02         — not crying
       6. voice_type ∈ {structured_speech, sustained_tone}
-      Bonus: overlap zone (180–260 Hz) → require vtl_cm > 14.5 cm
+      Overlap-zone adult cues (180–260 Hz):
+        vtl_cm > 14.5 cm, hnr_db > 18 dB, jitter_percent < 1.8, shimmer_db < 1.6
     """
     adult_prob = probs.get("adult_female", 0.0) + probs.get("adult_male", 0.0)
     if adult_prob < 0.25:
@@ -330,21 +331,24 @@ def apply_conservative_adult_gate(
 
     f0_mean       = rich_features.get("f0_mean",        0.0)
     jitter        = rich_features.get("jitter_percent", 0.0)
+    shimmer_db    = rich_features.get("shimmer_db",     0.0)
     hnr           = rich_features.get("hnr_db",         0.0)
     cry           = rich_features.get("cry_fraction",   0.0)
 
+    overlap_adult = False
+    if 180.0 <= f0_mean <= 260.0:
+        overlap_adult = (
+            (vtl_cm > 14.5) if vtl_cm > 0.0 else False
+        ) and (hnr > 18.0) and (jitter < 1.8) and (shimmer_db < 1.6)
+
     gate: list = [
-        f0_mean < 180.0,
+        (f0_mean < 180.0) or overlap_adult,
         (vtl_cm > 13.0) if vtl_cm > 0.0 else True,   # Pass when VTL unavailable
         hnr > 14.0,
         jitter < 2.5,
         cry < 0.02,
         voice_type in ("structured_speech", "sustained_tone"),
     ]
-
-    # Overlap zone: tighter VTL requirement
-    if 180.0 <= f0_mean <= 260.0 and vtl_cm > 0.0:
-        gate.append(vtl_cm > 14.5)
 
     if all(gate):
         return probs  # Adult confirmed
@@ -389,13 +393,21 @@ def _determine_final_class(
     if voice_type == "noise":
         return "unknown", 0.0, True
 
-    # Sustained tone in adult-overlap F0 range → uncertain
+    # Sustained tone in adult-overlap F0 range → uncertain unless strong adult cues
     f0_mean = rich_features.get("f0_mean", 0.0)
     if voice_type == "sustained_tone" and f0_mean < 220.0:
-        adult_prob = probs.get("adult_female", 0.0) + probs.get("adult_male", 0.0)
-        non_adult  = 1.0 - adult_prob
-        if adult_prob > 0.30 and non_adult < 0.60:
-            return "unknown", max(adult_prob, non_adult), True
+        jitter = rich_features.get("jitter_percent", 0.0)
+        shimmer_db = rich_features.get("shimmer_db", 0.0)
+        hnr = rich_features.get("hnr_db", 0.0)
+        strong_adult = (
+            (vtl_cm > 14.5) if vtl_cm > 0.0 else False
+        ) and (hnr > 18.0) and (jitter < 1.8) and (shimmer_db < 1.6)
+
+        if not strong_adult:
+            adult_prob = probs.get("adult_female", 0.0) + probs.get("adult_male", 0.0)
+            non_adult  = 1.0 - adult_prob
+            if adult_prob > 0.30 and non_adult < 0.60:
+                return "unknown", max(adult_prob, non_adult), True
 
     # Low-confidence or nearly-tied distributions → unknown
     sorted_probs = sorted(probs.values(), reverse=True)

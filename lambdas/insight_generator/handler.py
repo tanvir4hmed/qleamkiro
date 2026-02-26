@@ -232,14 +232,76 @@ INTENT_SECTIONS = {
 }
 
 
-def get_rule_based_sections(intent_key: str) -> Dict:
-    """Return structured rule-based insight sections."""
+def _age_band_from_stage(stage: str) -> str:
+    stage = (stage or "").upper().strip()
+    if stage in ("NEWBORN",):
+        return "0-3m"
+    if stage in ("EARLY_VOCAL",):
+        return "3-6m"
+    if stage in ("CANONICAL_BABBLE", "PROTO_WORDS"):
+        return "6-12m"
+    if stage in ("FIRST_WORDS", "WORD_COMBINATIONS"):
+        return "12-24m"
+    if stage in ("EARLY_SENTENCES",):
+        return "24-36m"
+    return "unknown"
+
+
+_AGE_BAND_CONTEXT = {
+    "0-3m": "At 0–3 months, most vocalizations are need-based and reflexive.",
+    "3-6m": "At 3–6 months, social coos appear alongside need-based sounds.",
+    "6-12m": "At 6–12 months, babbling and repetition become common.",
+    "12-24m": "At 12–24 months, early words can appear alongside need-based sounds.",
+    "24-36m": "At 24–36 months, short phrases emerge but need-based sounds still occur.",
+}
+
+_AGE_BAND_TRY = {
+    "0-3m": "Use skin-to-skin or gentle rocking for regulation",
+    "3-6m": "Pause and respond with soft coos to encourage turn-taking",
+    "6-12m": "Echo their babbles and pause for a response",
+    "12-24m": "Offer simple choices: 'milk or water?'",
+    "24-36m": "Label needs with short phrases: 'you want water'",
+}
+
+
+def get_rule_based_sections(
+    intent_key: str,
+    developmental_stage: str = "UNKNOWN",
+    feature_narrative: Optional[Dict[str, str]] = None,
+    child_name: str = "",
+) -> Dict:
+    """Return structured rule-based insight sections with age-aware context."""
     base = INTENT_SECTIONS.get(intent_key, INTENT_SECTIONS["unknown"])
+    age_band = _age_band_from_stage(developmental_stage)
+    age_context = _AGE_BAND_CONTEXT.get(age_band, "")
+    age_try = _AGE_BAND_TRY.get(age_band)
+
+    name = (child_name or "").strip()
+    subject = f"{name}'s" if name else "Your baby's"
+
+    feature_line = ""
+    if feature_narrative:
+        feature_line = (
+            f"{subject} sounds are {feature_narrative.get('emotional_tone', 'expressive')} "
+            f"and {feature_narrative.get('sound_pattern', 'varied')}, "
+            f"with {feature_narrative.get('continuity', 'short bursts')}."
+        )
+
+    what_i_hear_parts = [feature_line, base["what_i_hear"]]
+    what_i_hear = " ".join(p for p in what_i_hear_parts if p).strip()
+    what_it_means_parts = [base["what_it_means"], age_context]
+    what_it_means = " ".join(p for p in what_it_means_parts if p).strip()
+
+    what_to_try = list(base["what_to_try"])
+    if age_try:
+        what_to_try = [age_try] + what_to_try
+
     return {
-        "what_i_hear": base["what_i_hear"],
-        "what_it_means": base["what_it_means"],
-        "what_to_try": list(base["what_to_try"]),
+        "what_i_hear": what_i_hear,
+        "what_it_means": what_it_means,
+        "what_to_try": what_to_try[:3],
         "source": "rule-based",
+        "age_band": age_band,
     }
 
 
@@ -248,6 +310,15 @@ def get_rule_based_sections(intent_key: str) -> Dict:
 # =============================================================================
 
 LINGUISTIC_FALLBACK_INSIGHTS = {
+    "SOUNDS_ONLY": {
+        "what_i_hear": "I mostly hear vocal sounds and emotional tone, not clear words in this recording.",
+        "what_it_means": "This is common during busy or tired moments. It suggests their language signals weren't prominent here.",
+        "what_to_try": [
+            "Try a calm, face-to-face moment and wait for a response",
+            "Use short, clear phrases and pause for their turn",
+            "Record again during play or a routine they enjoy",
+        ],
+    },
     "FIRST_WORDS": {
         "what_i_hear": "Your child is producing clear, intentional word-like sounds with real communicative purpose.",
         "what_it_means": "Each session helps track their vocabulary growth. These are the building blocks of language.",
@@ -276,6 +347,22 @@ LINGUISTIC_FALLBACK_INSIGHTS = {
         ],
     },
 }
+
+def _speech_signal_level(rich_features: dict) -> str:
+    """
+    Estimate how speech-like the session is for LINGUISTIC-stage fallbacks.
+    Returns: "non_speech" | "emerging" | "speech_like"
+    """
+    syllable_rate = float(rich_features.get("syllable_rate", 0.0))
+    hnr_db = float(rich_features.get("hnr_db", 0.0))
+    cbr = float(rich_features.get("cbr_estimate", 0.0))
+    f0_range = float(rich_features.get("f0_range", 0.0))
+
+    if syllable_rate < 1.2 and hnr_db < 8.0 and cbr < 0.10:
+        return "non_speech"
+    if syllable_rate < 2.0 and (hnr_db < 10.0 or f0_range < 80.0):
+        return "emerging"
+    return "speech_like"
 
 
 def _generate_linguistic_insight_with_bedrock(
@@ -366,8 +453,18 @@ def _generate_linguistic_insight(
         insight_sections = _generate_linguistic_insight_with_bedrock(developmental_stage, rich_features)
 
     if not insight_sections:
-        # Rule-based fallback — stage-based
-        fallback_key = developmental_stage if developmental_stage in LINGUISTIC_FALLBACK_INSIGHTS else "WORD_COMBINATIONS"
+        # Rule-based fallback — stage-based, but avoid static "sentences" when signals are absent
+        signal_level = _speech_signal_level(rich_features or {})
+        if signal_level == "non_speech":
+            fallback_key = "SOUNDS_ONLY"
+        elif signal_level == "emerging" and developmental_stage == "EARLY_SENTENCES":
+            fallback_key = "WORD_COMBINATIONS"
+        else:
+            fallback_key = (
+                developmental_stage
+                if developmental_stage in LINGUISTIC_FALLBACK_INSIGHTS
+                else "WORD_COMBINATIONS"
+            )
         base = LINGUISTIC_FALLBACK_INSIGHTS[fallback_key]
         insight_sections = {
             "what_i_hear": base["what_i_hear"],
@@ -521,6 +618,110 @@ def describe_features_in_words(feature_scores: Dict[str, float], deviation_level
     }
 
 
+def compute_emotion_profile(
+    feature_scores: Dict[str, float],
+    rich_features: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a richer emotional-state profile without changing the core intent classes.
+
+    Output states are parent-facing descriptors (not medical labels):
+      hungry_or_need, discomfort, sleepy, overstimulated, connection_seeking,
+      curious, happy, cozy, frustrated, afraid_signal
+    """
+    rf = rich_features or {}
+    ei = float(feature_scores.get("emotional_intensity", 0.5))
+    rh = float(feature_scores.get("rhythm", 0.5))
+    rep = float(feature_scores.get("repetition", 0.5))
+    ef = float(feature_scores.get("expressive_flow", 0.5))
+
+    cry_fraction = float(rf.get("cry_fraction", 0.0))
+    jitter_pct = float(rf.get("jitter_percent", 0.0))
+    hnr_db = float(rf.get("hnr_db", 0.0))
+    syllable_rate = float(rf.get("syllable_rate", 0.0))
+    pause_ratio = float(rf.get("pause_ratio", 0.5))
+
+    hungry_or_need = ei * 0.45 + rh * 0.25 + rep * 0.10 + min(cry_fraction, 0.6) * 0.20
+    discomfort = ei * 0.50 + (1.0 - rh) * 0.25 + min(jitter_pct / 20.0, 1.0) * 0.25
+    sleepy = rep * 0.35 + (1.0 - ef) * 0.35 + max(0.0, 0.5 - ei) * 0.30
+    overstimulated = ei * 0.55 + (1.0 - rh) * 0.20 + ef * 0.25
+    connection_seeking = (1.0 - ei) * 0.35 + ef * 0.40 + min(hnr_db / 20.0, 1.0) * 0.25
+    curious = (1.0 - ei) * 0.25 + (1.0 - rep) * 0.30 + min(syllable_rate / 6.0, 1.0) * 0.45
+    happy = (1.0 - ei) * 0.30 + ef * 0.30 + min(hnr_db / 22.0, 1.0) * 0.40
+    cozy = (1.0 - ei) * 0.40 + ef * 0.35 + max(0.0, 0.4 - pause_ratio) * 0.25
+    frustrated = ei * 0.40 + rep * 0.20 + (1.0 - ef) * 0.20 + min(jitter_pct / 18.0, 1.0) * 0.20
+    afraid_signal = ei * 0.45 + (1.0 - rh) * 0.20 + min(cry_fraction, 0.6) * 0.20 + min(jitter_pct / 20.0, 1.0) * 0.15
+
+    states = {
+        "hungry_or_need": max(0.0, min(1.0, hungry_or_need)),
+        "discomfort": max(0.0, min(1.0, discomfort)),
+        "sleepy": max(0.0, min(1.0, sleepy)),
+        "overstimulated": max(0.0, min(1.0, overstimulated)),
+        "connection_seeking": max(0.0, min(1.0, connection_seeking)),
+        "curious": max(0.0, min(1.0, curious)),
+        "happy": max(0.0, min(1.0, happy)),
+        "cozy": max(0.0, min(1.0, cozy)),
+        "frustrated": max(0.0, min(1.0, frustrated)),
+        "afraid_signal": max(0.0, min(1.0, afraid_signal)),
+    }
+
+    ordered = sorted(states.items(), key=lambda x: -x[1])
+    top = [{"key": k, "score": round(v, 3)} for k, v in ordered[:3]]
+    return {
+        "states": {k: round(v, 3) for k, v in states.items()},
+        "top_states": top,
+    }
+
+
+def compute_private_language_signal(
+    cluster: Dict,
+    semantic_bridge: Optional[Dict],
+    session_count: int,
+) -> Dict[str, Any]:
+    """
+    Derive a parent-facing private-language signal.
+    """
+    cluster_freq = int(cluster.get("frequency_count") or 0)
+    reinforce = float(cluster.get("reinforcement_weight") or 0.0)
+    semantic_alignment = float(cluster.get("semantic_alignment_score") or 0.0)
+
+    word = None
+    word_conf = 0.0
+    word_count = 0
+    if semantic_bridge:
+        word = semantic_bridge.get("word_token")
+        word_conf = float(semantic_bridge.get("semantic_confidence_score") or 0.0)
+        word_count = int(semantic_bridge.get("co_occurrence_count") or 0)
+
+    if cluster_freq >= 8 and reinforce >= 0.65 and (word_count >= 3 or semantic_alignment >= 0.6):
+        level = "established"
+    elif cluster_freq >= 3 or word_count >= 2 or semantic_alignment >= 0.35:
+        level = "emerging"
+    else:
+        level = "forming"
+
+    if level == "established":
+        message = "A stable personal sound pattern is forming. This is likely part of your baby's private communication system."
+    elif level == "emerging":
+        message = "A repeatable personal pattern is emerging. A few more sessions can make this mapping more reliable."
+    else:
+        if session_count <= 2:
+            message = "This is an early estimate from limited data. Continue recording to personalize your baby's private-language map."
+        else:
+            message = "No stable private-language mapping yet for this pattern. More repeated sessions are needed."
+
+    return {
+        "level": level,
+        "cluster_frequency": cluster_freq,
+        "reinforcement_weight": round(reinforce, 3),
+        "semantic_alignment_score": round(semantic_alignment, 3),
+        "word_candidate": word,
+        "word_candidate_confidence": round(word_conf, 3),
+        "word_co_occurrence_count": word_count,
+        "message": message,
+    }
+
+
 # =============================================================================
 # [Phase 4] Three-Source Evidence Model — replaces 70/30 two-source model
 # =============================================================================
@@ -576,6 +777,9 @@ def generate_insight_with_bedrock(
     probable_intent: Dict,
     feature_narrative: Dict,
     semantic_bridge: Optional[Dict],
+    emotion_profile: Optional[Dict] = None,
+    private_language_signal: Optional[Dict] = None,
+    session_count: int = 0,
     developmental_stage: str = "UNKNOWN",
     session_context: Optional[Dict] = None,
     child_name: str = "",
@@ -621,6 +825,30 @@ def generate_insight_with_bedrock(
 
         stage_label = developmental_stage.replace("_", " ").title()
         name_line = f"\nBABY'S NAME: {child_name}" if child_name else ""
+        is_first_session = session_count <= 1
+        first_session_note = (
+            "\nCOLD START NOTE:\n- This appears to be this baby's first analyzed session. "
+            "Provide an initial best estimate and clearly mention uncertainty."
+            if is_first_session else ""
+        )
+
+        emotion_note = ""
+        if emotion_profile and emotion_profile.get("top_states"):
+            e = emotion_profile["top_states"]
+            emotion_note = (
+                "\nEMOTION PROFILE:\n"
+                f"- Top state 1: {e[0]['key']} ({int(e[0]['score'] * 100)}%)\n"
+                f"- Top state 2: {e[1]['key']} ({int(e[1]['score'] * 100)}%)\n"
+                f"- Top state 3: {e[2]['key']} ({int(e[2]['score'] * 100)}%)"
+            )
+
+        private_note = ""
+        if private_language_signal:
+            private_note = (
+                "\nPRIVATE LANGUAGE SIGNAL:\n"
+                f"- Level: {private_language_signal.get('level', 'forming')}\n"
+                f"- Message: {private_language_signal.get('message', '')}"
+            )
 
         prompt = f"""You are Qleam, a supportive baby communication assistant helping parents understand their infant's sounds.
 
@@ -632,6 +860,9 @@ AUDIO ANALYSIS FROM THIS SESSION:
 - Compared to baby's usual: {feature_narrative['vs_baseline']}
 
 BABY'S DEVELOPMENTAL STAGE: {stage_label}{name_line}{context_note}
+{emotion_note}
+{private_note}
+{first_session_note}
 
 PATTERN HISTORY:
 - This sound pattern has been recorded {cluster_count} time(s) for this baby
@@ -655,6 +886,7 @@ Guidelines:
 - Each action step: max 10 words, start with a verb, immediately doable
 - If baby's name is provided, use it naturally 1-2 times (e.g., "Emma's sounds suggest...")
 - If confidence is low or pattern is still forming, acknowledge gently
+- If first session, explicitly say this is an initial estimate that improves with more recordings
 - Return ONLY the JSON object, no other text"""
 
         body = json.dumps({
@@ -683,7 +915,12 @@ Guidelines:
 
     except Exception as e:
         logger.warning(f"Bedrock failed, using rule-based: {e}")
-        return get_rule_based_sections(probable_intent.get("key", "unknown"))
+        return get_rule_based_sections(
+            probable_intent.get("key", "unknown"),
+            developmental_stage=developmental_stage,
+            feature_narrative=feature_narrative,
+            child_name=child_name,
+        )
 
 
 # =============================================================================
@@ -721,6 +958,7 @@ def build_insight(
 
     # 1. Feature narrative — always computed from audio data, no feedback involved
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
+    emotion_profile = compute_emotion_profile(feature_scores, rich_features)
 
     # 2. [Phase 4] Three-source evidence model: 60% acoustic + 15% research + 25% feedback
     #    [Phase 8] Research prior replaced by FL population prior when available + reliable
@@ -738,18 +976,39 @@ def build_insight(
         population_prior=population_prior,
     )
     cluster_stability = determine_cluster_stability(cluster)
+    private_language_signal = compute_private_language_signal(
+        cluster=cluster,
+        semantic_bridge=semantic_bridge,
+        session_count=session_count,
+    )
 
     # 3. Generate insight sections (Bedrock or rule-based)
     use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
     if use_bedrock:
         insight_sections = generate_insight_with_bedrock(
             cluster, probable_intent, feature_narrative, semantic_bridge,
+            emotion_profile=emotion_profile,
+            private_language_signal=private_language_signal,
+            session_count=session_count,
             developmental_stage=developmental_stage,
             session_context=session_context,
             child_name=child_name,
         )
     else:
-        insight_sections = get_rule_based_sections(probable_intent["key"])
+        insight_sections = get_rule_based_sections(
+            probable_intent["key"],
+            developmental_stage=developmental_stage,
+            feature_narrative=feature_narrative,
+            child_name=child_name,
+        )
+
+    # First-session hardening: never overstate confidence on cold start text.
+    if session_count <= 1:
+        cold_start_line = "This is an initial estimate from the first recording and will personalize with more sessions."
+        if cold_start_line not in insight_sections.get("what_it_means", ""):
+            insight_sections["what_it_means"] = (
+                (insight_sections.get("what_it_means", "") + " " + cold_start_line).strip()
+            )
 
     # 4. Semantic alignment (if word detected)
     semantic_alignment = None
@@ -772,8 +1031,10 @@ def build_insight(
             "cluster_frequency": cluster.get("frequency_count", 1),
         },
         "feature_narrative": feature_narrative,
+        "emotion_profile": emotion_profile,
         "probable_intent": probable_intent,
         "semantic_alignment": semantic_alignment,
+        "private_language_signal": private_language_signal,
         "insight_sections": insight_sections,
         # Backward-compat flat text
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),

@@ -876,6 +876,9 @@ def classify_speaker_type(
     shimmer: float,
     hnr: float,
     spectral_centroid: float,
+    speech_rate: Optional[Dict[str, float]] = None,
+    formant_bandwidth: float = 0.0,
+    spectral_flux: float = 0.0,
 ) -> Tuple[str, str, List[str]]:
     """
     Comprehensive speaker classification using all acoustic features.
@@ -1033,15 +1036,79 @@ def classify_speaker_type(
         scores["newborn"] += 1
         scores["infant"] += 1
         evidence.append(f"spectral_bright:{spectral_centroid:.2f}")
+
+    # === Formant bandwidth scoring ===
+    # Wider bandwidths -> less precise articulation -> younger
+    if formant_bandwidth > 0.45:
+        scores["newborn"] += 1
+        scores["infant"] += 1
+        evidence.append(f"formant_bw_high:{formant_bandwidth:.2f}")
+    elif formant_bandwidth > 0.30:
+        scores["infant"] += 1
+        scores["toddler"] += 1
+        evidence.append(f"formant_bw_mod:{formant_bandwidth:.2f}")
+
+    # === Speech-rate / pause pattern scoring ===
+    if speech_rate:
+        syllable_rate = float(speech_rate.get("syllable_rate", 0.0))
+        pause_ratio = float(speech_rate.get("pause_ratio", 0.0))
+        rhythm_regularity = float(speech_rate.get("rhythm_regularity", 0.0))
+
+        # Sustained tones / humming (adult-like) -> low syllable rate, low jitter
+        if (
+            syllable_rate < 1.2
+            and pause_ratio < 0.25
+            and jitter < 0.12
+            and shimmer < 0.20
+            and hnr > 0.60
+        ):
+            scores["adult_female"] += 1
+            scores["adult_male"] += 1
+            evidence.append(f"sustained_tone_adult:{syllable_rate:.2f}sps")
+
+        # Cry-like (younger) -> low syllable rate + irregular rhythm + unstable voice
+        if (
+            syllable_rate < 2.0
+            and rhythm_regularity < 0.45
+            and jitter > 0.22
+            and hnr < 0.45
+        ):
+            scores["newborn"] += 1
+            scores["infant"] += 1
+            evidence.append(f"cry_like:{syllable_rate:.2f}sps")
     
-    # === Resolve overlap zone (child vs adult female) using VTL ===
-    if 200 <= f0_hz <= 255 and vtl_cm > 0:
-        if vtl_cm < 13:
+    # === Resolve overlap zone (child vs adult female) using multi-feature gate ===
+    if 180 <= f0_hz <= 260 and vtl_cm > 0:
+        adult_cues = 0
+        infant_cues = 0
+        if vtl_cm > 14.5:
+            adult_cues += 2
+        if vtl_cm < 12.5:
+            infant_cues += 2
+        if hnr > 0.60:
+            adult_cues += 1
+        if hnr < 0.45:
+            infant_cues += 1
+        if jitter < 0.12:
+            adult_cues += 1
+        if jitter > 0.20:
+            infant_cues += 1
+        if shimmer < 0.20:
+            adult_cues += 1
+        if shimmer > 0.30:
+            infant_cues += 1
+        if formant_bandwidth > 0.35:
+            infant_cues += 1
+        if spectral_flux > 0.55:
+            infant_cues += 1
+
+        if adult_cues >= infant_cues + 2:
+            scores["adult_female"] += 3
+            evidence.append("overlap_resolved_adult_by_multi")
+        elif infant_cues >= adult_cues + 1:
             scores["child"] += 2
-            evidence.append("overlap_resolved_child_by_vtl")
-        elif vtl_cm > 14:
-            scores["adult_female"] += 2
-            evidence.append("overlap_resolved_female_by_vtl")
+            scores["toddler"] += 1
+            evidence.append("overlap_resolved_child_by_multi")
     
     # === Determine final classification ===
     max_category = max(scores, key=scores.get)
@@ -1140,6 +1207,8 @@ def biological_validation(
     shimmer = extract_shimmer(y, sr)
     hnr = extract_hnr(y, sr)
     spectral_features = extract_spectral_features(y, sr)
+    speech_rate_features = extract_speech_rate(y, sr)
+    formant_bandwidth = extract_formant_bandwidth(y, sr)
     
     # --- Comprehensive speaker classification ---
     speaker_category, confidence_tier, classification_evidence = classify_speaker_type(
@@ -1149,6 +1218,9 @@ def biological_validation(
         shimmer=shimmer,
         hnr=hnr,
         spectral_centroid=spectral_features.get("spectral_centroid", 0.5),
+        speech_rate=speech_rate_features,
+        formant_bandwidth=formant_bandwidth,
+        spectral_flux=spectral_features.get("spectral_flux", 0.5),
     )
     evidence.extend(classification_evidence)
 
@@ -1207,6 +1279,8 @@ def biological_validation(
         "shimmer": shimmer,
         "hnr": hnr,
         "spectral_features": spectral_features,
+        "speech_rate_features": speech_rate_features,
+        "formant_bandwidth": formant_bandwidth,
         "is_infant": is_infant,
         "is_child": is_child,
         "is_adult": is_adult,
