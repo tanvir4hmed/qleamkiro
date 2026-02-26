@@ -57,6 +57,16 @@ variable "feedback_table" {
   type        = string
 }
 
+variable "concept_graph_table" {
+  description = "DynamoDB ConceptGraph table name"
+  type        = string
+}
+
+variable "milestones_table" {
+  description = "DynamoDB Milestones table name"
+  type        = string
+}
+
 variable "alpha_value" {
   description = "EMA alpha value for baseline aggregation"
   type        = number
@@ -91,6 +101,30 @@ variable "use_bedrock" {
   description = "Whether to use Bedrock for insight generation"
   type        = bool
   default     = false
+}
+
+variable "use_sagemaker_intent_endpoint" {
+  description = "Whether insight_generator should call a SageMaker endpoint for acoustic intent override"
+  type        = bool
+  default     = false
+}
+
+variable "sagemaker_intent_endpoint_name" {
+  description = "Optional SageMaker real-time endpoint name for infant intent inference"
+  type        = string
+  default     = ""
+}
+
+variable "use_transcribe_for_linguistic" {
+  description = "Whether linguistic sessions should call Amazon Transcribe"
+  type        = bool
+  default     = false
+}
+
+variable "transcribe_timeout_seconds" {
+  description = "Polling timeout for Amazon Transcribe jobs"
+  type        = number
+  default     = 25
 }
 
 variable "log_retention_days" {

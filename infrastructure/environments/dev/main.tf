@@ -52,27 +52,27 @@ locals {
   # Determine if we should use custom domain (only if certificate exists)
   use_custom_domain     = var.custom_domain != "" && var.acm_certificate_arn != ""
   effective_certificate = local.use_custom_domain ? var.acm_certificate_arn : ""
-  
+
   audio_bucket_name    = "${var.project}-${var.environment}-audio-storage"
   frontend_bucket_name = "${var.project}-${var.environment}-frontend"
-  
+
   # Determine the primary domain for allowed origins
   primary_domain = var.custom_domain != "" ? var.custom_domain : module.frontend.cloudfront_domain_name
-  
+
   # Build allowed origins list - include both CloudFront domain and custom domain if configured
   allowed_origins = concat(
     ["https://${module.frontend.cloudfront_domain_name}", "http://localhost:3000"],
     var.custom_domain != "" ? ["https://${var.custom_domain}"] : [],
     var.additional_allowed_origins
   )
-  
+
   # Build callback URLs for Cognito
   callback_urls = concat(
     ["https://${module.frontend.cloudfront_domain_name}/callback", "http://localhost:3000/callback"],
     var.custom_domain != "" ? ["https://${var.custom_domain}/callback"] : [],
     var.additional_callback_urls
   )
-  
+
   # Build logout URLs for Cognito
   logout_urls = concat(
     ["https://${module.frontend.cloudfront_domain_name}/logout", "http://localhost:3000/logout"],
@@ -174,14 +174,18 @@ module "frontend" {
 module "step_functions" {
   source = "../../modules/step_functions"
 
-  project                       = var.project
-  environment                   = var.environment
-  step_functions_role_arn       = module.iam.step_functions_role_arn
-  feature_extraction_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
-  cluster_engine_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
-  insight_generator_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
-  audio_bucket_name             = local.audio_bucket_name
-  log_retention_days            = var.log_retention_days
+  project                          = var.project
+  environment                      = var.environment
+  step_functions_role_arn          = module.iam.step_functions_role_arn
+  feature_extraction_lambda_arn    = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
+  cluster_engine_lambda_arn        = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
+  insight_generator_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
+  developmental_tracker_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-developmental-tracker"
+  concept_decoder_lambda_arn       = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-concept-decoder"
+  speech_analyzer_lambda_arn       = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-speech-analyzer"
+  audio_bucket_name                = local.audio_bucket_name
+  enable_s3_event_trigger          = var.enable_s3_event_trigger
+  log_retention_days               = var.log_retention_days
 
   depends_on = [module.iam]
 }
@@ -204,14 +208,20 @@ module "lambda" {
   sound_cluster_table   = module.dynamodb.sound_cluster_table_name
   semantic_bridge_table = module.dynamodb.semantic_bridge_table_name
   feedback_table        = module.dynamodb.feedback_table_name
+  concept_graph_table   = module.dynamodb.concept_graph_table_name
+  milestones_table      = module.dynamodb.milestones_table_name
 
-  alpha_value                  = var.alpha_value
-  cluster_similarity_threshold = var.cluster_similarity_threshold
-  step_function_arn            = module.step_functions.state_machine_arn
-  step_function_arn_param_name = ""
-  use_bedrock                  = var.use_bedrock
-  bedrock_model_id             = var.bedrock_model_id
-  log_retention_days           = var.log_retention_days
+  alpha_value                    = var.alpha_value
+  cluster_similarity_threshold   = var.cluster_similarity_threshold
+  step_function_arn              = module.step_functions.state_machine_arn
+  step_function_arn_param_name   = ""
+  use_bedrock                    = var.use_bedrock
+  use_sagemaker_intent_endpoint  = var.use_sagemaker_intent_endpoint
+  sagemaker_intent_endpoint_name = var.sagemaker_intent_endpoint_name
+  use_transcribe_for_linguistic  = var.use_transcribe_for_linguistic
+  transcribe_timeout_seconds     = var.transcribe_timeout_seconds
+  bedrock_model_id               = var.bedrock_model_id
+  log_retention_days             = var.log_retention_days
 
   # ECR configuration
   ecr_repository_urls = module.ecr.repository_urls
@@ -271,6 +281,10 @@ module "cloudwatch" {
     module.lambda.insight_generator_function_name,
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,
+    module.lambda.nlp_processor_function_name,
+    module.lambda.developmental_tracker_function_name,
+    module.lambda.concept_decoder_function_name,
+    module.lambda.speech_analyzer_function_name,
   ]
 
   state_machine_arn            = module.step_functions.state_machine_arn

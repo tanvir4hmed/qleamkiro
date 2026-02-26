@@ -188,6 +188,39 @@ resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
   policy_arn = aws_iam_policy.lambda_bedrock.arn
 }
 
+# Lambda optional managed inference services (SageMaker Runtime + Transcribe)
+resource "aws_iam_policy" "lambda_managed_inference" {
+  name        = "${var.project}-${var.environment}-lambda-managed-inference-policy"
+  description = "Allow Lambda to call SageMaker endpoints and Amazon Transcribe jobs"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sagemaker:InvokeEndpoint"
+        ]
+        Resource = "arn:aws:sagemaker:${local.region}:${local.account_id}:endpoint/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "transcribe:StartTranscriptionJob",
+          "transcribe:GetTranscriptionJob",
+          "transcribe:DeleteTranscriptionJob"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_managed_inference" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.lambda_managed_inference.arn
+}
+
 # Lambda SSM Parameter Store access (for Step Function ARN lookup)
 resource "aws_iam_policy" "lambda_ssm" {
   name        = "${var.project}-${var.environment}-lambda-ssm-policy"

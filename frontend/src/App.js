@@ -4,6 +4,8 @@ import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import Dashboard from './pages/Dashboard';
 import SessionDetail from './pages/SessionDetail';
+import ProgressPage from './pages/ProgressPage';
+import LanguagePage from './pages/LanguagePage';
 import './App.css';
 
 function App() {
@@ -33,6 +35,8 @@ function App() {
               <Routes>
                 <Route path="/" element={<Dashboard user={user} />} />
                 <Route path="/session/:sessionId" element={<SessionDetail />} />
+                <Route path="/progress/:childId" element={<ProgressPage />} />
+                <Route path="/language/:childId" element={<LanguagePage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </main>

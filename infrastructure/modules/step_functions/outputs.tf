@@ -10,5 +10,5 @@ output "state_machine_name" {
 
 output "eventbridge_role_arn" {
   description = "ARN of the EventBridge IAM role"
-  value       = aws_iam_role.eventbridge.arn
+  value       = var.enable_s3_event_trigger ? aws_iam_role.eventbridge[0].arn : null
 }

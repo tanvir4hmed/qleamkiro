@@ -123,12 +123,16 @@ jobs:
           echo "  'apply' job in GitHub Actions to deploy."
           echo "══════════════════════════════════════════════════════"
 
-      - name: Upload plan output
-        uses: actions/upload-artifact@v4
-        with:
-          name: tf-plan-output
-          path: infrastructure/environments/dev/plan_output.txt
-          retention-days: 1
+      - name: Upload plan output to S3
+        run: |
+          echo "📤 Uploading Terraform plan to S3..."
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          S3_PATH="s3://${{ env.TF_STATE_BUCKET }}/dev-plans/${TIMESTAMP}-plan_output.txt"
+          aws s3 cp infrastructure/environments/dev/plan_output.txt "$S3_PATH"
+          echo ""
+          echo "══════════════════════════════════════════════════════"
+          echo "✅ Plan uploaded to: $S3_PATH"
+          echo "══════════════════════════════════════════════════════"
 
   # ============================================================
   # Terraform Apply — requires manual approval via
@@ -188,7 +192,7 @@ jobs:
           echo "📦 Phase 2: Checking which Lambda functions need placeholder images..."
 
           # List of Lambda function names (matching ECR repo names, underscores)
-          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
+          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler nlp_processor developmental_tracker concept_decoder speech_analyzer"
 
           PUSHED_ANY=false
 
@@ -240,3 +244,13 @@ jobs:
           echo "✅ DEV infrastructure deployed"
           terraform output 2>/dev/null || true
           echo "──────────────────────────────────────"
+          
+          # Extract frontend URL for easy access
+          FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
+          if [ -n "$FRONTEND_URL" ] && [ "$FRONTEND_URL" != "None" ]; then
+            echo ""
+            echo "══════════════════════════════════════════════════════"
+            echo "🌐 Frontend URL: $FRONTEND_URL"
+            echo "   Click to open → $FRONTEND_URL"
+            echo "══════════════════════════════════════════════════════"
+          fi

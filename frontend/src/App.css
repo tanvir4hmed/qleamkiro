@@ -28,6 +28,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 /* Dashboard */
 .dashboard { display: flex; flex-direction: column; gap: 24px; }
+
+/* Toast notifications - inline, smooth, non-jumpy */
+.dashboard-toast {
+  background: rgba(78,205,196,0.15);
+  border: 1px solid var(--primary);
+  color: var(--primary-dark);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 8px;
+  text-align: center;
+  animation: toast-fade-in 0.25s ease;
+  margin-bottom: 8px;
+}
+@keyframes toast-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 .child-section { background: var(--surface); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
 .child-selector { display: flex; gap: 8px; flex-wrap: wrap; }
 .child-btn { padding: 8px 16px; border-radius: 20px; border: 2px solid var(--border); background: var(--surface); cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; }
@@ -171,3 +189,296 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 /* Error state with better message */
 .error-state { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 60px 20px; text-align: center; }
 .error-msg { font-size: 15px; color: var(--text-muted); max-width: 300px; line-height: 1.6; }
+
+/* ── Feedback Card (gentle, optional) ── */
+.feedback-section { padding: 0; background: none; box-shadow: none; }
+.feedback-reveal { padding: 8px 0; }
+.feedback-reveal-btn { 
+  width: 100%; 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  gap: 4px; 
+  padding: 14px 20px; 
+  background: linear-gradient(135deg, rgba(78,205,196,0.08) 0%, rgba(78,205,196,0.03) 100%); 
+  border: 2px solid rgba(78,205,196,0.3); 
+  border-radius: 12px; 
+  cursor: pointer; 
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(78,205,196,0.1);
+}
+.feedback-reveal-btn:hover { 
+  border-color: var(--primary); 
+  background: linear-gradient(135deg, rgba(78,205,196,0.15) 0%, rgba(78,205,196,0.08) 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(78,205,196,0.15);
+}
+.feedback-reveal-btn > span:first-child { font-size: 15px; font-weight: 600; color: var(--primary); }
+.feedback-reveal-hint { font-size: 12px; color: var(--text-muted); }
+
+/* Feedback Modal Overlay */
+.feedback-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fade-in 0.2s ease;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.feedback-modal {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 48px rgba(0,0,0,0.2);
+  width: min(480px, 94vw);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: modal-slide-up 0.25s ease;
+}
+@keyframes modal-slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.feedback-form-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.feedback-form-title { font-size: 17px; font-weight: 600; color: var(--text); }
+.feedback-skip-btn { background: none; border: none; font-size: 14px; color: var(--text-muted); cursor: pointer; padding: 6px 12px; border-radius: 6px; }
+.feedback-skip-btn:hover { color: var(--text); background: var(--bg); }
+.feedback-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); }
+.feedback-optional { font-weight: 400; font-style: italic; }
+.notes-input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-family: inherit; resize: vertical; line-height: 1.5; color: var(--text); background: var(--bg); }
+.notes-input:focus { outline: none; border-color: var(--primary); }
+.feedback-error { font-size: 13px; color: #c0392b; margin-bottom: 8px; }
+
+/* ── Session Context Card ── */
+.context-card { width: 100%; max-width: 420px; border: 1px dashed var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 4px; background: var(--surface); }
+.context-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 10px 14px; background: none; border: none; cursor: pointer; font-size: 13px; color: var(--text-muted); text-align: left; transition: background 0.15s; }
+.context-toggle:hover { background: var(--bg); }
+.context-toggle.open { color: var(--primary); border-bottom: 1px dashed var(--border); }
+.context-toggle-icon { font-size: 11px; flex-shrink: 0; }
+.context-toggle-hint { font-size: 11px; color: var(--text-muted); margin-left: 2px; opacity: 0.75; }
+.context-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+.context-fields { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.context-group { display: flex; flex-direction: column; gap: 6px; }
+.context-group-label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.context-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.context-chip { padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.context-chip:hover { border-color: var(--primary); color: var(--primary); }
+.context-chip.selected { border-color: var(--primary); background: rgba(78,205,196,0.10); color: var(--primary); font-weight: 600; }
+.context-inspire { font-size: 11px; color: var(--text-muted); font-style: italic; line-height: 1.5; padding-top: 4px; }
+
+/* Concept chips — personal concept graph picker (Phase 5, LINGUISTIC stage) */
+.concept-chips-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.concept-chip { padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.concept-chip:hover { border-color: var(--primary); color: var(--primary); }
+.concept-chip.selected { border-color: var(--primary); background: rgba(78,205,196,0.12); color: var(--primary); font-weight: 600; }
+
+/* ── Developmental View (Phase 6) ── */
+.developmental-section { padding: 0; background: none; box-shadow: none; }
+.developmental-view { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.developmental-toggle { width: 100%; display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: none; border: none; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-muted); text-align: left; transition: background 0.15s; }
+.developmental-toggle:hover { background: var(--bg); }
+.developmental-toggle-label { flex: 1; }
+.developmental-toggle-arrow { font-size: 11px; }
+.milestone-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.developmental-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--border); }
+.developmental-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.developmental-key { font-size: 12px; color: var(--text-muted); width: 120px; flex-shrink: 0; }
+.stage-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 12px; background: rgba(78,205,196,0.12); color: var(--primary); font-size: 12px; font-weight: 600; }
+.stage-age-range { font-weight: 400; opacity: 0.75; font-size: 11px; }
+.cbr-bar-wrap { display: flex; align-items: center; gap: 10px; flex: 1; }
+.cbr-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; min-width: 80px; }
+.cbr-bar-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.4s ease; }
+.cbr-bar-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.phi-indicator { font-size: 13px; color: var(--text); font-style: italic; }
+.milestone-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.milestone-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; background: rgba(255,107,107,0.10); color: var(--accent); font-size: 12px; font-weight: 500; }
+
+/* ── Concept Decode Section (Phase 6) ── */
+.concept-decode-section h2 { font-size: 16px; }
+.concept-decode-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.concept-decode-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 13px; color: var(--text); }
+.concept-conf { font-size: 11px; color: var(--text-muted); }
+.unknown-cluster-msg { margin-top: 10px; font-size: 13px; color: var(--text-muted); font-style: italic; }
+
+/* ── Journey button (Dashboard child selector) ── */
+.child-btn.journey-btn { border-color: var(--primary); color: var(--primary); }
+.child-btn.journey-btn:hover { background: var(--primary); color: white; }
+
+/* ── Progress Page ── */
+.progress-page { display: flex; flex-direction: column; gap: 20px; }
+.progress-page h1 { font-size: 22px; font-weight: 700; }
+.progress-empty { font-size: 14px; color: var(--text-muted); font-style: italic; }
+
+/* Snapshot */
+.progress-snapshot { display: flex; flex-direction: column; gap: 10px; }
+.progress-snapshot-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cbr-snapshot-label { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.cbr-snapshot-pct { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+
+/* CBR history chart */
+.cbr-history-chart h2 { font-size: 16px; margin-bottom: 12px; }
+.cbr-history-rows { display: flex; flex-direction: column; gap: 8px; }
+.cbr-history-row { display: flex; align-items: center; gap: 10px; }
+.cbr-history-label { font-size: 12px; color: var(--text-muted); width: 90px; flex-shrink: 0; text-align: right; }
+.cbr-history-bar-wrap { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.cbr-history-bar-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width 0.4s ease; }
+.cbr-history-pct { font-size: 12px; color: var(--text-muted); width: 34px; flex-shrink: 0; }
+
+/* Milestone log */
+.milestone-log-section h2 { font-size: 16px; margin-bottom: 12px; }
+.milestone-log { display: flex; flex-direction: column; gap: 10px; }
+.milestone-log-item { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.milestone-log-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.milestone-log-date { font-size: 12px; color: var(--text-muted); }
+.milestone-log-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+/* ── Speech Analysis Panel (Phase 7) ── */
+.speech-analysis-section { padding: 0; background: none; box-shadow: none; }
+.speech-analysis-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 12px; }
+.speech-analysis-panel h2 { font-size: 16px; font-weight: 600; }
+.speech-mlu-row { display: flex; align-items: center; gap: 10px; }
+.speech-mlu-label { font-size: 13px; color: var(--text-muted); width: 160px; flex-shrink: 0; }
+.speech-mlu-value { font-size: 14px; font-weight: 600; color: var(--text); }
+.speech-mlu-delta { font-size: 12px; color: var(--primary); font-weight: 500; }
+.pragmatic-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; color: white; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.fluency-row { display: flex; align-items: center; gap: 10px; }
+.fluency-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.fluency-bar-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.4s ease; }
+.fluency-pct { font-size: 12px; color: var(--text-muted); width: 34px; flex-shrink: 0; }
+.speech-milestones { border-top: 1px solid var(--border); padding-top: 10px; }
+.speech-milestones-title { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.speech-milestone-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.speech-milestone-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; background: rgba(255,107,107,0.10); color: var(--accent); font-size: 12px; font-weight: 500; }
+
+/* ── Phase 9 — Session Detail personalisation ── */
+.health-flag { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1.5px solid; border-radius: 10px; font-size: 13px; font-weight: 500; background: rgba(255,255,255,0.6); }
+.health-flag-icon { font-size: 15px; }
+.context-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+.context-note-icon { flex-shrink: 0; font-size: 14px; margin-top: 1px; }
+
+/* ── Dashboard redesign (Phase 10) ── */
+.child-section-header { display: flex; align-items: flex-start; gap: 8px; }
+.child-selector { flex: 1; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Settings icon */
+.settings-icon-btn { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 16px; color: var(--text-muted); line-height: 1; flex-shrink: 0; transition: background 0.15s; }
+.settings-icon-btn:hover { background: var(--bg); color: var(--text); }
+
+/* Child navigation bar (Journey / Language) */
+.child-nav-bar { display: flex; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.child-nav-btn { padding: 6px 14px; border-radius: 20px; border: 1.5px solid var(--primary); background: transparent; color: var(--primary); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+.child-nav-btn:hover { background: var(--primary); color: white; }
+.child-nav-btn--language { border-color: #a29bfe; color: #6c5ce7; }
+.child-nav-btn--language:hover { background: #a29bfe; color: white; }
+
+/* Settings overlay + panel - anchored to settings button */
+.settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 200; display: flex; align-items: flex-start; justify-content: flex-end; padding: 70px 16px 16px 16px; }
+.settings-panel { background: var(--surface); border-radius: var(--radius); box-shadow: 0 8px 32px rgba(0,0,0,0.16); width: min(360px, 94vw); max-height: calc(100vh - 100px); overflow-y: auto; display: flex; flex-direction: column; margin-right: 0; }
+.settings-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+.settings-header h2 { font-size: 18px; font-weight: 700; }
+.settings-close-btn { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--text-muted); padding: 4px 8px; border-radius: 6px; }
+.settings-close-btn:hover { background: var(--bg); }
+.settings-section { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.settings-section:last-child { border-bottom: none; }
+.settings-section h3 { font-size: 14px; font-weight: 600; color: var(--text); }
+.settings-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.settings-form { display: flex; flex-direction: column; gap: 8px; }
+.settings-input { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; width: 100%; background: var(--bg); }
+.settings-select { appearance: none; cursor: pointer; }
+.settings-dob-label { font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+.settings-action-btn { padding: 9px 14px; border-radius: 8px; border: none; font-size: 14px; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
+.settings-action-btn:disabled { opacity: 0.45; cursor: default; }
+.settings-action-btn--primary { background: var(--primary); color: white; }
+.settings-action-btn--primary:hover:not(:disabled) { background: var(--primary-dark); }
+.settings-action-btn--danger { background: var(--accent); color: white; }
+.settings-action-btn--danger:hover:not(:disabled) { opacity: 0.85; }
+.settings-error { font-size: 12px; color: var(--accent); background: rgba(255,107,107,0.08); border-radius: 6px; padding: 6px 10px; }
+/* Settings toggle row — Add / Remove buttons revealed on click */
+.settings-toggle-row { display: flex; gap: 8px; padding: 14px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.settings-toggle-btn { flex: 1; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border); background: var(--bg); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; color: var(--text); }
+.settings-toggle-btn:hover { border-color: var(--primary); color: var(--primary); }
+.settings-toggle-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+.settings-toggle-btn--danger { color: var(--accent); border-color: var(--accent); }
+.settings-toggle-btn--danger:hover { background: rgba(255,107,107,0.08); }
+.settings-toggle-btn--danger.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+/* Recording min-duration message */
+.recording-min-msg { font-size: 12px; color: var(--text-muted); text-align: center; margin: 4px 0; font-style: italic; }
+.stop-btn--dim { opacity: 0.6; }
+
+/* birth-date helpers */
+.birth-date-label { font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+.birth-date-required { color: var(--accent); font-weight: 600; }
+
+/* Phase 10 — session type label */
+.session-type-label { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary); margin-top: -6px; margin-bottom: 4px; }
+
+/* Phase 10 — transcript field */
+.transcript-input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; resize: vertical; font-family: inherit; min-height: 56px; background: var(--bg); }
+.transcript-primary-hint { font-size: 12px; color: var(--primary); margin-top: 4px; }
+
+/* ── Phase 9 — Progress Page additions ── */
+.trend-chart-section h2 { font-size: 16px; margin-bottom: 4px; }
+.language-section-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; font-style: italic; line-height: 1.5; }
+.trend-rows { display: flex; flex-direction: column; gap: 8px; }
+.trend-row { display: flex; align-items: center; gap: 10px; }
+.trend-label { font-size: 12px; color: var(--text-muted); width: 90px; flex-shrink: 0; text-align: right; }
+.mini-history-bar-wrap { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.mini-history-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.trend-value { font-size: 12px; color: var(--text-muted); width: 44px; flex-shrink: 0; text-align: right; }
+
+/* Timeline */
+.timeline-section h2 { font-size: 16px; margin-bottom: 12px; }
+.timeline { display: flex; flex-direction: column; gap: 0; position: relative; }
+.timeline::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+.timeline-event { display: flex; align-items: flex-start; gap: 14px; padding: 8px 0; position: relative; }
+.timeline-event:hover .timeline-body { background: rgba(78,205,196,0.04); border-radius: 8px; }
+.timeline-dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); flex-shrink: 0; z-index: 1; margin-top: 2px; }
+.timeline-event--milestone .timeline-dot { background: rgba(255,107,107,0.15); border-color: var(--accent); }
+.timeline-event--session .timeline-dot { background: rgba(78,205,196,0.12); border-color: var(--primary); }
+.timeline-body { flex: 1; padding: 4px 8px; }
+.timeline-label { font-size: 14px; font-weight: 500; color: var(--text); line-height: 1.4; }
+.timeline-milestone-star { color: var(--accent); }
+.timeline-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+.timeline-date { font-size: 12px; color: var(--text-muted); }
+.timeline-stage { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: rgba(78,205,196,0.10); color: var(--primary); font-weight: 500; }
+.timeline-conf { font-size: 11px; color: var(--text-muted); }
+
+/* ── Phase 9 — Language Page ── */
+.language-page { display: flex; flex-direction: column; gap: 20px; }
+.language-page h1 { font-size: 22px; font-weight: 700; }
+.language-page-subtitle { font-size: 14px; color: var(--text-muted); margin-top: -16px; }
+.language-section { display: flex; flex-direction: column; gap: 10px; }
+.language-section h2 { font-size: 16px; font-weight: 600; }
+
+/* Signal cards */
+.signal-list { display: flex; flex-direction: column; gap: 8px; }
+.signal-list--muted { opacity: 0.75; }
+.signal-card { padding: 12px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--surface); display: flex; flex-direction: column; gap: 5px; }
+.signal-card--crystallized { border-color: rgba(78,205,196,0.4); background: rgba(78,205,196,0.04); }
+.signal-card--candidate { border-color: rgba(253,203,110,0.4); background: rgba(253,203,110,0.04); }
+.signal-card-header { display: flex; align-items: center; gap: 8px; }
+.signal-icon { font-size: 14px; color: var(--text-muted); flex-shrink: 0; }
+.signal-label { font-size: 14px; font-weight: 600; color: var(--text); flex: 1; }
+.signal-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.signal-confirmed { background: rgba(78,205,196,0.15); color: var(--primary-dark); }
+.signal-candidate { background: rgba(253,203,110,0.20); color: #b8860b; }
+.signal-heard { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+.signal-card-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.signal-meta-sep { opacity: 0.4; }
+.signal-description { font-size: 12px; color: var(--text-muted); font-style: italic; line-height: 1.5; }
+
+/* Vocabulary chips */
+.vocab-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.vocab-chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 13px; color: var(--text); }
+.vocab-chip-star { color: var(--primary); font-size: 10px; }

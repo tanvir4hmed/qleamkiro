@@ -1,0 +1,43 @@
+What Each Document Contains
+PHD_RESEARCH_FRAMEWORK.md
+Structured as a proper thesis proposal:
+
+Structured abstract (background / problem / approach / contributions / impact)
+Critical literature review — Wolff (1969), Wasz-Hockert (1968), Thelen & Smith (1994), Smith & Yu (2008), Oller (1980), McMahan FedAvg, Spelke concept learning, Tenenbaum Bayesian cognition — all cited properly
+Five formal Research Questions (RQ1–RQ5)
+Seven formal novel contributions each with novelty statement and contribution to knowledge
+Evaluation strategy per RQ with metrics and baselines
+Ethics section covering GDPR Article 6, COPPA, UK DPA 2018, IRB, clinical responsibility boundary, algorithmic fairness
+30+ APA-formatted references
+TECHNICAL_PIPELINE.md
+Full ASCII system architecture diagram
+Three pipeline stages (pre-linguistic / transition / linguistic) with what changes at each
+Every layer (0–9) with input JSON schema, processing algorithm, output schema, error conditions
+Directed dependency graph — which component feeds which
+Four-dataset ecosystem (old research → population model → individual model → private language)
+Cold start solution — how session 1 is not zero accuracy
+Concept graph DynamoDB schema and all graph operations as pseudocode
+Stream decoder real-time algorithm
+Federated learning with differential privacy
+AWS infrastructure cost model per session
+7 identified gaps from initial audio science discussions with formal recommendations
+SCIENTIFIC_MATHEMATICS.md
+PhD-quality with numbered equations (1.1 → 12.16), theorems, propositions, lemmas:
+
+Theorem 3.1 (Acoustic Separability) — proves with error bounds that infant and adult vocal tracts are statistically separable. Corollary: P(infant | VTL < 12cm) > 0.995
+Theorem 8.1 — proves trust score (FRS) converges, with rate bound
+Corollary 8.1 — adversarial parent reaches near-zero trust in 10 sessions (mathematically provable)
+Theorem 10.1 — (ε=1.0, δ=1e-5) differential privacy guarantee for federated model
+Theorem 10.2 — O(1/√T) convergence bound for federated learning
+Theorem 11.1 (Acoustic Individuality) — bounds two-baby confusion probability < 1% after 20 sessions
+Theorem 11.2 (Minimum Observation) — formally derives minimum sessions for reliable concept-cluster mapping ≈ 13 sessions
+Phase transition scaling laws and susceptibility divergence — directly testable empirical hypotheses
+New proposed methods: Trust-Weighted Kalman Filter, Developmental Trajectory ODE, Cross-Modal Acoustic-Semantic Embedding
+7 Gaps Identified (From Initial Audio Science Discussion Not Yet Fully Incorporated)
+Glottal Inverse Filtering (IAIF) — VTL estimation breaks down in extreme pain cry; IAIF restores it
+Developmental heterogeneity in φ thresholds — single language emergence threshold needs to be per-cohort (fast vs slow developers)
+Lombard Effect correction — current linear approximation should use psychoacoustic literature models
+Caregiver learning rate — parents themselves become more accurate over time; the trust system should model this
+Cross-cultural prior mixture model — non-Western caregiving contexts need separate research priors (carrying cultures vs crib cultures have different dyadic patterns)
+Raw audio deletion decision — 30-day deletion prevents future re-analysis when better models arrive; needs explicit consent architecture for longer retention
+GNN message-passing equations — the concept graph GNN recommendation needs full mathematical specification before implementation

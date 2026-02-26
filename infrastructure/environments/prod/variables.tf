@@ -79,6 +79,36 @@ variable "use_bedrock" {
   default     = true
 }
 
+variable "use_sagemaker_intent_endpoint" {
+  description = "Use SageMaker endpoint override for infant intent acoustic scores"
+  type        = bool
+  default     = false
+}
+
+variable "sagemaker_intent_endpoint_name" {
+  description = "SageMaker endpoint name for infant intent model"
+  type        = string
+  default     = ""
+}
+
+variable "use_transcribe_for_linguistic" {
+  description = "Use Amazon Transcribe for linguistic-mode transcripts"
+  type        = bool
+  default     = false
+}
+
+variable "transcribe_timeout_seconds" {
+  description = "Timeout in seconds for Transcribe polling"
+  type        = number
+  default     = 25
+}
+
+variable "enable_s3_event_trigger" {
+  description = "Whether S3 uploads should auto-trigger the Step Functions pipeline"
+  type        = bool
+  default     = false
+}
+
 variable "bedrock_model_id" {
   description = "Bedrock model ID"
   type        = string

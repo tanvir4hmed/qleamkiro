@@ -5,6 +5,59 @@ import { API_BASE_URL } from '../aws-config';
 import InsightPanel from '../components/InsightPanel';
 import FeedbackForm from '../components/FeedbackForm';
 import FeatureChart from '../components/FeatureChart';
+import DevelopmentalView from '../components/DevelopmentalView';
+import SpeechAnalysisPanel from '../components/SpeechAnalysisPanel';
+
+const HEALTH_FLAG_LABELS = {
+  sick: { label: 'Feeling unwell today', color: '#FF6B6B' },
+  other: { label: 'Extra care context noted', color: '#FFE66D' },
+  teething: { label: 'Teething', color: '#fd79a8' },
+};
+
+const CONTEXT_LABELS = {
+  feeding_minutes_ago: {
+    15: 'just ate',
+    45: 'ate about 30–60 min ago',
+    90: 'ate about an hour ago',
+    150: 'it\'s been over 2 hours since eating',
+  },
+  health_state: {
+    healthy: 'doing well',
+    well: 'doing well',
+    sick: 'not feeling well',
+    fussy: 'a bit fussy',
+    tired: 'tired',
+    other: 'needing extra care',
+    teething: 'teething',
+  },
+  environment: {
+    home_quiet: 'at home in a quiet space',
+    quiet: 'at home in a quiet space',
+    home_noisy: 'in a noisier environment',
+    noisy: 'in a noisier environment',
+    car: 'in transit',
+    travel: 'travelling',
+    outdoor: 'outdoors',
+  },
+};
+
+function ContextNote({ ctx }) {
+  if (!ctx || !Object.keys(ctx).length) return null;
+  const parts = [];
+  if (ctx.feeding_minutes_ago != null)
+    parts.push(CONTEXT_LABELS.feeding_minutes_ago[ctx.feeding_minutes_ago] || `last ate ${ctx.feeding_minutes_ago} min ago`);
+  if (ctx.health_state && CONTEXT_LABELS.health_state[ctx.health_state])
+    parts.push(CONTEXT_LABELS.health_state[ctx.health_state]);
+  if (ctx.environment && CONTEXT_LABELS.environment[ctx.environment])
+    parts.push(CONTEXT_LABELS.environment[ctx.environment]);
+  if (!parts.length) return null;
+  return (
+    <div className="context-note">
+      <span className="context-note-icon">📌</span>
+      Context: {parts.join(', ')}.
+    </div>
+  );
+}
 
 function SessionDetail() {
   const { sessionId } = useParams();
@@ -14,6 +67,14 @@ function SessionDetail() {
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [error, setError] = useState(null);
   const [feedbackError, setFeedbackError] = useState(null);
+
+  // Resolve child name from localStorage cache (populated by Dashboard)
+  const getChildName = (childId) => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('qleam_children') || '[]');
+      return cached.find(c => c.child_id === childId)?.name || '';
+    } catch (_) { return ''; }
+  };
 
   const getAuthHeaders = async () => {
     const s = await fetchAuthSession();
@@ -61,9 +122,12 @@ function SessionDetail() {
   const handleFeedback = async (feedbackData) => {
     setFeedbackError(null);
     try {
+      const developmentalStage = session?.insight?.developmental_stage || '';
+      const payload = { ...feedbackData };
+      if (developmentalStage) payload.developmental_stage = developmentalStage;
       await apiCall(`/session/${sessionId}/feedback`, {
         method: 'POST',
-        body: JSON.stringify(feedbackData),
+        body: JSON.stringify(payload),
       });
       setFeedbackSubmitted(true);
     } catch (err) {
@@ -71,11 +135,14 @@ function SessionDetail() {
     }
   };
 
+  // Derive child name: from session data (API v2) or localStorage fallback
+  const childName = session?.child_name || getChildName(session?.child_id || '');
+
   if (loading) {
     return (
       <div className="session-detail loading-state">
         <div className="spinner" />
-        <p>Analyzing your baby's sounds...</p>
+        <p>Analyzing your baby's sounds…</p>
         <p className="loading-sub">This usually takes 10–20 seconds</p>
       </div>
     );
@@ -91,18 +158,40 @@ function SessionDetail() {
   }
 
   const insight = session?.insight;
+  const sessionCtx = session?.session_context;
+  const healthFlag = HEALTH_FLAG_LABELS[sessionCtx?.health_state];
+
+  // Phase 10: stage-aware insight section label
+  const sessionTypeLabel = session?.session_type_label || (() => {
+    const stage = insight?.developmental_stage || session?.developmental_stage || '';
+    if (['EARLY_SENTENCES'].includes(stage)) return 'Language Session';
+    if (['FIRST_WORDS', 'WORD_COMBINATIONS'].includes(stage)) return 'Communication Session';
+    return 'Vocalization Analysis';
+  })();
 
   return (
     <div className="session-detail">
       <button className="back-btn" onClick={() => navigate('/')}>← Back</button>
 
-      <h1>Session Analysis</h1>
+      <h1>{childName ? `${childName}'s Session` : 'Session Analysis'}</h1>
+      <p className="session-type-label">{sessionTypeLabel}</p>
       <p className="session-time">{new Date(session?.timestamp).toLocaleString()}</p>
+
+      {/* Health flag — shown when parent reported being unwell / fussy */}
+      {healthFlag && (
+        <div className="health-flag" style={{ borderColor: healthFlag.color, color: healthFlag.color }}>
+          <span className="health-flag-icon">⚠</span> {healthFlag.label} — keep this in mind when interpreting the insight.
+        </div>
+      )}
+
+      {/* Context acknowledgment */}
+      <ContextNote ctx={sessionCtx} />
 
       {insight && (
         <>
-          {/* Feature Chart */}
-          {insight.observed_pattern && (
+          {/* Feature Chart — show whenever acoustic data was computed (not rejected) */}
+          {insight.observed_pattern &&
+           insight.insight_sections?.source !== 'quality-rejection' && (
             <section className="feature-section">
               <h2>Acoustic Features</h2>
               <FeatureChart features={insight.observed_pattern} />
@@ -113,6 +202,49 @@ function SessionDetail() {
           <section className="insight-section">
             <InsightPanel insight={insight} />
           </section>
+
+          {/* Developmental snapshot — only shown when audio quality passed */}
+          {session?.developmental_view &&
+           insight.insight_sections?.source !== 'quality-rejection' && (
+            <section className="developmental-section">
+              <DevelopmentalView data={session.developmental_view} />
+            </section>
+          )}
+
+          {/* Speech analysis (Phase 7 — LINGUISTIC mode only) */}
+          {session?.speech_analysis && (
+            <section className="speech-analysis-section">
+              <SpeechAnalysisPanel data={session.speech_analysis} />
+            </section>
+          )}
+
+          {/* Concept chips (Phase 6) — only shown when parent has confirmed evidence */}
+          {(() => {
+            const cd = session?.concept_decode;
+            // Filter to concepts with actual parent-confirmed evidence
+            const evidenced = (cd?.top_concepts || []).filter(c => c.evidence_count > 0);
+            if (!cd || evidenced.length === 0) return null;
+            return (
+              <section className="concept-decode-section">
+                <h2>Concepts Your Baby May Be Expressing</h2>
+                <div className="concept-decode-chips">
+                  {evidenced.map(c => (
+                    <span key={c.label} className="concept-decode-chip">
+                      {c.label}
+                      <span className="concept-conf">
+                        {(c.confidence * 100).toFixed(0)}%
+                      </span>
+                    </span>
+                  ))}
+                </div>
+                {cd.is_unknown_cluster && (
+                  <p className="unknown-cluster-msg">
+                    {cd.unknown_flag_message}
+                  </p>
+                )}
+              </section>
+            );
+          })()}
 
           {/* Semantic Alignment */}
           {insight.semantic_alignment && (
@@ -127,19 +259,23 @@ function SessionDetail() {
             </section>
           )}
 
-          {/* Feedback */}
+          {/* Feedback — optional, gentle */}
           {!feedbackSubmitted ? (
             <section className="feedback-section">
-              <h2>Did this help?</h2>
-              <p>Your feedback helps Qleam learn your baby's patterns</p>
               {feedbackError && (
                 <p className="feedback-error">{feedbackError}</p>
               )}
-              <FeedbackForm onSubmit={handleFeedback} />
+              <FeedbackForm
+                onSubmit={handleFeedback}
+                developmentalStage={session?.insight?.developmental_stage}
+                intentKey={insight?.probable_intent?.key}
+                childId={session?.child_id}
+                apiCall={apiCall}
+              />
             </section>
           ) : (
             <div className="feedback-thanks">
-              ✓ Thank you! Your feedback helps improve future insights.
+              ✓ Thank you — this helps Qleam understand your baby better.
             </div>
           )}
 

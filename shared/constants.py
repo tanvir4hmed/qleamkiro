@@ -47,6 +47,9 @@ SESSION_TABLE: str = os.environ.get("SESSION_TABLE", "qleam-dev-Session")
 SOUND_CLUSTER_TABLE: str = os.environ.get("SOUND_CLUSTER_TABLE", "qleam-dev-SoundCluster")
 SEMANTIC_BRIDGE_TABLE: str = os.environ.get("SEMANTIC_BRIDGE_TABLE", "qleam-dev-SemanticBridge")
 FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
+CONCEPT_GRAPH_TABLE: str = os.environ.get("CONCEPT_GRAPH_TABLE", "qleam-dev-ConceptGraph")
+MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones")
+POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
 
 # =============================================================================
 # S3
@@ -63,6 +66,17 @@ STEP_FUNCTION_ARN: str = os.environ.get("STEP_FUNCTION_ARN", "")
 # =============================================================================
 BEDROCK_MODEL_ID: str = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-5-haiku-20241022-v1:0")
 USE_BEDROCK: bool = os.environ.get("USE_BEDROCK", "true").lower() == "true"
+
+# =============================================================================
+# Optional AWS Managed Inference Services
+# =============================================================================
+# Cry/intent custom model endpoint (SageMaker real-time inference).
+USE_SAGEMAKER_INTENT_ENDPOINT: bool = os.environ.get("USE_SAGEMAKER_INTENT_ENDPOINT", "false").lower() == "true"
+SAGEMAKER_INTENT_ENDPOINT_NAME: str = os.environ.get("SAGEMAKER_INTENT_ENDPOINT_NAME", "")
+
+# Speech transcription for linguistic sessions (Amazon Transcribe).
+USE_TRANSCRIBE_FOR_LINGUISTIC: bool = os.environ.get("USE_TRANSCRIBE_FOR_LINGUISTIC", "false").lower() == "true"
+TRANSCRIBE_TIMEOUT_SECONDS: int = int(os.environ.get("TRANSCRIBE_TIMEOUT_SECONDS", "25"))
 
 # =============================================================================
 # Environment
@@ -104,3 +118,70 @@ DISCLAIMER = (
     "Qleam provides probabilistic interpretations to support parental awareness. "
     "Always consult a healthcare professional for medical concerns."
 )
+
+# =============================================================================
+# Developmental Stages (Phase 1)
+# Each entry: (min_days_inclusive, max_days_inclusive, stage_name, mode)
+# mode: PRE_LINGUISTIC | TRANSITION | LINGUISTIC
+# =============================================================================
+DEVELOPMENTAL_STAGE_MAP = [
+    (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
+    (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
+    (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
+    (271,  365,  "PROTO_WORDS",       "TRANSITION"),
+    (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
+    (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
+    (731,  99999, "EARLY_SENTENCES",  "LINGUISTIC"),
+]
+
+# =============================================================================
+# Audio Quality Gate Thresholds (Phase 1 — Layer 0)
+# Spec: TECHNICAL_PIPELINE.md Layer 0 / SCIENTIFIC_MATHEMATICS.md Section 1
+# =============================================================================
+QUALITY_MIN_DURATION_SECONDS: float = 3.0   # Was 2.0 — spec: Layer 0 gate
+QUALITY_MAX_DURATION_SECONDS: float = 600.0  # Was 60 — spec: Layer 0 gate max 600s
+QUALITY_MIN_SNR_DB: float = 10.0            # Was 5.0  — spec: Layer 0 gate
+QUALITY_MAX_SILENCE_RATIO: float = 0.80     # Was 0.85 — spec: Layer 0 gate
+QUALITY_MAX_CLIPPING_RATIO: float = 0.005   # Was 0.05 — spec: Layer 0 gate (0.5%)
+LOMBARD_NOISE_FLOOR_DB: float = -30.0       # Above this → Lombard effect warning
+
+# =============================================================================
+# Milestone Types (Phase 6)
+# =============================================================================
+MILESTONE_TYPES = {
+    "FIRST_CANONICAL_BABBLE":     "First session with CBR > 0.20",
+    "FIRST_PROTO_WORD_CANDIDATE": "First cluster meeting proto-word criteria",
+    "FIRST_CONFIRMED_PROTO_WORD": "Cluster promoted to established signal",
+    "LINGUISTIC_MODE_TRANSITION": "First session in LINGUISTIC mode",
+    "CONCEPT_GRAPH_10_NODES":     "Personal concept graph reached 10 confirmed concepts",
+    "CONCEPT_GRAPH_25_NODES":     "Personal concept graph reached 25 confirmed concepts",
+    "FIRST_MLU_2":                "Estimated MLU reached 2.0 (two-morpheme utterances)",
+    "FIRST_MLU_3":                "Estimated MLU reached 3.0 (three-morpheme utterances)",
+    "VOCAB_SIZE_20":              "Confirmed vocabulary reached 20 concepts",
+    "VOCAB_SIZE_50":              "Confirmed vocabulary reached 50 concepts",
+}
+
+PRAGMATIC_TYPES = ["declaration", "request", "question", "exclamation"]
+
+# =============================================================================
+# Biological Validation Thresholds (Phase 1 — Layer 1)
+# Spec: SCIENTIFIC_MATHEMATICS.md Theorem 3.1 / TECHNICAL_PIPELINE.md Layer 1
+# =============================================================================
+VTL_INFANT_MAX_CM: float = 13.0       # Was 12.0 — Bayesian-optimal per Theorem 3.1
+VTL_UNCERTAIN_MIN_CM: float = 12.5    # 12.5–13.0 → UNCERTAIN band
+VTL_SPEED_OF_SOUND_CM_S: float = 34300.0  # Deprecated: use temperature-corrected value
+VTL_AMBIENT_TEMP_C: float = 20.0      # Default ambient temperature for c(T) calc
+INFANT_F0_MIN_HZ: float = 250.0       # Was 200 — spec: adult threshold ≥ 250 Hz (Theorem 3.1)
+STRONG_INFANT_F0_HZ: float = 300.0    # Above this → strong infant signal
+
+# =============================================================================
+# Federated Learning (Phase 8 — FIVL)
+# Spec: SCIENTIFIC_MATHEMATICS.md Section 10, Theorem 10.1-10.2
+# =============================================================================
+FL_EPSILON: float = 1.0          # Differential privacy ε (privacy budget)
+FL_DELTA: float = 1e-5           # Differential privacy δ (failure probability)
+FL_MIN_PARTICIPANTS: int = 10    # Minimum sessions per stage before aggregation
+FL_FRS_QUALITY_GATE: float = 0.60   # Minimum FRS for session to be included
+FL_DELTA_QUALITY_GATE: float = 0.65  # Minimum delta_score for session to be included
+FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor — never fully replaced by FL
+FL_ROUND_INTERVAL_HOURS: int = 24    # How often aggregation runs (via EventBridge)

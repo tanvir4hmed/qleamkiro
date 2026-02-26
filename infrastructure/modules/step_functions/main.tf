@@ -8,7 +8,7 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
   role_arn = var.step_functions_role_arn
 
   definition = jsonencode({
-    Comment = "Qleam audio processing pipeline: Feature Extraction → Cluster Engine → Semantic Bridge → Insight Generator"
+    Comment = "Qleam audio processing pipeline with fast-reject short-circuit for critical-quality sessions"
     StartAt = "FeatureExtraction"
 
     States = {
@@ -17,9 +17,10 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Resource = var.feature_extraction_lambda_arn
         Comment  = "Extract acoustic features from uploaded audio"
         Parameters = {
-          "child_id.$"      = "$.child_id"
-          "session_id.$"    = "$.session_id"
-          "s3_audio_path.$" = "$.s3_audio_path"
+          "child_id.$"        = "$.child_id"
+          "session_id.$"      = "$.session_id"
+          "s3_audio_path.$"   = "$.s3_audio_path"
+          "session_context.$" = "$.session_context"
         }
         ResultPath = "$.feature_result"
         Retry = [
@@ -37,7 +38,47 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
             ResultPath  = "$.error"
           }
         ]
-        Next = "ClusterEngine"
+        Next = "ShouldFastReject"
+      }
+
+      ShouldFastReject = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable      = "$.feature_result.fast_reject"
+            BooleanEquals = true
+            Next          = "InsightGeneratorFastReject"
+          }
+        ]
+        Default = "ClusterEngine"
+      }
+
+      InsightGeneratorFastReject = {
+        Type     = "Task"
+        Resource = var.insight_generator_lambda_arn
+        Comment  = "Generate immediate rejection insight and stop for critical-quality sessions"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id"   = ""
+        }
+        ResultPath = "$.insight_result"
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+            IntervalSeconds = 2
+            MaxAttempts     = 2
+            BackoffRate     = 2
+          }
+        ]
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "ProcessingFailed"
+            ResultPath  = "$.error"
+          }
+        ]
+        Next = "ProcessingComplete"
       }
 
       ClusterEngine = {
@@ -73,9 +114,9 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Resource = var.insight_generator_lambda_arn
         Comment  = "Generate structured insight from session state"
         Parameters = {
-          "child_id.$"    = "$.child_id"
-          "session_id.$"  = "$.session_id"
-          "cluster_id.$"  = "$.cluster_result.cluster_id"
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
         }
         ResultPath = "$.insight_result"
         Retry = [
@@ -93,11 +134,71 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
             ResultPath  = "$.error"
           }
         ]
+        Next = "DevelopmentalTracker"
+      }
+
+      DevelopmentalTracker = {
+        Type     = "Task"
+        Resource = var.developmental_tracker_lambda_arn
+        Comment  = "Track CBR trend, VTL growth, φ order parameter, and milestone logging"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
+        }
+        ResultPath = "$.developmental_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "ConceptDecoder"
+            ResultPath  = "$.developmental_error"
+          }
+        ]
+        Next = "ConceptDecoder"
+      }
+
+      ConceptDecoder = {
+        Type     = "Task"
+        Resource = var.concept_decoder_lambda_arn
+        Comment  = "Decode concept graph for session and check proto-word crystallization"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
+        }
+        ResultPath = "$.concept_decode_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "SpeechAnalyzer"
+            ResultPath  = "$.concept_decode_error"
+          }
+        ]
+        Next = "SpeechAnalyzer"
+      }
+
+      SpeechAnalyzer = {
+        Type     = "Task"
+        Resource = var.speech_analyzer_lambda_arn
+        Comment  = "Language development analysis for LINGUISTIC-mode sessions (non-fatal)"
+        Parameters = {
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
+        }
+        ResultPath = "$.speech_analysis_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "ProcessingComplete"
+            ResultPath  = "$.speech_analysis_error"
+          }
+        ]
         Next = "ProcessingComplete"
       }
 
       ProcessingComplete = {
-        Type = "Succeed"
+        Type    = "Succeed"
         Comment = "Pipeline completed successfully"
       }
 
@@ -134,6 +235,7 @@ resource "aws_cloudwatch_log_group" "sfn" {
 # EventBridge Rule — Trigger Step Function on S3 Upload
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_event_rule" "s3_upload" {
+  count       = var.enable_s3_event_trigger ? 1 : 0
   name        = "${var.project}-${var.environment}-s3-audio-upload"
   description = "Trigger processing pipeline when audio is uploaded to S3"
 
@@ -154,10 +256,11 @@ resource "aws_cloudwatch_event_rule" "s3_upload" {
 }
 
 resource "aws_cloudwatch_event_target" "sfn_trigger" {
-  rule      = aws_cloudwatch_event_rule.s3_upload.name
+  count     = var.enable_s3_event_trigger ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.s3_upload[0].name
   target_id = "TriggerProcessingPipeline"
   arn       = aws_sfn_state_machine.processing_pipeline.id
-  role_arn  = aws_iam_role.eventbridge.arn
+  role_arn  = aws_iam_role.eventbridge[0].arn
 
   input_transformer {
     input_paths = {
@@ -176,7 +279,8 @@ EOF
 
 # EventBridge IAM Role
 resource "aws_iam_role" "eventbridge" {
-  name = "${var.project}-${var.environment}-eventbridge-role"
+  count = var.enable_s3_event_trigger ? 1 : 0
+  name  = "${var.project}-${var.environment}-eventbridge-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -193,8 +297,9 @@ resource "aws_iam_role" "eventbridge" {
 }
 
 resource "aws_iam_role_policy" "eventbridge_sfn" {
-  name = "${var.project}-${var.environment}-eventbridge-sfn-policy"
-  role = aws_iam_role.eventbridge.id
+  count = var.enable_s3_event_trigger ? 1 : 0
+  name  = "${var.project}-${var.environment}-eventbridge-sfn-policy"
+  role  = aws_iam_role.eventbridge[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
