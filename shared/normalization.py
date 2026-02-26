@@ -249,8 +249,24 @@ def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
     f0_hz  = bio_result.get("f0_hz")  or 0.0
 
     # Need at least one reliable signal
-    if vtl_cm <= 0:
+    # VTL is preferred, but F0 can be used as fallback for cries
+    if vtl_cm <= 0 and f0_hz <= 0:
         return _NO_HINT
+
+    # F0-only fallback for cries (when formant extraction fails)
+    # Cries have high F0 (350-600+ Hz) but often fail formant extraction
+    if vtl_cm <= 0 and f0_hz > 0:
+        if f0_hz > 450:
+            return {"stage": "NEWBORN", "mode": "PRE_LINGUISTIC", "confidence": 0.65}
+        elif f0_hz > 350:
+            return {"stage": "EARLY_VOCAL", "mode": "PRE_LINGUISTIC", "confidence": 0.60}
+        elif f0_hz > 280:
+            return {"stage": "CANONICAL_BABBLE", "mode": "PRE_LINGUISTIC", "confidence": 0.55}
+        elif f0_hz > 220:
+            return {"stage": "PROTO_WORDS", "mode": "TRANSITION", "confidence": 0.50}
+        else:
+            # Low F0 without VTL - uncertain, don't override birth_date
+            return _NO_HINT
 
     if vtl_cm < 9.0:
         stage = "NEWBORN" if f0_hz > 380 else "EARLY_VOCAL"

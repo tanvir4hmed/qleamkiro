@@ -862,10 +862,19 @@ def estimate_vtl_from_formants(
             return round(c_cms / (2.0 * mean_spacing), 2)
 
     # Fallback: single-resonance estimate using highest available formant
+    # NOTE: These formulas tend to OVERESTIMATE VTL for infants/children
+    # because they assume uniform tube resonator, which is less accurate
+    # for smaller vocal tracts. Use with caution and cap the result.
+    # For infant audio (F3 ~3000-4000 Hz), this would give 10-14 cm which
+    # incorrectly triggers LINGUISTIC mode. Cap at 10 cm for safety.
     if f3 > 500:
-        return round(5.0 * c_cms / (4.0 * f3), 2)
+        vtl_estimate = 5.0 * c_cms / (4.0 * f3)
+        # Cap at 10 cm for infant safety - prevents false LINGUISTIC mode
+        return round(min(vtl_estimate, 10.0), 2)
     if f2 > 500:
-        return round(3.0 * c_cms / (4.0 * f2), 2)
+        vtl_estimate = 3.0 * c_cms / (4.0 * f2)
+        # Cap at 10 cm for infant safety
+        return round(min(vtl_estimate, 10.0), 2)
     return 0.0
 
 
