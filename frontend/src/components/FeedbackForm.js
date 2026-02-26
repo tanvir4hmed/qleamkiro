@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 
 // MASTER_INDEX.md Â§7-8 â€” five-stage feedback schema
 // Base response types â€” labels adapt per mode below
