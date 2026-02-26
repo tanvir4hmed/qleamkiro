@@ -18,6 +18,9 @@ import logging
 import os
 import re
 import sys
+import time
+import uuid
+import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -34,10 +37,15 @@ from constants import (
     DISCLAIMER,
     INTENT_LABELS,
     POPULATION_MODEL_TABLE,
+    S3_BUCKET_NAME,
     SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
     SOUND_CLUSTER_TABLE,
+    SAGEMAKER_INTENT_ENDPOINT_NAME,
+    TRANSCRIBE_TIMEOUT_SECONDS,
     USE_BEDROCK,
+    USE_SAGEMAKER_INTENT_ENDPOINT,
+    USE_TRANSCRIBE_FOR_LINGUISTIC,
 )
 from normalization import normalize_probability_distribution
 from evidence_model import determine_probable_intent_v2
@@ -158,6 +166,150 @@ def get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]
             return prior
     except Exception as e:
         logger.warning(f"Failed to load population prior for {developmental_stage}: {e}")
+    return None
+
+
+_CORE_INTENT_KEYS = (
+    "hunger",
+    "discomfort",
+    "connection",
+    "fatigue",
+    "overstimulation",
+    "exploration",
+)
+
+
+def invoke_sagemaker_intent_endpoint(session: Dict, developmental_stage: str) -> Dict[str, Any]:
+    """
+    Optional managed inference override for acoustic intent scores.
+    Expected endpoint response JSON shape:
+      {
+        "intent_distribution": {"hunger": 0.2, ...},
+        "emotion_profile": {...},                  # optional
+        "model_version": "x.y.z"                  # optional
+      }
+    """
+    if not USE_SAGEMAKER_INTENT_ENDPOINT or not SAGEMAKER_INTENT_ENDPOINT_NAME:
+        return {}
+
+    try:
+        runtime = boto3.client("sagemaker-runtime")
+        payload = {
+            "feature_scores": session.get("feature_scores", {}),
+            "rich_features": session.get("rich_features", {}),
+            "biological": session.get("biological", {}),
+            "diarization": session.get("diarization", {}),
+            "developmental_stage": developmental_stage,
+        }
+        response = runtime.invoke_endpoint(
+            EndpointName=SAGEMAKER_INTENT_ENDPOINT_NAME,
+            ContentType="application/json",
+            Body=json.dumps(payload).encode("utf-8"),
+        )
+        raw = response["Body"].read().decode("utf-8")
+        parsed = json.loads(raw) if raw else {}
+
+        dist = (
+            parsed.get("intent_distribution")
+            or parsed.get("acoustic_scores")
+            or {}
+        )
+        cleaned: Dict[str, float] = {}
+        if isinstance(dist, dict):
+            for k, v in dist.items():
+                if k in _CORE_INTENT_KEYS:
+                    try:
+                        cleaned[k] = max(0.0, float(v))
+                    except Exception:
+                        continue
+
+        if len(cleaned) >= 2:
+            cleaned = normalize_probability_distribution(cleaned)
+        else:
+            cleaned = {}
+
+        result: Dict[str, Any] = {"acoustic_scores": cleaned}
+        emo = parsed.get("emotion_profile")
+        if isinstance(emo, dict):
+            result["emotion_profile"] = emo
+        result["managed_model"] = {
+            "provider": "sagemaker",
+            "endpoint": SAGEMAKER_INTENT_ENDPOINT_NAME,
+            "model_version": parsed.get("model_version"),
+        }
+        return result
+    except Exception as e:
+        logger.warning(f"SageMaker intent inference failed: {e}")
+        return {}
+
+
+def transcribe_session_audio(session: Dict) -> Optional[Dict[str, str]]:
+    """
+    Optional transcription for LINGUISTIC sessions via Amazon Transcribe.
+    Returns None on timeout/failure.
+    """
+    if not USE_TRANSCRIBE_FOR_LINGUISTIC:
+        return None
+
+    s3_key = str(session.get("s3_audio_path") or "").strip()
+    if not s3_key:
+        return None
+
+    bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
+    media_uri = f"s3://{bucket}/{s3_key}"
+    timeout_s = int(os.environ.get("TRANSCRIBE_TIMEOUT_SECONDS", str(TRANSCRIBE_TIMEOUT_SECONDS)))
+    job_name = f"qleam-{uuid.uuid4().hex[:12]}"
+
+    try:
+        transcribe = boto3.client("transcribe")
+        transcribe.start_transcription_job(
+            TranscriptionJobName=job_name,
+            Media={"MediaFileUri": media_uri},
+            IdentifyLanguage=True,
+        )
+    except Exception as e:
+        logger.warning(f"Transcribe start failed: {e}")
+        return None
+
+    deadline = time.time() + max(8, timeout_s)
+    while time.time() < deadline:
+        try:
+            job = transcribe.get_transcription_job(TranscriptionJobName=job_name).get("TranscriptionJob", {})
+            status = job.get("TranscriptionJobStatus")
+            if status == "COMPLETED":
+                uri = (
+                    job.get("Transcript", {}).get("TranscriptFileUri")
+                    or ""
+                )
+                if not uri:
+                    return None
+                with urllib.request.urlopen(uri, timeout=8) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                text = " ".join(
+                    t.get("transcript", "")
+                    for t in data.get("results", {}).get("transcripts", [])
+                ).strip()
+                if not text:
+                    return None
+                language_code = (
+                    job.get("LanguageCode")
+                    or data.get("results", {}).get("language_code")
+                    or ""
+                )
+                return {
+                    "text": text,
+                    "language_code": language_code,
+                    "source": "aws-transcribe",
+                }
+            if status == "FAILED":
+                logger.warning(f"Transcribe failed: {job.get('FailureReason', 'unknown')}")
+                return None
+        except Exception as e:
+            logger.warning(f"Transcribe polling error: {e}")
+            return None
+        time.sleep(2)
+
+    logger.warning(f"Transcribe timeout after {timeout_s}s for job {job_name}")
     return None
 
 
@@ -368,6 +520,7 @@ def _speech_signal_level(rich_features: dict) -> str:
 def _generate_linguistic_insight_with_bedrock(
     developmental_stage: str,
     rich_features: dict,
+    transcript: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Generate language-development insight via Bedrock for LINGUISTIC mode sessions."""
     try:
@@ -380,6 +533,15 @@ def _generate_linguistic_insight_with_bedrock(
         hnr_db = round(float(rich_features.get("hnr_db", 0.0)), 1)
         cbr = round(float(rich_features.get("cbr_estimate", 0.0)), 3)
         stage_label = developmental_stage.replace("_", " ").title()
+        transcript_note = ""
+        if transcript and transcript.get("text"):
+            snippet = transcript.get("text", "")[:220]
+            lang = transcript.get("language_code", "")
+            transcript_note = (
+                "\nSPEECH TRANSCRIPT (AUTO):\n"
+                f"- Language: {lang or 'unknown'}\n"
+                f"- Transcript snippet: {snippet}"
+            )
 
         prompt = f"""You are a warm, supportive language development analyst helping parents understand their child's speech progress.
 
@@ -391,6 +553,7 @@ ACOUSTIC MEASUREMENTS FROM THIS SESSION:
 - Pitch range: {f0_range} Hz (wider = more expressive prosody)
 - Voice clarity (HNR): {hnr_db} dB (higher = cleaner, more resonant speech)
 - Canonical babbling ratio: {cbr} (residual babble — lower at this stage is normal)
+{transcript_note}
 
 Return ONLY a JSON object with exactly these three fields:
 {{
@@ -435,43 +598,79 @@ Guidelines:
         return None
 
 
+def _build_dynamic_linguistic_fallback(
+    developmental_stage: str,
+    rich_features: dict,
+    transcript: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """
+    Dynamic non-static fallback when Bedrock is unavailable.
+    """
+    syllable_rate = float(rich_features.get("syllable_rate", 0.0))
+    pause_ratio = float(rich_features.get("pause_ratio", 0.5))
+    hnr_db = float(rich_features.get("hnr_db", 0.0))
+    f0_range = float(rich_features.get("f0_range", 0.0))
+
+    if transcript and transcript.get("text"):
+        what_i_hear = (
+            "I can hear speech-like vocalization and detected words in this recording."
+        )
+    elif syllable_rate >= 2.0 and hnr_db >= 9.0:
+        what_i_hear = (
+            "I can hear speech-like vocalization with clear syllable activity in this recording."
+        )
+    else:
+        what_i_hear = (
+            "I hear mostly vocal sounds with limited clear speech in this recording."
+        )
+
+    what_it_means = (
+        f"This pattern is consistent with the {developmental_stage.replace('_', ' ').lower()} stage, "
+        "but confidence improves with repeated sessions."
+    )
+    if pause_ratio > 0.45:
+        what_it_means += " There are notable pauses, so language clarity may be reduced in this sample."
+    if f0_range < 90:
+        what_it_means += " Prosody range is narrow in this recording."
+
+    actions = [
+        "Use short face-to-face phrases and wait for a reply",
+        "Record during calm play with lower background noise",
+        "Repeat key words slowly and consistently",
+    ]
+    return {
+        "what_i_hear": what_i_hear,
+        "what_it_means": what_it_means,
+        "what_to_try": actions,
+        "source": "dynamic-fallback",
+    }
+
+
 def _generate_linguistic_insight(
     session_id: str,
     child_id: str,
     developmental_stage: str,
     rich_features: dict,
     feature_scores: Optional[Dict] = None,
+    session: Optional[Dict] = None,
 ) -> dict:
     """
     Generate and store language-development insight for LINGUISTIC-mode sessions.
     Skips intent classification — focuses on language metrics instead.
     """
     use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
+    transcript = transcribe_session_audio(session or {}) if session else None
 
     insight_sections = None
     if use_bedrock:
-        insight_sections = _generate_linguistic_insight_with_bedrock(developmental_stage, rich_features)
+        insight_sections = _generate_linguistic_insight_with_bedrock(
+            developmental_stage, rich_features, transcript=transcript
+        )
 
     if not insight_sections:
-        # Rule-based fallback — stage-based, but avoid static "sentences" when signals are absent
-        signal_level = _speech_signal_level(rich_features or {})
-        if signal_level == "non_speech":
-            fallback_key = "SOUNDS_ONLY"
-        elif signal_level == "emerging" and developmental_stage == "EARLY_SENTENCES":
-            fallback_key = "WORD_COMBINATIONS"
-        else:
-            fallback_key = (
-                developmental_stage
-                if developmental_stage in LINGUISTIC_FALLBACK_INSIGHTS
-                else "WORD_COMBINATIONS"
-            )
-        base = LINGUISTIC_FALLBACK_INSIGHTS[fallback_key]
-        insight_sections = {
-            "what_i_hear": base["what_i_hear"],
-            "what_it_means": base["what_it_means"],
-            "what_to_try": list(base["what_to_try"]),
-            "source": "rule-based",
-        }
+        insight_sections = _build_dynamic_linguistic_fallback(
+            developmental_stage, rich_features, transcript=transcript
+        )
 
     # Build observed_pattern from feature_scores so the acoustic chart can render
     fs = feature_scores or {}
@@ -488,6 +687,7 @@ def _generate_linguistic_insight(
         "observed_pattern": observed_pattern,
         "insight_sections": insight_sections,
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
+        "speech_transcript": transcript,
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -964,10 +1164,17 @@ def build_insight(
     #    [Phase 8] Research prior replaced by FL population prior when available + reliable
     #    Confidence capped by session count; feedback weight scaled by parent trust score (FRS)
     population_prior = get_population_prior(developmental_stage)
+    managed_inference = invoke_sagemaker_intent_endpoint(session, developmental_stage)
+    managed_acoustic_scores = managed_inference.get("acoustic_scores") or {}
+    managed_emotion_profile = managed_inference.get("emotion_profile")
+    if isinstance(managed_emotion_profile, dict):
+        emotion_profile = managed_emotion_profile
+
     probable_intent = determine_probable_intent_v2(
         cluster=cluster,
         feature_scores=feature_scores,
         rich_features=rich_features,
+        external_acoustic_scores=managed_acoustic_scores,
         developmental_stage=developmental_stage,
         session_context=session_context,
         session_count=session_count,
@@ -1035,6 +1242,7 @@ def build_insight(
         "probable_intent": probable_intent,
         "semantic_alignment": semantic_alignment,
         "private_language_signal": private_language_signal,
+        "managed_inference": managed_inference.get("managed_model"),
         "insight_sections": insight_sections,
         # Backward-compat flat text
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
@@ -1068,6 +1276,14 @@ def _build_rejection_insight(
       "mismatch"    — speaker type doesn't match expected child
     """
     if reason == "adult" or reason == "mismatch":
+        transcript_note = ""
+        try:
+            t = transcribe_session_audio(session)
+            if t and t.get("text"):
+                transcript_note = f" Detected speech snippet: \"{t.get('text', '')[:120]}\"."
+        except Exception:
+            transcript_note = ""
+
         # Build specific message based on detected speaker category
         if speaker_category in ("adult_male", "adult_female") or speaker_type == "adult":
             what_i_hear = (
@@ -1108,6 +1324,9 @@ def _build_rejection_insight(
                 "Please ensure you're recording the correct child."
             )
             label = "Voice mismatch detected"
+
+        if transcript_note:
+            what_it_means = (what_it_means + transcript_note).strip()
         
         what_to_try = [
             "Wait for your baby to make sounds naturally, then record",
@@ -1296,12 +1515,19 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     # Branch: LINGUISTIC mode sessions get language-development insight
     developmental_mode = session.get("developmental_mode", "")
+    age_days = session.get("age_days_at_recording")
+    if developmental_mode == "LINGUISTIC" and isinstance(age_days, (int, float)) and age_days < 181:
+        logger.warning(
+            f"Linguistic mode guard in insight generator: session={session_id} age_days={age_days} "
+            "forcing pre-linguistic insight flow"
+        )
+        developmental_mode = "PRE_LINGUISTIC"
     if developmental_mode == "LINGUISTIC":
         developmental_stage = session.get("developmental_stage", "WORD_COMBINATIONS")
         rich_features = session.get("rich_features", {})
         feature_scores = session.get("feature_scores", {})
         return _generate_linguistic_insight(
-            session_id, child_id, developmental_stage, rich_features, feature_scores
+            session_id, child_id, developmental_stage, rich_features, feature_scores, session=session
         )
 
     profile = get_child_profile(child_id)

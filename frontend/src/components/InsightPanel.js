@@ -64,6 +64,7 @@ function InsightPanel({ insight }) {
     suggested_response,
     emotion_profile,
     private_language_signal,
+    speech_transcript,
   } = insight;
 
   const intentKey = probable_intent?.key || 'unknown';
@@ -186,6 +187,22 @@ function InsightPanel({ insight }) {
             <div className="narrative-item">
               <span className="narrative-key">What this means</span>
               <span className="narrative-val">{private_language_signal.message}</span>
+            </div>
+          </div>
+        </details>
+      )}
+
+      {speech_transcript?.text && (
+        <details className="narrative-details">
+          <summary>Detected speech (AWS Transcribe)</summary>
+          <div className="narrative-grid">
+            <div className="narrative-item">
+              <span className="narrative-key">Language</span>
+              <span className="narrative-val">{speech_transcript.language_code || 'unknown'}</span>
+            </div>
+            <div className="narrative-item">
+              <span className="narrative-key">Transcript</span>
+              <span className="narrative-val">{speech_transcript.text}</span>
             </div>
           </div>
         </details>

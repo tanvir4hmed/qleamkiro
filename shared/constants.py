@@ -68,6 +68,17 @@ BEDROCK_MODEL_ID: str = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-5
 USE_BEDROCK: bool = os.environ.get("USE_BEDROCK", "true").lower() == "true"
 
 # =============================================================================
+# Optional AWS Managed Inference Services
+# =============================================================================
+# Cry/intent custom model endpoint (SageMaker real-time inference).
+USE_SAGEMAKER_INTENT_ENDPOINT: bool = os.environ.get("USE_SAGEMAKER_INTENT_ENDPOINT", "false").lower() == "true"
+SAGEMAKER_INTENT_ENDPOINT_NAME: str = os.environ.get("SAGEMAKER_INTENT_ENDPOINT_NAME", "")
+
+# Speech transcription for linguistic sessions (Amazon Transcribe).
+USE_TRANSCRIBE_FOR_LINGUISTIC: bool = os.environ.get("USE_TRANSCRIBE_FOR_LINGUISTIC", "false").lower() == "true"
+TRANSCRIBE_TIMEOUT_SECONDS: int = int(os.environ.get("TRANSCRIBE_TIMEOUT_SECONDS", "25"))
+
+# =============================================================================
 # Environment
 # =============================================================================
 ENVIRONMENT: str = os.environ.get("ENVIRONMENT", "dev")

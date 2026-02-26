@@ -399,6 +399,7 @@ def determine_probable_intent_v2(
     cluster: Dict,
     feature_scores: Dict[str, float],
     rich_features: Optional[Dict[str, float]] = None,
+    external_acoustic_scores: Optional[Dict[str, float]] = None,
     developmental_stage: str = "UNKNOWN",
     session_context: Optional[Dict] = None,
     session_count: int = 0,
@@ -448,7 +449,13 @@ def determine_probable_intent_v2(
         LABELS = {}
 
     # --- Source 1: Acoustic ---
-    acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
+    # Optional override from managed endpoint inference (e.g., SageMaker).
+    if external_acoustic_scores:
+        acoustic_scores = normalize_probability_distribution(
+            {k: max(0.0, float(v)) for k, v in external_acoustic_scores.items()}
+        )
+    else:
+        acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
 
     # --- Source 2: Research priors + context (Phase 8: FL population prior if available) ---
     research_priors = compute_research_priors(

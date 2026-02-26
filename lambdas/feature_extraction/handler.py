@@ -547,6 +547,16 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             f"prob_conf={prob_hint.get('confidence', 0):.2f})"
         )
 
+    # Hard guardrail: newborn/young infants must not be routed to linguistic mode
+    # from a single noisy audio-stage estimate.
+    if age_days is not None and age_days < 181 and developmental_mode == "LINGUISTIC":
+        developmental_stage = age_stage_info["stage"]
+        developmental_mode = age_stage_info["mode"]
+        logger.warning(
+            f"Stage guardrail applied for session {session_id}: "
+            f"age_days={age_days} forcing stage={developmental_stage} mode={developmental_mode}"
+        )
+
     logger.info(f"Child: age={age_days}d stage={developmental_stage} mode={developmental_mode}")
 
     # 11. [Phase 2] Determine analysis routing
