@@ -1134,6 +1134,55 @@ def classify_speaker_type(
     return max_category, tier, evidence
 
 
+def _detect_adult_spoof_signal(
+    f0_hz: float,
+    vtl_cm: float,
+    jitter: float,
+    shimmer: float,
+    hnr: float,
+    speech_rate: Optional[Dict[str, float]] = None,
+    spectral_flux: float = 0.0,
+) -> Tuple[float, List[str]]:
+    """
+    Heuristic anti-spoof signal for adults imitating infant pitch.
+
+    Core pattern:
+      - Infant-like F0, but adult-like resonator (high VTL)
+      - Very stable prosody and harmonic structure (adult control)
+    """
+    score = 0.0
+    flags: List[str] = []
+    infant_like_pitch = f0_hz >= 200.0
+
+    if infant_like_pitch and vtl_cm >= 14.0:
+        score += 0.55
+        flags.append(f"spoof_vtl_adult:{vtl_cm:.1f}cm")
+    elif infant_like_pitch and vtl_cm >= 13.2 and hnr > 0.65 and jitter < 0.12:
+        score += 0.25
+        flags.append(f"spoof_vtl_borderline:{vtl_cm:.1f}cm")
+
+    if infant_like_pitch and jitter < 0.10 and shimmer < 0.20 and hnr > 0.62:
+        score += 0.20
+        flags.append("spoof_adult_stability")
+
+    if speech_rate:
+        syllable_rate = float(speech_rate.get("syllable_rate", 0.0))
+        pause_ratio = float(speech_rate.get("pause_ratio", 0.0))
+        rhythm_regularity = float(speech_rate.get("rhythm_regularity", 0.0))
+        if infant_like_pitch and syllable_rate < 1.4 and rhythm_regularity > 0.65:
+            score += 0.15
+            flags.append(f"spoof_sustained_pattern:{syllable_rate:.2f}sps")
+        if infant_like_pitch and pause_ratio < 0.22 and syllable_rate < 1.2:
+            score += 0.10
+            flags.append("spoof_low_pause_low_rate")
+
+    if infant_like_pitch and spectral_flux < 0.25:
+        score += 0.05
+        flags.append("spoof_low_spectral_flux")
+
+    return round(min(score, 1.0), 3), flags
+
+
 def biological_validation(
     y: np.ndarray,
     sr: int,
@@ -1174,6 +1223,8 @@ def biological_validation(
             "shimmer": float,
             "hnr": float,
             "spectral_features": dict,
+            "spoof_likelihood": float,
+            "spoof_flags": List[str],
             "is_infant": bool,
             "is_child": bool,
             "is_adult": bool,
@@ -1209,6 +1260,16 @@ def biological_validation(
     spectral_features = extract_spectral_features(y, sr)
     speech_rate_features = extract_speech_rate(y, sr)
     formant_bandwidth = extract_formant_bandwidth(y, sr)
+    spoof_likelihood, spoof_flags = _detect_adult_spoof_signal(
+        f0_hz=f0_hz,
+        vtl_cm=vtl_cm,
+        jitter=jitter,
+        shimmer=shimmer,
+        hnr=hnr,
+        speech_rate=speech_rate_features,
+        spectral_flux=spectral_features.get("spectral_flux", 0.0),
+    )
+    evidence.extend(spoof_flags)
     
     # --- Comprehensive speaker classification ---
     speaker_category, confidence_tier, classification_evidence = classify_speaker_type(
@@ -1268,8 +1329,8 @@ def biological_validation(
     is_infant = speaker_category in ("newborn", "infant", "toddler")
     is_child = speaker_category == "child"
     is_adult = speaker_category in ("adult_female", "adult_male")
-    mimicry_suspected = is_adult or infant_score <= -2
-    bio_confidence = round(min(abs(infant_score) / 4.0, 1.0), 3)
+    mimicry_suspected = is_adult or infant_score <= -2 or spoof_likelihood >= 0.65
+    bio_confidence = round(max(min(abs(infant_score) / 4.0, 1.0), spoof_likelihood), 3)
 
     return {
         "vtl_cm": vtl_cm,
@@ -1281,6 +1342,8 @@ def biological_validation(
         "spectral_features": spectral_features,
         "speech_rate_features": speech_rate_features,
         "formant_bandwidth": formant_bandwidth,
+        "spoof_likelihood": spoof_likelihood,
+        "spoof_flags": spoof_flags,
         "is_infant": is_infant,
         "is_child": is_child,
         "is_adult": is_adult,

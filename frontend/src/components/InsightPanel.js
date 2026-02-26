@@ -64,6 +64,9 @@ function InsightPanel({ insight }) {
     suggested_response,
     emotion_profile,
     private_language_signal,
+    speaker_gate,
+    speaker_warning,
+    acoustic_reliability,
     speech_transcript,
   } = insight;
 
@@ -98,6 +101,22 @@ function InsightPanel({ insight }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {speaker_warning?.message && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Recording note: </span>
+          <span className="alt-intent-chip">
+            {speaker_warning.message}
+          </span>
+        </div>
+      )}
+
+      {speaker_gate?.status === 'UNCERTAIN' && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Speaker gate: </span>
+          <span className="alt-intent-chip">UNCERTAIN</span>
         </div>
       )}
 
@@ -162,6 +181,30 @@ function InsightPanel({ insight }) {
         <details className="narrative-details">
           <summary>Audio characteristics</summary>
           <NarrativeGrid narrative={feature_narrative} />
+        </details>
+      )}
+
+      {probable_intent?.evidence?.weights && (
+        <details className="narrative-details">
+          <summary>Why this insight</summary>
+          <div className="narrative-grid">
+            <div className="narrative-item">
+              <span className="narrative-key">Acoustic signal</span>
+              <span className="narrative-val">{Math.round((probable_intent.evidence.weights.acoustic || 0) * 100)}%</span>
+            </div>
+            <div className="narrative-item">
+              <span className="narrative-key">Research prior</span>
+              <span className="narrative-val">{Math.round((probable_intent.evidence.weights.research || 0) * 100)}%</span>
+            </div>
+            <div className="narrative-item">
+              <span className="narrative-key">Feedback history</span>
+              <span className="narrative-val">{Math.round((probable_intent.evidence.weights.feedback || 0) * 100)}%</span>
+            </div>
+            <div className="narrative-item">
+              <span className="narrative-key">Signal reliability</span>
+              <span className="narrative-val">{Math.round((acoustic_reliability || probable_intent.evidence.acoustic_reliability || 0) * 100)}%</span>
+            </div>
+          </div>
         </details>
       )}
 

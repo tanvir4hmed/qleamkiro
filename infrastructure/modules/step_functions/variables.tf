@@ -54,6 +54,12 @@ variable "eventbridge_role_arn" {
   default     = ""
 }
 
+variable "enable_s3_event_trigger" {
+  description = "Whether S3 ObjectCreated events should auto-trigger the pipeline"
+  type        = bool
+  default     = false
+}
+
 variable "log_retention_days" {
   description = "CloudWatch log retention in days"
   type        = number

@@ -1127,6 +1127,46 @@ Guidelines:
 # Build Insight
 # =============================================================================
 
+def _estimate_acoustic_reliability(session: Dict) -> float:
+    """
+    Estimate how much to trust acoustic evidence for this session.
+    Uses quality gate + diarization mix indicators.
+    """
+    reliability = 1.0
+
+    qg = session.get("quality_gate") or {}
+    snr_db = float(qg.get("snr_db", 0.0) or 0.0)
+    silence_ratio = float(qg.get("silence_ratio", 0.0) or 0.0)
+    clipping_ratio = float(qg.get("clipping_ratio", 0.0) or 0.0)
+
+    if snr_db > 0:
+        if snr_db < 8:
+            reliability *= 0.72
+        elif snr_db < 12:
+            reliability *= 0.82
+        elif snr_db < 16:
+            reliability *= 0.92
+
+    if silence_ratio > 0.80:
+        reliability *= 0.82
+    elif silence_ratio > 0.65:
+        reliability *= 0.90
+
+    if clipping_ratio > 0.02:
+        reliability *= 0.88
+
+    diar = session.get("diarization") or {}
+    adult_fraction = float(diar.get("adult_audio_fraction", 0.0) or 0.0)
+    baby_fraction = float(diar.get("baby_audio_fraction", 1.0) or 1.0)
+
+    if adult_fraction > 0.20:
+        reliability *= max(0.70, 1.0 - (adult_fraction - 0.20) * 0.55)
+    if baby_fraction < 0.45:
+        reliability *= 0.85
+
+    return round(max(0.45, min(1.0, reliability)), 3)
+
+
 def build_insight(
     session: Dict,
     profile: Dict,
@@ -1154,6 +1194,7 @@ def build_insight(
     session_count        = int(profile.get("session_count") or 0)
     parent_trust_score   = float(profile.get("parent_trust_score") or 0.5)
     context_reliability  = float(profile.get("context_reliability") or 0.8)
+    acoustic_reliability = _estimate_acoustic_reliability(session)
     child_name           = str(profile.get("name") or "")
 
     # 1. Feature narrative — always computed from audio data, no feedback involved
@@ -1180,6 +1221,7 @@ def build_insight(
         session_count=session_count,
         parent_trust_score=parent_trust_score,
         context_reliability=context_reliability,
+        acoustic_reliability=acoustic_reliability,
         population_prior=population_prior,
     )
     cluster_stability = determine_cluster_stability(cluster)
@@ -1240,9 +1282,12 @@ def build_insight(
         "feature_narrative": feature_narrative,
         "emotion_profile": emotion_profile,
         "probable_intent": probable_intent,
+        "speaker_gate": session.get("speaker_gate"),
+        "speaker_warning": session.get("speaker_warning"),
         "semantic_alignment": semantic_alignment,
         "private_language_signal": private_language_signal,
         "managed_inference": managed_inference.get("managed_model"),
+        "acoustic_reliability": acoustic_reliability,
         "insight_sections": insight_sections,
         # Backward-compat flat text
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
@@ -1363,6 +1408,7 @@ def _build_rejection_insight(
         },
         "speaker_type_detected": speaker_type,
         "speaker_category_detected": speaker_category,
+        "speaker_gate": (session.get("speaker_gate") or {}).get("status"),
         # No developmental_stage — don't show a misleading stage label on rejected sessions
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1389,6 +1435,92 @@ def save_insight_to_session(session_id: str, insight: Dict, efp: Optional[Dict] 
         UpdateExpression=update_expr,
         ExpressionAttributeValues=expr_values,
     )
+
+
+def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
+    """
+    Three-way gate for speaker authenticity:
+      - BABY_PASS
+      - UNCERTAIN
+      - ADULT_REJECT
+    """
+    biological = session.get("biological", {}) or {}
+    diarization = session.get("diarization", {}) or {}
+
+    speaker_type = biological.get("speaker_type", "unknown")
+    speaker_category = biological.get("speaker_category", "unknown")
+    bio_confidence = float(biological.get("bio_confidence", 0.0) or 0.0)
+    spoof_likelihood = float(biological.get("spoof_likelihood", 0.0) or 0.0)
+
+    adult_segments = int(diarization.get("adult_segments_detected", 0) or 0)
+    primary_speaker = diarization.get("primary_speaker", "unknown")
+    total_segments = int(diarization.get("total_segments", 0) or 0)
+    baby_fraction = float(diarization.get("baby_audio_fraction", 1.0) or 1.0)
+    adult_fraction = float(diarization.get("adult_audio_fraction", 0.0) or 0.0)
+
+    adult_bio_suspected = (
+        biological.get("mimicry_suspected") is True
+        or speaker_type == "adult"
+        or speaker_category in ("adult_male", "adult_female")
+        or spoof_likelihood >= 0.65
+    )
+    adult_hard_by_bio = adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.75
+    adult_hard_by_primary = (
+        primary_speaker in ("adult_male", "adult_female")
+        and adult_fraction >= 0.55
+        and baby_fraction <= 0.35
+    )
+    adult_hard_by_dominance = (
+        total_segments > 0
+        and adult_segments >= 2
+        and adult_fraction >= 0.65
+        and baby_fraction < 0.25
+    )
+    adult_hard_by_spoof = spoof_likelihood >= 0.82 and adult_fraction >= 0.15
+
+    if adult_hard_by_bio or adult_hard_by_primary or adult_hard_by_dominance or adult_hard_by_spoof:
+        return {
+            "status": "ADULT_REJECT",
+            "speaker_type": speaker_type,
+            "speaker_category": speaker_category,
+            "bio_confidence": round(bio_confidence, 3),
+            "spoof_likelihood": round(spoof_likelihood, 3),
+            "adult_fraction": round(adult_fraction, 3),
+            "baby_fraction": round(baby_fraction, 3),
+        }
+
+    uncertain = (
+        adult_bio_suspected
+        or spoof_likelihood >= 0.55
+        or (adult_segments > 0 and adult_fraction >= 0.30)
+        or (primary_speaker in ("adult_male", "adult_female") and adult_fraction >= 0.40)
+    )
+
+    if uncertain:
+        if spoof_likelihood >= 0.55:
+            msg = "Possible adult imitation pattern detected; insight is based on isolated baby-like segments."
+        else:
+            msg = "Mixed speakers detected; insight is based on baby-segment analysis."
+        return {
+            "status": "UNCERTAIN",
+            "speaker_type": speaker_type,
+            "speaker_category": speaker_category,
+            "message": msg,
+            "bio_confidence": round(bio_confidence, 3),
+            "spoof_likelihood": round(spoof_likelihood, 3),
+            "adult_fraction": round(adult_fraction, 3),
+            "baby_fraction": round(baby_fraction, 3),
+        }
+
+    return {
+        "status": "BABY_PASS",
+        "speaker_type": speaker_type,
+        "speaker_category": speaker_category,
+        "bio_confidence": round(bio_confidence, 3),
+        "spoof_likelihood": round(spoof_likelihood, 3),
+        "adult_fraction": round(adult_fraction, 3),
+        "baby_fraction": round(baby_fraction, 3),
+    }
 
 
 # =============================================================================
@@ -1439,72 +1571,23 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    # 1b. Adult/mimicry check — reject when biological validation detects adult voice
-    biological = session.get("biological", {})
-    speaker_type = biological.get("speaker_type", "unknown")
-    speaker_category = biological.get("speaker_category", "unknown")
-    
-    # Check diarization for adult segments
-    diarization = session.get("diarization", {})
-    adult_segments = diarization.get("adult_segments_detected", 0)
-    primary_speaker = diarization.get("primary_speaker", "unknown")
-    
-    # Reject if mimicry suspected OR speaker type is adult
-    if biological.get("mimicry_suspected") is True or speaker_type == "adult" or speaker_category in ("adult_male", "adult_female"):
+    # 1b. Speaker authenticity gate (BABY_PASS / UNCERTAIN / ADULT_REJECT).
+    speaker_gate = _evaluate_speaker_gate(session)
+    session["speaker_gate"] = speaker_gate
+    if speaker_gate["status"] == "ADULT_REJECT":
         logger.warning(
-            f"Adult voice detected for session {session_id}: "
-            f"speaker_type={speaker_type} speaker_category={speaker_category} "
-            f"vtl={biological.get('vtl_cm')}cm f0={biological.get('f0_hz')}Hz "
-            f"adult_segments={adult_segments}"
+            f"Adult voice rejection for session {session_id}: "
+            f"type={speaker_gate.get('speaker_type')} cat={speaker_gate.get('speaker_category')} "
+            f"adult_fraction={speaker_gate.get('adult_fraction', 0.0):.2f} "
+            f"baby_fraction={speaker_gate.get('baby_fraction', 0.0):.2f} "
+            f"bio_conf={speaker_gate.get('bio_confidence', 0.0):.2f} "
+            f"spoof={speaker_gate.get('spoof_likelihood', 0.0):.2f}"
         )
         rejection_insight = _build_rejection_insight(
-            session, 
-            reason="adult", 
-            speaker_type=speaker_type,
-            speaker_category=speaker_category,
-        )
-        save_insight_to_session(session_id, rejection_insight)
-        return {
-            "status": "insight_generated",
-            "session_id": session_id,
-            "insight": rejection_insight,
-        }
-    
-    # Check for significant adult presence in diarization
-    total_segments = diarization.get("total_segments", 0)
-    baby_fraction = diarization.get("baby_audio_fraction", 1.0)
-    adult_fraction = diarization.get("adult_audio_fraction", 0.0)
-    
-    # Reject if adult is the primary speaker
-    if primary_speaker in ("adult_male", "adult_female"):
-        logger.warning(
-            f"Adult voice is primary speaker in session {session_id}: "
-            f"primary_speaker={primary_speaker} adult_fraction={adult_fraction}"
-        )
-        rejection_insight = _build_rejection_insight(
-            session, 
-            reason="adult", 
-            speaker_type="adult",
-            speaker_category=primary_speaker,
-        )
-        save_insight_to_session(session_id, rejection_insight)
-        return {
-            "status": "insight_generated",
-            "session_id": session_id,
-            "insight": rejection_insight,
-        }
-    
-    # Reject if adult segments dominate
-    if total_segments > 0 and adult_segments > 0 and baby_fraction < 0.3:
-        logger.warning(
-            f"Adult voice dominant in session {session_id}: "
-            f"adult_segments={adult_segments}/{total_segments} baby_fraction={baby_fraction}"
-        )
-        rejection_insight = _build_rejection_insight(
-            session, 
-            reason="adult", 
-            speaker_type="adult",
-            speaker_category="adult_male" if biological.get("f0_hz", 0) < 180 else "adult_female",
+            session,
+            reason="adult",
+            speaker_type=speaker_gate.get("speaker_type", "unknown"),
+            speaker_category=speaker_gate.get("speaker_category", "unknown"),
         )
         save_insight_to_session(session_id, rejection_insight)
         return {
@@ -1513,10 +1596,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
+    if speaker_gate["status"] == "UNCERTAIN":
+        session["speaker_warning"] = {
+            "message": speaker_gate.get("message"),
+            "adult_fraction": speaker_gate.get("adult_fraction"),
+            "baby_fraction": speaker_gate.get("baby_fraction"),
+            "bio_confidence": speaker_gate.get("bio_confidence"),
+            "spoof_likelihood": speaker_gate.get("spoof_likelihood"),
+        }
     # Branch: LINGUISTIC mode sessions get language-development insight
     developmental_mode = session.get("developmental_mode", "")
     age_days = session.get("age_days_at_recording")
-    if developmental_mode == "LINGUISTIC" and isinstance(age_days, (int, float)) and age_days < 181:
+    if developmental_mode == "LINGUISTIC" and isinstance(age_days, (int, float)) and age_days < 366:
         logger.warning(
             f"Linguistic mode guard in insight generator: session={session_id} age_days={age_days} "
             "forcing pre-linguistic insight flow"
@@ -1561,3 +1652,5 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "session_id": session_id,
         "insight": insight,
     }
+
+

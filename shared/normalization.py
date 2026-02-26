@@ -200,7 +200,7 @@ def developmental_stage_from_age(age_days) -> Dict:
     _STAGE_MAP = [
         (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
         (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
-        (181,  270,  "CANONICAL_BABBLE",  "TRANSITION"),
+        (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),
         (271,  365,  "PROTO_WORDS",       "TRANSITION"),
         (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
         (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),

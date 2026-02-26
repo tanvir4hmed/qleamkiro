@@ -103,6 +103,30 @@ variable "use_bedrock" {
   default     = false
 }
 
+variable "use_sagemaker_intent_endpoint" {
+  description = "Whether insight_generator should call a SageMaker endpoint for acoustic intent override"
+  type        = bool
+  default     = false
+}
+
+variable "sagemaker_intent_endpoint_name" {
+  description = "Optional SageMaker real-time endpoint name for infant intent inference"
+  type        = string
+  default     = ""
+}
+
+variable "use_transcribe_for_linguistic" {
+  description = "Whether linguistic sessions should call Amazon Transcribe"
+  type        = bool
+  default     = false
+}
+
+variable "transcribe_timeout_seconds" {
+  description = "Polling timeout for Amazon Transcribe jobs"
+  type        = number
+  default     = 25
+}
+
 variable "log_retention_days" {
   description = "CloudWatch log retention in days"
   type        = number

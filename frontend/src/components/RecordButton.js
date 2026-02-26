@@ -46,16 +46,17 @@ function getFeedingOptions(ageDays) {
 }
 
 const HEALTH_OPTIONS = [
-  { label: 'Doing well', value: 'well' },
-  { label: 'A bit fussy', value: 'fussy' },
+  { label: 'Doing well', value: 'healthy' },
+  { label: 'A bit fussy', value: 'other' },
   { label: 'Not feeling well', value: 'sick' },
-  { label: 'Tired', value: 'tired' },
+  { label: 'Tired', value: 'other' },
+  { label: 'Teething', value: 'teething' },
 ];
 
 const ENVIRONMENT_OPTIONS = [
-  { label: 'Quiet at home', value: 'quiet' },
-  { label: 'A bit noisy', value: 'noisy' },
-  { label: 'Travelling', value: 'travel' },
+  { label: 'Quiet at home', value: 'home_quiet' },
+  { label: 'A bit noisy', value: 'home_noisy' },
+  { label: 'Travelling', value: 'car' },
   { label: 'Outdoors', value: 'outdoor' },
 ];
 

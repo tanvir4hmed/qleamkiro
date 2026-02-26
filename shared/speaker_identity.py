@@ -174,12 +174,9 @@ def determine_routing(
       "low_confidence"                    — Classifier returned UNKNOWN, flag for review
 
     Adult detection priority (OR logic — any one triggers adult_mimicry_flagged):
-      A. bio_result["mimicry_suspected"]=True AND bio_confidence ≥ 0.55
+      A. bio_result["mimicry_suspected"]=True AND bio_confidence ≥ 0.70
          (bio_result is already reconciled with Phase-4 probabilistic classifier)
-      B. age_classification["is_adult"]=True AND confidence ≥ 0.60
-
-    The confidence thresholds are intentionally lower than before (0.55 / 0.60 vs old 0.75)
-    because bio_result is now informed by the 7-feature probabilistic classifier.
+      B. age_classification["is_adult"]=True AND confidence ≥ 0.70
 
     Returns:
         {
@@ -201,7 +198,7 @@ def determine_routing(
     # --- Adult detection path A: bio_result (already reconciled with Phase 4) ---
     bio_mimicry = bio_result.get("mimicry_suspected", False)
     bio_conf    = float(bio_result.get("bio_confidence", 0.0))
-    if bio_mimicry and bio_conf >= 0.55:
+    if bio_mimicry and bio_conf >= 0.70:
         analysis_type = "adult_mimicry_flagged"
         adult_evidence.append(
             f"bio_mimicry:conf={bio_conf:.2f} "
@@ -215,7 +212,7 @@ def determine_routing(
         age_conf       = float(age_classification.get("confidence", 0.0))
         age_voice_type = age_classification.get("voice_type", "")
 
-        if age_is_adult and age_conf >= 0.60:
+        if age_is_adult and age_conf >= 0.70:
             analysis_type = "adult_mimicry_flagged"
             adult_evidence.append(
                 f"age_classifier:class={age_classification.get('final_class')} "

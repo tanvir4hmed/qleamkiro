@@ -395,6 +395,29 @@ def list_sessions(event: Dict) -> Dict:
 _VALID_HEALTH_STATES = {"healthy", "sick", "teething", "other", "unknown"}
 _VALID_ENVIRONMENTS = {"home_quiet", "home_noisy", "outdoor", "car", "other", "unknown"}
 
+_HEALTH_STATE_ALIASES = {
+    "well": "healthy",
+    "healthy": "healthy",
+    "fussy": "other",
+    "tired": "other",
+    "sick": "sick",
+    "teething": "teething",
+    "other": "other",
+    "unknown": "unknown",
+}
+
+_ENVIRONMENT_ALIASES = {
+    "quiet": "home_quiet",
+    "home_quiet": "home_quiet",
+    "noisy": "home_noisy",
+    "home_noisy": "home_noisy",
+    "travel": "car",
+    "car": "car",
+    "outdoor": "outdoor",
+    "other": "other",
+    "unknown": "unknown",
+}
+
 
 def _validate_context(raw: Any) -> Dict:
     """
@@ -421,13 +444,17 @@ def _validate_context(raw: Any) -> Dict:
 
     # health_state
     hs = raw.get("health_state", "")
-    if isinstance(hs, str) and hs.strip().lower() in _VALID_HEALTH_STATES:
-        ctx["health_state"] = hs.strip().lower()
+    if isinstance(hs, str):
+        normalized_hs = _HEALTH_STATE_ALIASES.get(hs.strip().lower())
+        if normalized_hs in _VALID_HEALTH_STATES:
+            ctx["health_state"] = normalized_hs
 
     # environment
     env = raw.get("environment", "")
-    if isinstance(env, str) and env.strip().lower() in _VALID_ENVIRONMENTS:
-        ctx["environment"] = env.strip().lower()
+    if isinstance(env, str):
+        normalized_env = _ENVIRONMENT_ALIASES.get(env.strip().lower())
+        if normalized_env in _VALID_ENVIRONMENTS:
+            ctx["environment"] = normalized_env
 
     # notes (free text, capped at 500 chars)
     notes = raw.get("notes", "")

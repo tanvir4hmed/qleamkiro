@@ -10,8 +10,7 @@ import SpeechAnalysisPanel from '../components/SpeechAnalysisPanel';
 
 const HEALTH_FLAG_LABELS = {
   sick: { label: 'Feeling unwell today', color: '#FF6B6B' },
-  fussy: { label: 'A bit fussy today', color: '#FFE66D' },
-  tired: { label: 'Tired today', color: '#a29bfe' },
+  other: { label: 'Extra care context noted', color: '#FFE66D' },
   teething: { label: 'Teething', color: '#fd79a8' },
 };
 
@@ -22,8 +21,24 @@ const CONTEXT_LABELS = {
     90: 'ate about an hour ago',
     150: 'it\'s been over 2 hours since eating',
   },
-  health_state: { well: 'doing well', sick: 'not feeling well', fussy: 'a bit fussy', tired: 'tired' },
-  environment: { quiet: 'at home in a quiet space', noisy: 'in a noisier environment', travel: 'travelling', outdoor: 'outdoors' },
+  health_state: {
+    healthy: 'doing well',
+    well: 'doing well',
+    sick: 'not feeling well',
+    fussy: 'a bit fussy',
+    tired: 'tired',
+    other: 'needing extra care',
+    teething: 'teething',
+  },
+  environment: {
+    home_quiet: 'at home in a quiet space',
+    quiet: 'at home in a quiet space',
+    home_noisy: 'in a noisier environment',
+    noisy: 'in a noisier environment',
+    car: 'in transit',
+    travel: 'travelling',
+    outdoor: 'outdoors',
+  },
 };
 
 function ContextNote({ ctx }) {

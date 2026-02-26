@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 import boto3
+import numpy as np
 from boto3.dynamodb.conditions import Key
 
 # Add shared utilities to path (for container image deployment)
@@ -317,7 +318,7 @@ def _reconcile_bio_with_age_class(bio_result: Dict, age_class: Dict) -> None:
     is_baby  = age_class.get("is_baby",  False)
     is_child = age_class.get("is_child", False)
 
-    if is_adult and conf >= 0.55:
+    if is_adult and conf >= 0.70:
         bio_result["is_infant"]        = False
         bio_result["is_child"]         = False
         bio_result["is_adult"]         = True
@@ -327,7 +328,7 @@ def _reconcile_bio_with_age_class(bio_result: Dict, age_class: Dict) -> None:
         bio_result["bio_confidence"]   = round(max(bio_result.get("bio_confidence", 0.0), conf), 3)
         bio_result["classifier_source"]= "age_classifier_phase4"
 
-    elif (is_baby or is_child) and conf >= 0.60:
+    elif (is_baby or is_child) and conf >= 0.68:
         bio_was_adult = bio_result.get("is_adult", False)
         if bio_was_adult:
             bio_result["is_infant"]        = is_baby
@@ -340,6 +341,33 @@ def _reconcile_bio_with_age_class(bio_result: Dict, age_class: Dict) -> None:
             )
             bio_result["bio_confidence"]   = round(conf, 3)
             bio_result["classifier_source"]= "age_classifier_phase4"
+
+
+def _enhance_baby_signal(y: np.ndarray) -> np.ndarray:
+    """
+    Lightweight denoise/enhancement for baby-segment audio.
+    Keeps Lambda fast while reducing low-energy background contamination.
+    """
+    if y is None or len(y) == 0:
+        return y
+
+    # Remove DC offset and normalize to stable amplitude range.
+    y = y - float(np.mean(y))
+    peak = float(np.max(np.abs(y))) if len(y) else 0.0
+    if peak > 1e-8:
+        y = y / peak
+
+    # Soft-noise suppression: attenuate very low-energy samples.
+    mag = np.abs(y)
+    noise_floor = float(np.percentile(mag, 20))
+    if noise_floor > 0.0:
+        y = np.where(mag < noise_floor, y * 0.35, y)
+
+    # Mild pre-emphasis helps F0/formant extraction in noisy home recordings.
+    y_pre = np.empty_like(y)
+    y_pre[0] = y[0]
+    y_pre[1:] = y[1:] - 0.95 * y[:-1]
+    return y_pre
 
 
 def lambda_handler(event: Dict, context: Any) -> Dict:
@@ -422,6 +450,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             # 4. Extract baby-labeled audio for clean downstream analysis
             # "unknown" segments are included (conservative — might be quiet baby sounds)
             baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result)
+            baby_audio = _enhance_baby_signal(baby_audio)
             baby_secs  = len(baby_audio) / max(sample_rate, 1)
             logger.info(f"Baby audio extracted: {baby_secs:.1f}s of {duration_seconds:.1f}s total")
         except Exception as e:
@@ -547,9 +576,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             f"prob_conf={prob_hint.get('confidence', 0):.2f})"
         )
 
-    # Hard guardrail: newborn/young infants must not be routed to linguistic mode
+    # Hard guardrail: infants under 12 months must not be routed to linguistic mode
     # from a single noisy audio-stage estimate.
-    if age_days is not None and age_days < 181 and developmental_mode == "LINGUISTIC":
+    if age_days is not None and age_days < 366 and developmental_mode == "LINGUISTIC":
         developmental_stage = age_stage_info["stage"]
         developmental_mode = age_stage_info["mode"]
         logger.warning(

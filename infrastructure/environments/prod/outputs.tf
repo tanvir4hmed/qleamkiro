@@ -14,7 +14,7 @@ output "cognito_user_pool_id" {
 
 output "cognito_client_id" {
   description = "Cognito App Client ID"
-  value       = module.cognito.user_pool_client_id
+  value       = module.cognito.client_id
 }
 
 output "cloudfront_domain_name" {

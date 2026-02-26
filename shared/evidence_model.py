@@ -41,6 +41,24 @@ ACOUSTIC_WEIGHT: float = 0.60
 RESEARCH_WEIGHT: float = 0.15
 FEEDBACK_WEIGHT: float = 0.25
 
+_STAGE_BASE_WEIGHTS: Dict[str, Dict[str, float]] = {
+    "NEWBORN": {"acoustic": 0.45, "research": 0.40, "feedback": 0.15},
+    "EARLY_VOCAL": {"acoustic": 0.50, "research": 0.30, "feedback": 0.20},
+    "CANONICAL_BABBLE": {"acoustic": 0.55, "research": 0.25, "feedback": 0.20},
+    "PROTO_WORDS": {"acoustic": 0.58, "research": 0.20, "feedback": 0.22},
+    "FIRST_WORDS": {"acoustic": 0.62, "research": 0.15, "feedback": 0.23},
+    "WORD_COMBINATIONS": {"acoustic": 0.65, "research": 0.12, "feedback": 0.23},
+    "EARLY_SENTENCES": {"acoustic": 0.70, "research": 0.10, "feedback": 0.20},
+    "UNKNOWN": {"acoustic": 0.60, "research": 0.20, "feedback": 0.20},
+}
+
+_INFANT_STAGE_SET = {"NEWBORN", "EARLY_VOCAL", "CANONICAL_BABBLE", "PROTO_WORDS"}
+
+
+def _base_weights_for_stage(developmental_stage: str) -> Dict[str, float]:
+    stage = (developmental_stage or "UNKNOWN").upper().strip()
+    return _STAGE_BASE_WEIGHTS.get(stage, _STAGE_BASE_WEIGHTS["UNKNOWN"])
+
 # ---------------------------------------------------------------------------
 # Source 1 — Acoustic Intent Classifier
 # ---------------------------------------------------------------------------
@@ -405,6 +423,7 @@ def determine_probable_intent_v2(
     session_count: int = 0,
     parent_trust_score: float = 0.5,
     context_reliability: float = 0.8,
+    acoustic_reliability: float = 1.0,
     population_prior: Optional[Dict[str, float]] = None,
 ) -> Dict:
     """
@@ -425,6 +444,7 @@ def determine_probable_intent_v2(
         session_count:        Total sessions recorded for this child (drives confidence caps)
         parent_trust_score:   Parent Feedback Reliability Score — FRS in [0, 1] (default 0.5)
         context_reliability:  How much to trust parent-provided context data (0.2–1.0, default 0.8)
+        acoustic_reliability: Signal-quality confidence in [0, 1] from quality+diarization checks.
 
     Returns:
         {
@@ -465,11 +485,29 @@ def determine_probable_intent_v2(
     # --- Source 3: Feedback history (maintained by reinforcement_engine) ---
     feedback_intents: Dict[str, float] = cluster.get("probable_intents") or {}
 
-    # --- Phase 4: Dynamic feedback weight scaled by parent trust score (FRS) ---
-    feedback_w = 0.25 * max(0.1, min(1.0, parent_trust_score))
-    remaining = 1.0 - feedback_w
-    acoustic_w = remaining * (0.60 / 0.75)  # acoustic's original share of non-feedback
-    research_w = remaining * (0.15 / 0.75)  # research's original share of non-feedback
+    # --- Phase 4+: Stage-aware base weights + dynamic feedback scaling by FRS ---
+    stage = (developmental_stage or "UNKNOWN").upper().strip()
+    base = _base_weights_for_stage(developmental_stage)
+    base_feedback_w = base["feedback"]
+    feedback_w = base_feedback_w * max(0.1, min(1.0, parent_trust_score))
+    non_feedback_base = max(base["acoustic"] + base["research"], 1e-6)
+    remaining = max(0.0, 1.0 - feedback_w)
+    acoustic_w = remaining * (base["acoustic"] / non_feedback_base)
+    research_w = remaining * (base["research"] / non_feedback_base)
+
+    # Confidence-gated rebalancing for infant stages:
+    # If audio reliability is weak/noisy, shift some mass from acoustic -> research.
+    rel = max(0.4, min(1.0, float(acoustic_reliability)))
+    if stage in _INFANT_STAGE_SET:
+        shift_by_reliability = acoustic_w * (1.0 - rel) * 0.55
+        acoustic_w = max(0.0, acoustic_w - shift_by_reliability)
+        research_w += shift_by_reliability
+
+        top_acoustic = max(acoustic_scores.values()) if acoustic_scores else 0.0
+        if top_acoustic < 0.36:
+            extra_shift = min(acoustic_w * 0.22, (0.36 - top_acoustic) * 0.35)
+            acoustic_w = max(0.0, acoustic_w - extra_shift)
+            research_w += extra_shift
 
     # --- Blend ---
     blended = blend_evidence_sources(acoustic_scores, research_priors, feedback_intents, acoustic_w, research_w, feedback_w)
@@ -480,6 +518,16 @@ def determine_probable_intent_v2(
 
     # --- Confidence ---
     confidence = compute_intent_confidence(blended, cluster, acoustic_scores, research_priors, session_count=session_count)
+
+    # Confidence calibration for infant sessions:
+    #  - reduce overconfidence when top intents are close
+    #  - account for measured acoustic reliability
+    top_vals = sorted(blended.values(), reverse=True)
+    margin = (top_vals[0] - top_vals[1]) if len(top_vals) > 1 else top_vals[0]
+    if stage in _INFANT_STAGE_SET and margin < 0.08:
+        confidence *= 0.86
+    confidence *= (0.78 + 0.22 * rel)
+    confidence = round(min(max(confidence, 0.10), 0.92), 3)
 
     # --- Cross-source agreement flag ---
     acoustic_best = max(acoustic_scores, key=acoustic_scores.get) if acoustic_scores else best_key
@@ -517,6 +565,8 @@ def determine_probable_intent_v2(
                 "research": round(research_w, 4),
                 "feedback": round(feedback_w, 4),
             },
+            "acoustic_reliability": round(rel, 3),
+            "top_margin": round(max(margin, 0.0), 4),
             "agreement": agreement,
         },
     }

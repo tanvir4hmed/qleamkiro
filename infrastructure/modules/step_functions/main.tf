@@ -17,9 +17,10 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Resource = var.feature_extraction_lambda_arn
         Comment  = "Extract acoustic features from uploaded audio"
         Parameters = {
-          "child_id.$"      = "$.child_id"
-          "session_id.$"    = "$.session_id"
-          "s3_audio_path.$" = "$.s3_audio_path"
+          "child_id.$"        = "$.child_id"
+          "session_id.$"      = "$.session_id"
+          "s3_audio_path.$"   = "$.s3_audio_path"
+          "session_context.$" = "$.session_context"
         }
         ResultPath = "$.feature_result"
         Retry = [
@@ -73,9 +74,9 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Resource = var.insight_generator_lambda_arn
         Comment  = "Generate structured insight from session state"
         Parameters = {
-          "child_id.$"    = "$.child_id"
-          "session_id.$"  = "$.session_id"
-          "cluster_id.$"  = "$.cluster_result.cluster_id"
+          "child_id.$"   = "$.child_id"
+          "session_id.$" = "$.session_id"
+          "cluster_id.$" = "$.cluster_result.cluster_id"
         }
         ResultPath = "$.insight_result"
         Retry = [
@@ -157,7 +158,7 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
       }
 
       ProcessingComplete = {
-        Type = "Succeed"
+        Type    = "Succeed"
         Comment = "Pipeline completed successfully"
       }
 
@@ -194,6 +195,7 @@ resource "aws_cloudwatch_log_group" "sfn" {
 # EventBridge Rule — Trigger Step Function on S3 Upload
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_event_rule" "s3_upload" {
+  count       = var.enable_s3_event_trigger ? 1 : 0
   name        = "${var.project}-${var.environment}-s3-audio-upload"
   description = "Trigger processing pipeline when audio is uploaded to S3"
 
@@ -214,10 +216,11 @@ resource "aws_cloudwatch_event_rule" "s3_upload" {
 }
 
 resource "aws_cloudwatch_event_target" "sfn_trigger" {
-  rule      = aws_cloudwatch_event_rule.s3_upload.name
+  count     = var.enable_s3_event_trigger ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.s3_upload[0].name
   target_id = "TriggerProcessingPipeline"
   arn       = aws_sfn_state_machine.processing_pipeline.id
-  role_arn  = aws_iam_role.eventbridge.arn
+  role_arn  = aws_iam_role.eventbridge[0].arn
 
   input_transformer {
     input_paths = {
@@ -236,7 +239,8 @@ EOF
 
 # EventBridge IAM Role
 resource "aws_iam_role" "eventbridge" {
-  name = "${var.project}-${var.environment}-eventbridge-role"
+  count = var.enable_s3_event_trigger ? 1 : 0
+  name  = "${var.project}-${var.environment}-eventbridge-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -253,8 +257,9 @@ resource "aws_iam_role" "eventbridge" {
 }
 
 resource "aws_iam_role_policy" "eventbridge_sfn" {
-  name = "${var.project}-${var.environment}-eventbridge-sfn-policy"
-  role = aws_iam_role.eventbridge.id
+  count = var.enable_s3_event_trigger ? 1 : 0
+  name  = "${var.project}-${var.environment}-eventbridge-sfn-policy"
+  role  = aws_iam_role.eventbridge[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
