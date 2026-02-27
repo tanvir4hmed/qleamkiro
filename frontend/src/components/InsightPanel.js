@@ -97,6 +97,8 @@ function InsightPanel({ insight }) {
   const mismatchScore = age_mismatch_evidence?.score || 0;
   const authenticity = speaker_authenticity || speaker_gate || {};
   const speechSummary = speech_evidence || {};
+  const transcribeAttempted = Boolean(speechSummary?.transcribe_attempted);
+  const hasTranscriptText = Boolean(speech_transcript?.text);
   const segmentSummary = speechSummary?.segment_summary || {};
   const secondarySignals = secondary_signals || {};
   const secondarySignalLabels = {
@@ -343,25 +345,25 @@ function InsightPanel({ insight }) {
         </details>
       )}
 
-      {speech_transcript?.text && (
+      {(hasTranscriptText || transcribeAttempted) && (
         <details className="narrative-details">
           <summary>Detected speech (AWS Transcribe)</summary>
           <div className="narrative-grid">
             <div className="narrative-item">
               <span className="narrative-key">Language</span>
-              <span className="narrative-val">{speech_transcript.language_code || 'unknown'}</span>
+              <span className="narrative-val">{speech_transcript?.language_code || 'unknown'}</span>
             </div>
             <div className="narrative-item">
               <span className="narrative-key">Transcript</span>
-              <span className="narrative-val">{speech_transcript.text}</span>
+              <span className="narrative-val">{hasTranscriptText ? speech_transcript.text : 'No clear words detected in this clip'}</span>
             </div>
-            {typeof speech_transcript.confidence === 'number' && (
+            {typeof speech_transcript?.confidence === 'number' && (
               <div className="narrative-item">
                 <span className="narrative-key">ASR confidence</span>
                 <span className="narrative-val">{Math.round(speech_transcript.confidence * 100)}%</span>
               </div>
             )}
-            {typeof speech_transcript.token_count === 'number' && (
+            {typeof speech_transcript?.token_count === 'number' && (
               <div className="narrative-item">
                 <span className="narrative-key">Token count</span>
                 <span className="narrative-val">{speech_transcript.token_count}</span>

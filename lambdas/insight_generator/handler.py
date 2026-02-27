@@ -1483,6 +1483,7 @@ def _generate_linguistic_insight(
         "speech_evidence": {
             "presence_score": speech_evidence.get("speech_presence_score", 0.0),
             "presence_label": speech_evidence.get("speech_presence_label", "non_speech_or_cry"),
+            "transcribe_attempted": bool(speech_evidence.get("transcribe_attempted", False)),
             "segment_summary": segment_summary,
         },
         "secondary_signals": secondary_signals,
@@ -1981,7 +1982,7 @@ def build_insight(
     # Phase 3 data stored in session by feature_extraction Lambda
     rich_features     = session.get("rich_features") or {}
     session_context   = session.get("session_context") or {}
-    speech_evidence   = session.get("speech_evidence") or _collect_speech_evidence(session, force_transcribe=False)
+    speech_evidence   = session.get("speech_evidence") or _collect_speech_evidence(session, force_transcribe=True)
     transcript        = speech_evidence.get("transcript")
     detected_words    = speech_evidence.get("detected_words", [])
     age_mismatch      = speech_evidence.get("age_mismatch_evidence", {})
@@ -2124,6 +2125,7 @@ def build_insight(
         "speech_evidence": {
             "presence_score": speech_evidence.get("speech_presence_score", 0.0),
             "presence_label": speech_evidence.get("speech_presence_label", "non_speech_or_cry"),
+            "transcribe_attempted": bool(speech_evidence.get("transcribe_attempted", False)),
             "segment_summary": segment_summary,
         },
         "speaker_authenticity": {
@@ -2175,10 +2177,7 @@ def _build_rejection_insight(
       "adult"       - biological validation flagged adult voice
       "mismatch"    - speaker type doesn't match expected child
     """
-    speech_evidence = _collect_speech_evidence(
-        session,
-        force_transcribe=bool(reason in ("adult", "mismatch")),
-    )
+    speech_evidence = _collect_speech_evidence(session, force_transcribe=True)
     transcript = speech_evidence.get("transcript")
     detected_words = speech_evidence.get("detected_words", [])
     age_mismatch = speech_evidence.get("age_mismatch_evidence", {})
@@ -2252,6 +2251,16 @@ def _build_rejection_insight(
             "This usually means the recording was too quiet, too short, or "
             "captured background noise rather than your baby's voice."
         )
+        if transcript and transcript.get("text"):
+            what_it_means = (
+                f"{what_it_means} Speech was detected in the clip: \"{str(transcript.get('text', ''))[:120]}\"."
+            ).strip()
+        if detected_words:
+            detected_preview = ", ".join([w.get("word", "") for w in detected_words[:4] if w.get("word")])
+            if detected_preview:
+                what_it_means = (
+                    f"{what_it_means} Detected words: {detected_preview}."
+                ).strip()
         what_to_try = [
             "Hold the phone 20-30 cm from your baby's mouth",
             "Record somewhere quieter if possible",
@@ -2282,6 +2291,7 @@ def _build_rejection_insight(
         "speech_evidence": {
             "presence_score": speech_evidence.get("speech_presence_score", 0.0),
             "presence_label": speech_evidence.get("speech_presence_label", "non_speech_or_cry"),
+            "transcribe_attempted": bool(speech_evidence.get("transcribe_attempted", False)),
             "segment_summary": speech_evidence.get("segment_summary", {}),
         },
         "segment_evidence": session.get("segment_evidence") or {},
@@ -2406,12 +2416,12 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
             or (age_class in ("adult_female", "adult_male") and age_conf >= 0.55)
         )
     )
-    lexical_hard_mismatch = bool(
-        isinstance(age_days, (int, float))
-        and age_days < 366
-        and mismatch_score >= 0.82
-        and transcript_word_count >= 2
-    )
+    lexical_hard_mismatch = False
+    if isinstance(age_days, (int, float)) and transcript_word_count >= 2:
+        if age_days < 180 and mismatch_score >= 0.58:
+            lexical_hard_mismatch = True
+        elif age_days < 366 and mismatch_score >= 0.72:
+            lexical_hard_mismatch = True
 
     if (
         adult_hard_by_age_classifier
@@ -2604,7 +2614,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         }
 
     # 1b. Speech evidence bundle for transcript/word/mismatch-aware decisions.
-    speech_evidence = _collect_speech_evidence(session, force_transcribe=False)
+    speech_evidence = _collect_speech_evidence(session, force_transcribe=True)
     session["speech_evidence"] = speech_evidence
 
     # 1b. Speaker authenticity gate.
