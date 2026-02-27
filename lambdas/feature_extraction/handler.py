@@ -320,7 +320,7 @@ def _reconcile_bio_with_age_class(bio_result: Dict, age_class: Dict) -> None:
     is_baby  = age_class.get("is_baby",  False)
     is_child = age_class.get("is_child", False)
 
-    if is_adult and conf >= 0.62:
+    if is_adult and conf >= 0.70:
         bio_result["is_infant"]        = False
         bio_result["is_child"]         = False
         bio_result["is_adult"]         = True

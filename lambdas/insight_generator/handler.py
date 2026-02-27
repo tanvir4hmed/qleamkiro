@@ -1490,7 +1490,6 @@ def _build_rejection_insight(
       "quality"     - no signal / no vocal activity / too short
       "adult"       - biological validation flagged adult voice
       "mismatch"    - speaker type doesn't match expected child
-      "noise"       - non-baby environmental/noise-like recording
     """
     source = "quality-rejection"
     if reason == "adult" or reason == "mismatch":
@@ -1553,31 +1552,6 @@ def _build_rejection_insight(
             "Stay quiet yourself - only record the baby's vocalizations",
             "If someone else was speaking, try a new recording with just the baby",
         ]
-    elif reason == "noise":
-        source = "noise-rejection"
-        noise_gate = session.get("non_baby_noise_gate", {}) or {}
-        noise_reason = str(noise_gate.get("reason", "noise_like") or "noise_like")
-        if noise_reason == "non_baby_tonal_pattern":
-            what_i_hear = (
-                "This recording contains tonal environmental sound patterns instead of baby vocalizations."
-            )
-            what_it_means = (
-                "The sound is structured but does not match infant crying/cooing/babbling signatures, "
-                "so a baby insight cannot be generated from this clip."
-            )
-        else:
-            what_i_hear = "This recording mostly contains non-baby background noise."
-            what_it_means = (
-                "The detected audio pattern is environmental/ambient rather than infant vocalization, "
-                "so a meaningful baby insight cannot be generated from this clip."
-            )
-        what_to_try = [
-            "Move to a quieter place and reduce TV, music, or fan noise",
-            "Record close to your baby (20-30 cm) while they are vocalizing",
-            "Avoid recording environmental sounds (toys, alarms, traffic, TV)",
-            "Try again when your baby is actively cooing, babbling, or crying",
-        ]
-        label = "Non-baby sound detected"
     else:
         what_i_hear = "We couldn't detect clear baby sounds in this recording."
         what_it_means = (
@@ -1687,27 +1661,22 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         or speaker_category in ("adult_male", "adult_female")
         or spoof_likelihood >= 0.65
     )
-    adult_hard_by_age_classifier = (
-        age_class in ("adult_female", "adult_male")
-        and age_conf >= 0.62
-    )
-    adult_hard_by_bio = adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.68
+    adult_hard_by_bio = adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.75
     adult_hard_by_primary = (
         primary_speaker in ("adult_male", "adult_female")
-        and adult_fraction >= 0.50
-        and baby_fraction <= 0.40
+        and adult_fraction >= 0.55
+        and baby_fraction <= 0.35
     )
     adult_hard_by_dominance = (
         total_segments > 0
         and adult_segments >= 2
-        and adult_fraction >= 0.60
-        and baby_fraction < 0.30
+        and adult_fraction >= 0.65
+        and baby_fraction < 0.25
     )
-    adult_hard_by_spoof = spoof_likelihood >= 0.78 and adult_fraction >= 0.15
+    adult_hard_by_spoof = spoof_likelihood >= 0.82 and adult_fraction >= 0.15
 
     if (
-        adult_hard_by_age_classifier
-        or adult_hard_by_bio
+        adult_hard_by_bio
         or adult_hard_by_primary
         or adult_hard_by_dominance
         or adult_hard_by_spoof
@@ -1772,113 +1741,6 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
     }
 
 
-def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
-    """
-    Reject non-baby recordings that can pass quality and speaker checks.
-
-    Targets:
-      - Explicit Phase-4 noise routing.
-      - Tonal non-baby patterns (high centroid/high F0 with low infant evidence).
-    """
-    age_cls = session.get("age_classification", {}) or {}
-    routing = session.get("routing", {}) or {}
-    diarization = session.get("diarization", {}) or {}
-    rich = session.get("rich_features", {}) or {}
-
-    voice_type = str(age_cls.get("voice_type", "") or "").lower().strip()
-    voice_type_conf = float(age_cls.get("voice_type_confidence", 0.0) or 0.0)
-    age_class = str(age_cls.get("final_class", "") or "").lower().strip()
-    age_conf = float(age_cls.get("confidence", 0.0) or 0.0)
-    is_unknown = bool(age_cls.get("is_unknown", False))
-    routing_type = str(routing.get("analysis_type", "") or "").lower().strip()
-    baby_fraction = float(diarization.get("baby_audio_fraction", 1.0) or 1.0)
-    replay_tolerant = os.environ.get("NOISE_GATE_REPLAY_TOLERANT", "false").lower() == "true"
-
-    f0_mean = float(rich.get("f0_mean", 0.0) or 0.0)
-    spectral_centroid = float(rich.get("spectral_centroid", 0.0) or 0.0)
-    cry_fraction = float(rich.get("cry_fraction", 0.0) or 0.0)
-    syllable_rate = float(rich.get("syllable_rate", 0.0) or 0.0)
-    voiced_fraction = float(rich.get("f0_voiced_fraction", 0.0) or 0.0)
-    hnr_db = float(rich.get("hnr_db", 0.0) or 0.0)
-
-    # Strong infant evidence should override noise heuristics.
-    infant_class_evidence = age_class in ("newborn", "infant") and age_conf >= 0.70
-    acoustic_baby_evidence = bool(
-        (baby_fraction >= 0.55 and cry_fraction >= 0.06)
-        or (baby_fraction >= 0.70 and voiced_fraction >= 0.12)
-    )
-    strong_infant_evidence = infant_class_evidence or acoustic_baby_evidence
-
-    # Keep hard reject only for strong noise evidence.
-    noise_like = bool(
-        (voice_type == "noise" and voice_type_conf >= 0.84 and baby_fraction < 0.45 and cry_fraction < 0.05)
-        or (
-            routing_type == "low_confidence"
-            and voice_type == "noise"
-            and is_unknown
-            and voice_type_conf >= 0.80
-            and baby_fraction < 0.35
-        )
-    )
-
-    # Generic tonal non-baby footprint with weak infant evidence.
-    tonal_non_baby_pattern = bool(
-        spectral_centroid >= 3200.0
-        and f0_mean >= 650.0
-        and cry_fraction <= 0.08
-        and syllable_rate >= 4.5
-        and voiced_fraction >= 0.30
-        and hnr_db >= 5.0
-        and baby_fraction <= 0.45
-    )
-
-    # QA mode: tolerate replay-like tonal clips when infant evidence exists.
-    if replay_tolerant and tonal_non_baby_pattern and (baby_fraction >= 0.30 or cry_fraction >= 0.05):
-        tonal_non_baby_pattern = False
-
-    if strong_infant_evidence:
-        return {
-            "reject": False,
-            "uncertain": False,
-            "reason": "infant_evidence_override",
-            "voice_type": voice_type,
-            "voice_type_confidence": round(voice_type_conf, 3),
-            "age_class": age_class,
-            "age_confidence": round(age_conf, 3),
-            "cry_fraction": round(cry_fraction, 3),
-            "baby_fraction": round(baby_fraction, 3),
-        }
-
-    if noise_like:
-        return {
-            "reject": True,
-            "uncertain": False,
-            "reason": "noise_like",
-            "voice_type": voice_type,
-            "voice_type_confidence": round(voice_type_conf, 3),
-            "f0_mean": round(f0_mean, 2),
-            "spectral_centroid": round(spectral_centroid, 2),
-            "cry_fraction": round(cry_fraction, 3),
-            "syllable_rate": round(syllable_rate, 3),
-            "baby_fraction": round(baby_fraction, 3),
-        }
-    if tonal_non_baby_pattern:
-        return {
-            "reject": False,
-            "uncertain": True,
-            "reason": "non_baby_tonal_pattern",
-            "message": "Tonal/non-baby-like pattern detected; proceeding with caution on infant evidence.",
-            "voice_type": voice_type,
-            "voice_type_confidence": round(voice_type_conf, 3),
-            "f0_mean": round(f0_mean, 2),
-            "spectral_centroid": round(spectral_centroid, 2),
-            "cry_fraction": round(cry_fraction, 3),
-            "syllable_rate": round(syllable_rate, 3),
-            "baby_fraction": round(baby_fraction, 3),
-        }
-    return {"reject": False, "uncertain": False}
-
-
 def _critical_quality_reject(session: Dict) -> Dict[str, Any]:
     """
     Decide whether quality should hard-reject in insight stage.
@@ -1928,78 +1790,6 @@ def _critical_quality_reject(session: Dict) -> Dict[str, Any]:
     return {"reject": bool(critical_issues), "critical_issues": critical_issues}
 
 
-def _evaluate_baby_admission_gate(session: Dict) -> Dict[str, Any]:
-    """
-    Unified recording admission gate.
-
-    Possible outcomes:
-      - REJECT_NO_SOUND
-      - REJECT_ADULT
-      - REJECT_MISMATCH
-      - REJECT_NOISE
-      - PASS_UNCERTAIN
-      - BABY_PASS
-    """
-    quality_decision = _critical_quality_reject(session)
-    critical_issues = quality_decision.get("critical_issues", [])
-    if quality_decision.get("reject"):
-        return {
-            "status": "REJECT_NO_SOUND",
-            "bucket": "no_sound",
-            "reason": "quality",
-            "critical_issues": critical_issues,
-        }
-
-    speaker_gate = _evaluate_speaker_gate(session)
-    if speaker_gate.get("status") == "ADULT_REJECT":
-        return {
-            "status": "REJECT_ADULT",
-            "bucket": "adult",
-            "reason": "adult",
-            "speaker_gate": speaker_gate,
-        }
-    if speaker_gate.get("status") == "AGE_MISMATCH_REJECT":
-        return {
-            "status": "REJECT_MISMATCH",
-            "bucket": "adult",
-            "reason": "mismatch",
-            "speaker_gate": speaker_gate,
-        }
-
-    noise_gate = _evaluate_non_baby_noise_gate(session)
-    if noise_gate.get("reject"):
-        return {
-            "status": "REJECT_NOISE",
-            "bucket": "noise",
-            "reason": "noise",
-            "speaker_gate": speaker_gate,
-            "noise_gate": noise_gate,
-        }
-
-    if speaker_gate.get("status") == "UNCERTAIN" or noise_gate.get("uncertain"):
-        merged_speaker_gate = dict(speaker_gate)
-        messages = []
-        if speaker_gate.get("status") == "UNCERTAIN" and speaker_gate.get("message"):
-            messages.append(str(speaker_gate.get("message")))
-        if noise_gate.get("uncertain") and noise_gate.get("message"):
-            messages.append(str(noise_gate.get("message")))
-        if messages:
-            merged_speaker_gate["message"] = " ".join(messages)
-        return {
-            "status": "PASS_UNCERTAIN",
-            "bucket": "uncertain",
-            "speaker_gate": merged_speaker_gate,
-            "noise_gate": noise_gate,
-        }
-
-    return {
-        "status": "BABY_PASS",
-        "bucket": "baby",
-        "speaker_gate": speaker_gate,
-        "noise_gate": noise_gate,
-    }
-
-
 # =============================================================================
 # Lambda Handler
 # =============================================================================
@@ -2026,20 +1816,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not session:
         raise ValueError(f"Session {session_id} not found")
 
-    # 1a. Unified recording gate: only baby recordings proceed to insight.
-    # Outcomes: no_sound, adult/mismatch, noise, uncertain, baby_pass.
-    recording_gate = _evaluate_baby_admission_gate(session)
-    session["recording_gate"] = recording_gate
-    speaker_gate = recording_gate.get("speaker_gate") or {}
-    noise_gate = recording_gate.get("noise_gate") or {}
-    session["speaker_gate"] = speaker_gate
-    session["non_baby_noise_gate"] = noise_gate
-
-    gate_status = recording_gate.get("status")
-    if gate_status == "REJECT_NO_SOUND":
+    # 1a. Reject only on critical quality issues.
+    quality_decision = _critical_quality_reject(session)
+    if quality_decision.get("reject"):
         logger.warning(
-            f"Unified gate rejection (no_sound) for session {session_id}: "
-            f"{recording_gate.get('critical_issues', [])}"
+            f"Quality gate failed for session {session_id}, critical issues: "
+            f"{quality_decision.get('critical_issues', [])}"
         )
         rejection_insight = _build_rejection_insight(session, reason="quality")
         save_insight_to_session(session_id, rejection_insight)
@@ -2049,9 +1831,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    if gate_status == "REJECT_ADULT":
+    # 1b. Speaker authenticity gate.
+    speaker_gate = _evaluate_speaker_gate(session)
+    session["speaker_gate"] = speaker_gate
+
+    if speaker_gate.get("status") == "ADULT_REJECT":
         logger.warning(
-            f"Unified gate rejection (adult) for session {session_id}: "
+            f"Speaker gate rejected session {session_id}: "
             f"type={speaker_gate.get('speaker_type')} cat={speaker_gate.get('speaker_category')} "
             f"adult_fraction={speaker_gate.get('adult_fraction', 0.0):.2f} "
             f"baby_fraction={speaker_gate.get('baby_fraction', 0.0):.2f} "
@@ -2071,9 +1857,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    if gate_status == "REJECT_MISMATCH":
+    if speaker_gate.get("status") == "AGE_MISMATCH_REJECT":
         logger.warning(
-            f"Unified gate rejection (mismatch) for session {session_id}: "
+            f"Speaker gate mismatch for session {session_id}: "
             f"registered_age_days={speaker_gate.get('age_days')} "
             f"detected={speaker_gate.get('speaker_category')} "
             f"conf={speaker_gate.get('age_class_confidence', 0.0):.2f}"
@@ -2091,24 +1877,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    if gate_status == "REJECT_NOISE":
-        logger.warning(
-            f"Unified gate rejection (noise) for session {session_id}: "
-            f"reason={noise_gate.get('reason')} voice_type={noise_gate.get('voice_type')} "
-            f"voice_type_conf={noise_gate.get('voice_type_confidence', 0.0)} "
-            f"f0_mean={noise_gate.get('f0_mean', 0.0)} centroid={noise_gate.get('spectral_centroid', 0.0)} "
-            f"cry_fraction={noise_gate.get('cry_fraction', 0.0)} syllable_rate={noise_gate.get('syllable_rate', 0.0)} "
-            f"baby_fraction={noise_gate.get('baby_fraction', 0.0)}"
-        )
-        rejection_insight = _build_rejection_insight(session, reason="noise")
-        save_insight_to_session(session_id, rejection_insight)
-        return {
-            "status": "insight_generated",
-            "session_id": session_id,
-            "insight": rejection_insight,
-        }
-
-    if gate_status == "PASS_UNCERTAIN":
+    if speaker_gate.get("status") == "UNCERTAIN":
         session["speaker_warning"] = {
             "message": speaker_gate.get("message"),
             "adult_fraction": speaker_gate.get("adult_fraction"),
