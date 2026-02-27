@@ -23,11 +23,11 @@ resource "aws_api_gateway_rest_api" "main" {
 # Cognito Authorizer
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_authorizer" "cognito" {
-  name                   = "${var.project}-${var.environment}-cognito-authorizer"
-  rest_api_id            = aws_api_gateway_rest_api.main.id
-  type                   = "COGNITO_USER_POOLS"
-  identity_source        = "method.request.header.Authorization"
-  provider_arns          = [var.cognito_user_pool_arn]
+  name                             = "${var.project}-${var.environment}-cognito-authorizer"
+  rest_api_id                      = aws_api_gateway_rest_api.main.id
+  type                             = "COGNITO_USER_POOLS"
+  identity_source                  = "method.request.header.Authorization"
+  provider_arns                    = [var.cognito_user_pool_arn]
   authorizer_result_ttl_in_seconds = 300
 }
 
@@ -143,6 +143,48 @@ resource "aws_api_gateway_integration" "options_child_id" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.child_id.id
   http_method             = aws_api_gateway_method.options_child_id.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
+# /account
+resource "aws_api_gateway_resource" "account" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "account"
+}
+
+# DELETE /account
+resource "aws_api_gateway_method" "delete_account" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.account.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "delete_account" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.account.id
+  http_method             = aws_api_gateway_method.delete_account.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.api_handler_invoke_arn
+}
+
+# OPTIONS /account (CORS preflight - unauthenticated)
+resource "aws_api_gateway_method" "options_account" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.account.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_account" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.account.id
+  http_method             = aws_api_gateway_method.options_account.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.api_handler_invoke_arn
@@ -545,6 +587,11 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_integration.options_child.id,
       aws_api_gateway_method.options_child_id.id,
       aws_api_gateway_integration.options_child_id.id,
+      aws_api_gateway_resource.account.id,
+      aws_api_gateway_method.delete_account.id,
+      aws_api_gateway_integration.delete_account.id,
+      aws_api_gateway_method.options_account.id,
+      aws_api_gateway_integration.options_account.id,
       aws_api_gateway_method.options_session_upload.id,
       aws_api_gateway_integration.options_session_upload.id,
       aws_api_gateway_resource.session_start.id,
@@ -592,6 +639,8 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.options_child,
     aws_api_gateway_integration.delete_child,
     aws_api_gateway_integration.options_child_id,
+    aws_api_gateway_integration.delete_account,
+    aws_api_gateway_integration.options_account,
     aws_api_gateway_integration.post_session_upload,
     aws_api_gateway_integration.options_session_upload,
     aws_api_gateway_integration.post_session_start,

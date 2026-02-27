@@ -28,6 +28,7 @@ Design principles:
   - Confidence is hard-capped at 0.92 â€” Qleam never claims certainty.
 """
 import logging
+import math
 from typing import Dict, Optional
 
 from normalization import normalize_probability_distribution
@@ -427,6 +428,7 @@ def determine_probable_intent_v2(
     feature_scores: Dict[str, float],
     rich_features: Optional[Dict[str, float]] = None,
     external_acoustic_scores: Optional[Dict[str, float]] = None,
+    external_acoustic_meta: Optional[Dict] = None,
     developmental_stage: str = "UNKNOWN",
     session_context: Optional[Dict] = None,
     session_count: int = 0,
@@ -434,6 +436,9 @@ def determine_probable_intent_v2(
     context_reliability: float = 0.8,
     acoustic_reliability: float = 1.0,
     population_prior: Optional[Dict[str, float]] = None,
+    training_dataset_prior: Optional[Dict[str, float]] = None,
+    training_dataset_n: int = 0,
+    training_dataset_reliable: bool = False,
 ) -> Dict:
     """
     Three-Source Evidence Model intent determination (Phase 4).
@@ -448,12 +453,18 @@ def determine_probable_intent_v2(
         cluster:              SoundCluster DynamoDB item (probable_intents, reinforcement_weight)
         feature_scores:       4-score dict from feature_extraction (backward compat)
         rich_features:        65-feature dict from Phase 3 (optional, improves accuracy)
+        external_acoustic_scores:
+                              Optional managed endpoint acoustic distribution.
+                              Safely blended when reliability metadata is sufficient.
         developmental_stage:  Baby's current developmental stage (e.g. "CANONICAL_BABBLE")
         session_context:      Phase 3 context dict (feeding_minutes_ago, health_state, etc.)
         session_count:        Total sessions recorded for this child (drives confidence caps)
         parent_trust_score:   Parent Feedback Reliability Score â€” FRS in [0, 1] (default 0.5)
         context_reliability:  How much to trust parent-provided context data (0.2â€“1.0, default 0.8)
         acoustic_reliability: Signal-quality confidence in [0, 1] from quality+diarization checks.
+        training_dataset_prior:
+                              Optional stage-level prior from accepted training dataset.
+                              Blended into research priors with a strict capped alpha.
 
     Returns:
         {
@@ -478,16 +489,92 @@ def determine_probable_intent_v2(
         LABELS = {}
 
     # --- Source 1: Acoustic ---
-    # Optional override from managed endpoint inference (e.g., SageMaker).
+    # Base acoustic signal is always computed from local extraction.
+    base_acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
+    acoustic_scores = dict(base_acoustic_scores)
+    managed_acoustic_alpha = 0.0
+    managed_acoustic_available = bool(external_acoustic_scores)
+
+    # Optional managed endpoint signal is blended (not hard-overridden) when reliable.
     if external_acoustic_scores:
-        acoustic_scores = normalize_intent_distribution(external_acoustic_scores, include_technical=False, fill_missing=True)
-    else:
-        acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
+        managed_scores = normalize_intent_distribution(
+            external_acoustic_scores, include_technical=False, fill_missing=True
+        )
+
+        managed_reliability = 0.0
+        managed_training_samples = 0
+        if isinstance(external_acoustic_meta, dict):
+            try:
+                managed_reliability = max(0.0, min(1.0, float(external_acoustic_meta.get("reliability", 0.0) or 0.0)))
+            except Exception:
+                managed_reliability = 0.0
+            try:
+                managed_training_samples = int(external_acoustic_meta.get("training_samples", 0) or 0)
+            except Exception:
+                managed_training_samples = 0
+
+        try:
+            from constants import (
+                TRAINING_DATASET_MIN_SAMPLES,
+                TRAINING_DATASET_BLEND_MAX_ALPHA,
+            )
+            managed_min_samples = int(TRAINING_DATASET_MIN_SAMPLES)
+            managed_max_alpha = float(TRAINING_DATASET_BLEND_MAX_ALPHA)
+        except Exception:
+            managed_min_samples = 120
+            managed_max_alpha = 0.18
+
+        if managed_training_samples >= managed_min_samples and managed_reliability >= 0.70:
+            rel_scale = (managed_reliability - 0.70) / 0.30
+            rel_scale = max(0.0, min(1.0, rel_scale))
+            managed_acoustic_alpha = round(max(0.0, min(managed_max_alpha, managed_max_alpha * rel_scale)), 4)
+
+            acoustic_scores = normalize_probability_distribution(
+                {
+                    k: (1.0 - managed_acoustic_alpha) * base_acoustic_scores.get(k, 0.0)
+                    + managed_acoustic_alpha * managed_scores.get(k, 0.0)
+                    for k in set(base_acoustic_scores.keys()) | set(managed_scores.keys())
+                }
+            )
 
     # --- Source 2: Research priors + context (Phase 8: FL population prior if available) ---
     research_priors = compute_research_priors(
         developmental_stage, session_context, context_reliability, population_prior
     )
+
+    dataset_alpha = 0.0
+    if training_dataset_prior and training_dataset_reliable:
+        dataset_priors = normalize_intent_distribution(
+            training_dataset_prior, include_technical=False, fill_missing=True
+        )
+
+        try:
+            from constants import (
+                TRAINING_DATASET_BLEND_MAX_ALPHA,
+                TRAINING_DATASET_MIN_SAMPLES,
+                TRAINING_DATASET_BLEND_SATURATION_SAMPLES,
+            )
+            ds_max_alpha = max(0.0, float(TRAINING_DATASET_BLEND_MAX_ALPHA))
+            ds_min = max(1, int(TRAINING_DATASET_MIN_SAMPLES))
+            ds_sat = max(ds_min + 1, int(TRAINING_DATASET_BLEND_SATURATION_SAMPLES))
+        except Exception:
+            ds_max_alpha = 0.18
+            ds_min = 120
+            ds_sat = 2000
+
+        n = max(0, int(training_dataset_n or 0))
+        if n >= ds_min and ds_max_alpha > 0:
+            # Smooth growth: 0 at min samples, approaches max alpha near saturation.
+            span = max(1, ds_sat - ds_min)
+            progress = max(0.0, min(1.0, math.log1p(n - ds_min + 1) / math.log1p(span)))
+            dataset_alpha = round(ds_max_alpha * progress, 4)
+            research_priors = normalize_probability_distribution(
+                {
+                    k: (1.0 - dataset_alpha) * research_priors.get(k, 0.0)
+                    + dataset_alpha * dataset_priors.get(k, 0.0)
+                    for k in set(research_priors.keys()) | set(dataset_priors.keys())
+                }
+            )
 
     # --- Source 3: Feedback history (maintained by reinforcement_engine) ---
     feedback_intents: Dict[str, float] = normalize_intent_distribution(cluster.get("probable_intents") or {}, include_technical=False, fill_missing=True)
@@ -516,8 +603,51 @@ def determine_probable_intent_v2(
             acoustic_w = max(0.0, acoustic_w - extra_shift)
             research_w += extra_shift
 
+        # Age priors help cold-start, but when acoustic evidence is strong and
+        # clean we reduce age influence to avoid stage-induced label flips.
+        sorted_acoustic = sorted(acoustic_scores.values(), reverse=True)
+        acoustic_margin = (
+            (sorted_acoustic[0] - sorted_acoustic[1])
+            if len(sorted_acoustic) > 1
+            else (sorted_acoustic[0] if sorted_acoustic else 0.0)
+        )
+        strength = max(0.0, min(1.0, (top_acoustic - 0.34) / 0.22))
+        separation = max(0.0, min(1.0, (acoustic_margin - 0.05) / 0.15))
+        confidence_shift = strength * separation * rel
+        if confidence_shift > 0:
+            shift = min(research_w * 0.40, research_w * 0.40 * confidence_shift)
+            research_w = max(0.0, research_w - shift)
+            acoustic_w += shift
+
     # --- Blend ---
     blended = blend_evidence_sources(acoustic_scores, research_priors, feedback_intents, acoustic_w, research_w, feedback_w)
+
+    # Infant-stage stability guard:
+    # when blended top intents are nearly tied but acoustics are clearly decisive,
+    # add a tiny acoustic-consistent boost to avoid age-prior driven label flips.
+    acoustic_tiebreak_applied = False
+    acoustic_tiebreak_key = ""
+    if stage in _INFANT_STAGE_SET and acoustic_scores:
+        blended_ranked = sorted(blended.items(), key=lambda x: -x[1])
+        acoustic_ranked = sorted(acoustic_scores.items(), key=lambda x: -x[1])
+        if len(blended_ranked) >= 2 and len(acoustic_ranked) >= 2:
+            blended_best = blended_ranked[0][0]
+            blended_margin = blended_ranked[0][1] - blended_ranked[1][1]
+            acoustic_best_key = acoustic_ranked[0][0]
+            acoustic_best_score = acoustic_ranked[0][1]
+            acoustic_margin = acoustic_ranked[0][1] - acoustic_ranked[1][1]
+            if (
+                acoustic_best_key != blended_best
+                and blended_margin <= 0.04
+                and acoustic_best_score >= 0.35
+                and acoustic_margin >= 0.07
+                and rel >= 0.72
+            ):
+                boost = min(0.02, blended_margin + 0.006)
+                blended[acoustic_best_key] = blended.get(acoustic_best_key, 0.0) + boost
+                blended = normalize_probability_distribution(blended)
+                acoustic_tiebreak_applied = True
+                acoustic_tiebreak_key = acoustic_best_key
 
     # --- Winner ---
     best_key = max(blended, key=blended.get)
@@ -575,7 +705,12 @@ def determine_probable_intent_v2(
             "acoustic_reliability": round(rel, 3),
             "top_margin": round(max(margin, 0.0), 4),
             "agreement": agreement,
+            "dataset_alpha": round(dataset_alpha, 4),
+            "training_dataset_n": int(training_dataset_n or 0),
+            "training_dataset_reliable": bool(training_dataset_reliable),
+            "managed_acoustic_available": managed_acoustic_available,
+            "managed_acoustic_alpha": round(managed_acoustic_alpha, 4),
+            "acoustic_tiebreak_applied": acoustic_tiebreak_applied,
+            "acoustic_tiebreak_key": acoustic_tiebreak_key,
         },
     }
-
-

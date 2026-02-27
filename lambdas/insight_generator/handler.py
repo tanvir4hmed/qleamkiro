@@ -36,6 +36,7 @@ from constants import (
     CHILD_PROFILE_TABLE,
     DISCLAIMER,
     INTENT_LABELS,
+    MODEL_REGISTRY_TABLE,
     POPULATION_MODEL_TABLE,
     S3_BUCKET_NAME,
     SEMANTIC_BRIDGE_TABLE,
@@ -50,6 +51,7 @@ from constants import (
 from normalization import normalize_probability_distribution
 from evidence_model import determine_probable_intent_v2
 from intent_taxonomy import canonical_intent_key, canonical_intent_keys
+from training_model import predict_intent_distribution
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -61,6 +63,9 @@ session_table = dynamodb.Table(SESSION_TABLE)
 sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
+model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
+
+_CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
 
 
 # =============================================================================
@@ -170,6 +175,33 @@ def get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]
     return None
 
 
+def get_training_dataset_profile(developmental_stage: str) -> Dict[str, Any]:
+    """
+    Load stage-level accepted training dataset profile from PopulationModel table.
+
+    Returns a shape with safe defaults when no dataset exists:
+      {
+        "prior": None | {intent: prob},
+        "n": int,
+        "is_reliable": bool
+      }
+    """
+    try:
+        response = population_model_table.get_item(
+            Key={"stage": developmental_stage.upper()},
+            ProjectionExpression="dataset_prior, dataset_n, dataset_is_reliable",
+        )
+        item = _decimal_to_float(response.get("Item") or {})
+        prior = item.get("dataset_prior")
+        if isinstance(prior, dict) and len(prior) >= 3:
+            n = int(item.get("dataset_n") or 0)
+            is_reliable = bool(item.get("dataset_is_reliable"))
+            return {"prior": prior, "n": n, "is_reliable": is_reliable}
+    except Exception as e:
+        logger.warning(f"Failed to load training dataset profile for {developmental_stage}: {e}")
+    return {"prior": None, "n": 0, "is_reliable": False}
+
+
 _CORE_INTENT_KEYS = tuple(canonical_intent_keys(include_technical=False))
 
 
@@ -227,14 +259,103 @@ def invoke_sagemaker_intent_endpoint(session: Dict, developmental_stage: str) ->
         emo = parsed.get("emotion_profile")
         if isinstance(emo, dict):
             result["emotion_profile"] = emo
+
+        meta = parsed.get("acoustic_meta") if isinstance(parsed.get("acoustic_meta"), dict) else {}
+        if not meta:
+            meta = {
+                "training_samples": parsed.get("training_samples"),
+                "reliability": parsed.get("reliability"),
+            }
+        try:
+            meta_clean = {}
+            if meta.get("training_samples") is not None:
+                meta_clean["training_samples"] = int(meta.get("training_samples"))
+            if meta.get("reliability") is not None:
+                meta_clean["reliability"] = float(meta.get("reliability"))
+            if meta_clean:
+                result["acoustic_meta"] = meta_clean
+        except Exception:
+            pass
+
         result["managed_model"] = {
             "provider": "sagemaker",
             "endpoint": SAGEMAKER_INTENT_ENDPOINT_NAME,
             "model_version": parsed.get("model_version"),
+            "acoustic_meta": result.get("acoustic_meta"),
         }
         return result
     except Exception as e:
         logger.warning(f"SageMaker intent inference failed: {e}")
+        return {}
+
+
+def invoke_internal_stage_model(session: Dict, developmental_stage: str) -> Dict[str, Any]:
+    """
+    Optional internal stage model inference from ModelRegistry.
+    Used when managed endpoint output is unavailable.
+    """
+    try:
+        stage_resp = population_model_table.get_item(
+            Key={"stage": developmental_stage.upper()},
+            ProjectionExpression=(
+                "active_model_id, active_model_reliability, "
+                "active_model_training_samples, model_version"
+            ),
+        )
+        stage_item = _decimal_to_float(stage_resp.get("Item") or {})
+        active_model_id = str(stage_item.get("active_model_id") or "").strip()
+        if not active_model_id:
+            return {}
+
+        model_resp = model_registry_table.get_item(Key={"model_id": active_model_id})
+        model_item = _decimal_to_float(model_resp.get("Item") or {})
+        if not model_item:
+            return {}
+        if str(model_item.get("status") or "").upper() == "RETIRED":
+            return {}
+
+        artifact = model_item.get("artifact") or {}
+        if not isinstance(artifact, dict):
+            return {}
+
+        acoustic_scores = predict_intent_distribution(
+            model=artifact,
+            feature_scores=session.get("feature_scores", {}),
+            rich_features=session.get("rich_features", {}),
+        )
+        if not isinstance(acoustic_scores, dict) or len(acoustic_scores) < 2:
+            return {}
+
+        reliability = float(
+            model_item.get(
+                "reliability",
+                stage_item.get("active_model_reliability", 0.0),
+            )
+            or 0.0
+        )
+        training_samples = int(
+            model_item.get(
+                "training_samples",
+                stage_item.get("active_model_training_samples", 0),
+            )
+            or 0
+        )
+        meta = {
+            "training_samples": training_samples,
+            "reliability": max(0.0, min(1.0, reliability)),
+        }
+        return {
+            "acoustic_scores": normalize_probability_distribution(acoustic_scores),
+            "acoustic_meta": meta,
+            "managed_model": {
+                "provider": str(model_item.get("provider") or "qleam_online_supervised_v1"),
+                "model_id": active_model_id,
+                "model_version": int(model_item.get("model_version", 0) or 0),
+                "acoustic_meta": meta,
+            },
+        }
+    except Exception as e:
+        logger.warning(f"Internal stage model inference failed (non-fatal): {e}")
         return {}
 
 
@@ -1241,8 +1362,14 @@ def build_insight(
     #    [Phase 8] Research prior replaced by FL population prior when available + reliable
     #    Confidence capped by session count; feedback weight scaled by parent trust score (FRS)
     population_prior = get_population_prior(developmental_stage)
+    training_dataset = get_training_dataset_profile(developmental_stage)
     managed_inference = invoke_sagemaker_intent_endpoint(session, developmental_stage)
+    if not (managed_inference.get("acoustic_scores") or {}):
+        internal_inference = invoke_internal_stage_model(session, developmental_stage)
+        if internal_inference.get("acoustic_scores"):
+            managed_inference = internal_inference
     managed_acoustic_scores = managed_inference.get("acoustic_scores") or {}
+    managed_acoustic_meta = managed_inference.get("acoustic_meta") or {}
     managed_emotion_profile = managed_inference.get("emotion_profile")
     if isinstance(managed_emotion_profile, dict):
         emotion_profile = managed_emotion_profile
@@ -1252,6 +1379,7 @@ def build_insight(
         feature_scores=feature_scores,
         rich_features=rich_features,
         external_acoustic_scores=managed_acoustic_scores,
+        external_acoustic_meta=managed_acoustic_meta,
         developmental_stage=developmental_stage,
         session_context=session_context,
         session_count=session_count,
@@ -1259,6 +1387,9 @@ def build_insight(
         context_reliability=context_reliability,
         acoustic_reliability=acoustic_reliability,
         population_prior=population_prior,
+        training_dataset_prior=training_dataset.get("prior"),
+        training_dataset_n=int(training_dataset.get("n") or 0),
+        training_dataset_reliable=bool(training_dataset.get("is_reliable")),
     )
     cluster_stability = determine_cluster_stability(cluster)
     private_language_signal = compute_private_language_signal(
@@ -1323,6 +1454,10 @@ def build_insight(
         "semantic_alignment": semantic_alignment,
         "private_language_signal": private_language_signal,
         "managed_inference": managed_inference.get("managed_model"),
+        "training_dataset_profile": {
+            "n": int(training_dataset.get("n") or 0),
+            "is_reliable": bool(training_dataset.get("is_reliable")),
+        },
         "acoustic_reliability": acoustic_reliability,
         "insight_sections": insight_sections,
         # Backward-compat flat text
@@ -1355,8 +1490,11 @@ def _build_rejection_insight(
       "quality"     - no signal / no vocal activity / too short
       "adult"       - biological validation flagged adult voice
       "mismatch"    - speaker type doesn't match expected child
+      "noise"       - non-baby environmental/noise-like recording
     """
+    source = "quality-rejection"
     if reason == "adult" or reason == "mismatch":
+        source = "speaker-rejection"
         transcript_note = ""
         try:
             t = transcribe_session_audio(session)
@@ -1415,6 +1553,31 @@ def _build_rejection_insight(
             "Stay quiet yourself - only record the baby's vocalizations",
             "If someone else was speaking, try a new recording with just the baby",
         ]
+    elif reason == "noise":
+        source = "noise-rejection"
+        noise_gate = session.get("non_baby_noise_gate", {}) or {}
+        noise_reason = str(noise_gate.get("reason", "noise_like") or "noise_like")
+        if noise_reason == "non_baby_tonal_pattern":
+            what_i_hear = (
+                "This recording contains tonal environmental sound patterns instead of baby vocalizations."
+            )
+            what_it_means = (
+                "The sound is structured but does not match infant crying/cooing/babbling signatures, "
+                "so a baby insight cannot be generated from this clip."
+            )
+        else:
+            what_i_hear = "This recording mostly contains non-baby background noise."
+            what_it_means = (
+                "The detected audio pattern is environmental/ambient rather than infant vocalization, "
+                "so a meaningful baby insight cannot be generated from this clip."
+            )
+        what_to_try = [
+            "Move to a quieter place and reduce TV, music, or fan noise",
+            "Record close to your baby (20-30 cm) while they are vocalizing",
+            "Avoid recording environmental sounds (toys, alarms, traffic, TV)",
+            "Try again when your baby is actively cooing, babbling, or crying",
+        ]
+        label = "Non-baby sound detected"
     else:
         what_i_hear = "We couldn't detect clear baby sounds in this recording."
         what_it_means = (
@@ -1440,7 +1603,7 @@ def _build_rejection_insight(
             "what_i_hear": what_i_hear,
             "what_it_means": what_it_means,
             "what_to_try": what_to_try,
-            "source": "quality-rejection",
+            "source": source,
         },
         "speaker_type_detected": speaker_type,
         "speaker_category_detected": speaker_category,
@@ -1482,6 +1645,7 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
     """
     biological = session.get("biological", {}) or {}
     diarization = session.get("diarization", {}) or {}
+    quality_gate = session.get("quality_gate", {}) or {}
 
     speaker_type = biological.get("speaker_type", "unknown")
     speaker_category = biological.get("speaker_category", "unknown")
@@ -1493,6 +1657,7 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
     total_segments = int(diarization.get("total_segments", 0) or 0)
     baby_fraction = float(diarization.get("baby_audio_fraction", 1.0) or 1.0)
     adult_fraction = float(diarization.get("adult_audio_fraction", 0.0) or 0.0)
+    snr_db = float(quality_gate.get("snr_db", 0.0) or 0.0)
     age_days = session.get("age_days_at_recording")
     age_classification = session.get("age_classification", {}) or {}
     age_class = str(age_classification.get("final_class", "") or "").lower().strip()
@@ -1547,11 +1712,26 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
             "baby_fraction": round(baby_fraction, 3),
         }
 
-    uncertain = (
-        adult_bio_suspected
-        or spoof_likelihood >= 0.55
-        or (adult_segments > 0 and adult_fraction >= 0.30)
-        or (primary_speaker in ("adult_male", "adult_female") and adult_fraction >= 0.40)
+    # Soft-warning gate: require corroborating evidence (not spoof-only) to
+    # reduce false "adult imitation" warnings on laptop/headset recordings.
+    soft_signals = 0
+    if adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.62:
+        soft_signals += 1
+    if spoof_likelihood >= 0.62:
+        soft_signals += 1
+    if adult_segments > 0 and adult_fraction >= 0.30:
+        soft_signals += 1
+    if primary_speaker in ("adult_male", "adult_female") and adult_fraction >= 0.35:
+        soft_signals += 1
+
+    # In lower-SNR recordings, raise bar for uncertain warnings unless
+    # diarization also supports adult presence.
+    if snr_db < 12.0 and soft_signals > 0 and adult_fraction < 0.25:
+        soft_signals = max(0, soft_signals - 1)
+
+    uncertain = bool(
+        soft_signals >= 2
+        or (spoof_likelihood >= 0.75 and adult_fraction >= 0.10)
     )
 
     if uncertain:
@@ -1568,6 +1748,7 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
             "spoof_likelihood": round(spoof_likelihood, 3),
             "adult_fraction": round(adult_fraction, 3),
             "baby_fraction": round(baby_fraction, 3),
+            "soft_signal_count": soft_signals,
         }
 
     return {
@@ -1578,6 +1759,131 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         "spoof_likelihood": round(spoof_likelihood, 3),
         "adult_fraction": round(adult_fraction, 3),
         "baby_fraction": round(baby_fraction, 3),
+    }
+
+
+def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
+    """
+    Reject non-baby recordings that can pass quality and speaker checks.
+
+    Targets:
+      - Explicit Phase-4 noise routing.
+      - Tonal non-baby patterns (high centroid/high F0 with low infant evidence).
+    """
+    age_cls = session.get("age_classification", {}) or {}
+    routing = session.get("routing", {}) or {}
+    diarization = session.get("diarization", {}) or {}
+    rich = session.get("rich_features", {}) or {}
+
+    voice_type = str(age_cls.get("voice_type", "") or "").lower().strip()
+    voice_type_conf = float(age_cls.get("voice_type_confidence", 0.0) or 0.0)
+    is_unknown = bool(age_cls.get("is_unknown", False))
+    routing_type = str(routing.get("analysis_type", "") or "").lower().strip()
+    baby_fraction = float(diarization.get("baby_audio_fraction", 1.0) or 1.0)
+
+    f0_mean = float(rich.get("f0_mean", 0.0) or 0.0)
+    spectral_centroid = float(rich.get("spectral_centroid", 0.0) or 0.0)
+    cry_fraction = float(rich.get("cry_fraction", 0.0) or 0.0)
+    syllable_rate = float(rich.get("syllable_rate", 0.0) or 0.0)
+    voiced_fraction = float(rich.get("f0_voiced_fraction", 0.0) or 0.0)
+    hnr_db = float(rich.get("hnr_db", 0.0) or 0.0)
+
+    noise_like = bool(
+        (voice_type == "noise" and voice_type_conf >= 0.75)
+        or (routing_type == "low_confidence" and voice_type == "noise" and is_unknown)
+    )
+
+    # Generic tonal non-baby footprint with weak infant evidence.
+    tonal_non_baby_pattern = bool(
+        spectral_centroid >= 3200.0
+        and f0_mean >= 650.0
+        and cry_fraction <= 0.08
+        and syllable_rate >= 4.5
+        and voiced_fraction >= 0.30
+        and hnr_db >= 5.0
+        and baby_fraction <= 0.45
+    )
+
+    if noise_like or tonal_non_baby_pattern:
+        return {
+            "reject": True,
+            "reason": "noise_like" if noise_like else "non_baby_tonal_pattern",
+            "voice_type": voice_type,
+            "voice_type_confidence": round(voice_type_conf, 3),
+            "f0_mean": round(f0_mean, 2),
+            "spectral_centroid": round(spectral_centroid, 2),
+            "cry_fraction": round(cry_fraction, 3),
+            "syllable_rate": round(syllable_rate, 3),
+            "baby_fraction": round(baby_fraction, 3),
+        }
+    return {"reject": False}
+
+
+def _evaluate_baby_admission_gate(session: Dict) -> Dict[str, Any]:
+    """
+    Unified recording admission gate.
+
+    Possible outcomes:
+      - REJECT_NO_SOUND
+      - REJECT_ADULT
+      - REJECT_MISMATCH
+      - REJECT_NOISE
+      - PASS_UNCERTAIN
+      - BABY_PASS
+    """
+    quality_gate = session.get("quality_gate", {}) or {}
+    gate_issues = quality_gate.get("issues", []) or []
+    critical_issues = [
+        i for i in gate_issues
+        if any(str(i).startswith(p) for p in _CRITICAL_GATE_ISSUES)
+    ]
+    if critical_issues and not quality_gate.get("passed", True):
+        return {
+            "status": "REJECT_NO_SOUND",
+            "bucket": "no_sound",
+            "reason": "quality",
+            "critical_issues": critical_issues,
+        }
+
+    speaker_gate = _evaluate_speaker_gate(session)
+    if speaker_gate.get("status") == "ADULT_REJECT":
+        return {
+            "status": "REJECT_ADULT",
+            "bucket": "adult",
+            "reason": "adult",
+            "speaker_gate": speaker_gate,
+        }
+    if speaker_gate.get("status") == "AGE_MISMATCH_REJECT":
+        return {
+            "status": "REJECT_MISMATCH",
+            "bucket": "adult",
+            "reason": "mismatch",
+            "speaker_gate": speaker_gate,
+        }
+
+    noise_gate = _evaluate_non_baby_noise_gate(session)
+    if noise_gate.get("reject"):
+        return {
+            "status": "REJECT_NOISE",
+            "bucket": "noise",
+            "reason": "noise",
+            "speaker_gate": speaker_gate,
+            "noise_gate": noise_gate,
+        }
+
+    if speaker_gate.get("status") == "UNCERTAIN":
+        return {
+            "status": "PASS_UNCERTAIN",
+            "bucket": "uncertain",
+            "speaker_gate": speaker_gate,
+            "noise_gate": noise_gate,
+        }
+
+    return {
+        "status": "BABY_PASS",
+        "bucket": "baby",
+        "speaker_gate": speaker_gate,
+        "noise_gate": noise_gate,
     }
 
 
@@ -1607,19 +1913,20 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not session:
         raise ValueError(f"Session {session_id} not found")
 
-    # 1a. Quality gate check - reject recordings with no vocal content
-    # Only truly critical issues block analysis.
-    # too_silent alone is NOT critical - 1s of sound in a 5s recording is still analysable.
-    _CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
-    quality_gate = session.get("quality_gate", {})
-    gate_issues = quality_gate.get("issues", [])
-    critical_issues = [
-        i for i in gate_issues
-        if any(i.startswith(p) for p in _CRITICAL_GATE_ISSUES)
-    ]
-    if critical_issues and not quality_gate.get("passed", True):
+    # 1a. Unified recording gate: only baby recordings proceed to insight.
+    # Outcomes: no_sound, adult/mismatch, noise, uncertain, baby_pass.
+    recording_gate = _evaluate_baby_admission_gate(session)
+    session["recording_gate"] = recording_gate
+    speaker_gate = recording_gate.get("speaker_gate") or {}
+    noise_gate = recording_gate.get("noise_gate") or {}
+    session["speaker_gate"] = speaker_gate
+    session["non_baby_noise_gate"] = noise_gate
+
+    gate_status = recording_gate.get("status")
+    if gate_status == "REJECT_NO_SOUND":
         logger.warning(
-            f"Quality gate rejection for session {session_id}: {critical_issues}"
+            f"Unified gate rejection (no_sound) for session {session_id}: "
+            f"{recording_gate.get('critical_issues', [])}"
         )
         rejection_insight = _build_rejection_insight(session, reason="quality")
         save_insight_to_session(session_id, rejection_insight)
@@ -1629,12 +1936,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    # 1b. Speaker authenticity gate (BABY_PASS / UNCERTAIN / ADULT_REJECT).
-    speaker_gate = _evaluate_speaker_gate(session)
-    session["speaker_gate"] = speaker_gate
-    if speaker_gate["status"] == "ADULT_REJECT":
+    if gate_status == "REJECT_ADULT":
         logger.warning(
-            f"Adult voice rejection for session {session_id}: "
+            f"Unified gate rejection (adult) for session {session_id}: "
             f"type={speaker_gate.get('speaker_type')} cat={speaker_gate.get('speaker_category')} "
             f"adult_fraction={speaker_gate.get('adult_fraction', 0.0):.2f} "
             f"baby_fraction={speaker_gate.get('baby_fraction', 0.0):.2f} "
@@ -1654,9 +1958,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    if speaker_gate["status"] == "AGE_MISMATCH_REJECT":
+    if gate_status == "REJECT_MISMATCH":
         logger.warning(
-            f"Age mismatch rejection for session {session_id}: "
+            f"Unified gate rejection (mismatch) for session {session_id}: "
             f"registered_age_days={speaker_gate.get('age_days')} "
             f"detected={speaker_gate.get('speaker_category')} "
             f"conf={speaker_gate.get('age_class_confidence', 0.0):.2f}"
@@ -1674,7 +1978,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
-    if speaker_gate["status"] == "UNCERTAIN":
+    if gate_status == "REJECT_NOISE":
+        logger.warning(
+            f"Unified gate rejection (noise) for session {session_id}: "
+            f"reason={noise_gate.get('reason')} voice_type={noise_gate.get('voice_type')} "
+            f"voice_type_conf={noise_gate.get('voice_type_confidence', 0.0)} "
+            f"f0_mean={noise_gate.get('f0_mean', 0.0)} centroid={noise_gate.get('spectral_centroid', 0.0)} "
+            f"cry_fraction={noise_gate.get('cry_fraction', 0.0)} syllable_rate={noise_gate.get('syllable_rate', 0.0)} "
+            f"baby_fraction={noise_gate.get('baby_fraction', 0.0)}"
+        )
+        rejection_insight = _build_rejection_insight(session, reason="noise")
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
+        }
+
+    if gate_status == "PASS_UNCERTAIN":
         session["speaker_warning"] = {
             "message": speaker_gate.get("message"),
             "adult_fraction": speaker_gate.get("adult_fraction"),
@@ -1682,6 +2003,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "bio_confidence": speaker_gate.get("bio_confidence"),
             "spoof_likelihood": speaker_gate.get("spoof_likelihood"),
         }
+
     # Branch: LINGUISTIC mode sessions get language-development insight
     developmental_mode = session.get("developmental_mode", "")
     age_days = session.get("age_days_at_recording")

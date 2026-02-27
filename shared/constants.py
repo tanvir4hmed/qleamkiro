@@ -50,6 +50,8 @@ FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
 CONCEPT_GRAPH_TABLE: str = os.environ.get("CONCEPT_GRAPH_TABLE", "qleam-dev-ConceptGraph")
 MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones")
 POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
+TRAINING_CANDIDATE_TABLE: str = os.environ.get("TRAINING_CANDIDATE_TABLE", "qleam-dev-TrainingCandidate")
+MODEL_REGISTRY_TABLE: str = os.environ.get("MODEL_REGISTRY_TABLE", "qleam-dev-ModelRegistry")
 
 # =============================================================================
 # S3
@@ -201,3 +203,35 @@ FL_DELTA_QUALITY_GATE: float = 0.65  # Minimum delta_score for session to be inc
 FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor â€” never fully replaced by FL
 FL_ROUND_INTERVAL_HOURS: int = 24    # How often aggregation runs (via EventBridge)
 
+# =============================================================================
+# Training Candidate Acceptance (Phase 1)
+# =============================================================================
+TRAINING_ACCEPT_DELTA_MIN: float = float(os.environ.get("TRAINING_ACCEPT_DELTA_MIN", "0.72"))
+TRAINING_ACCEPT_FRS_MIN: float = float(os.environ.get("TRAINING_ACCEPT_FRS_MIN", "0.70"))
+TRAINING_ACCEPT_ACOUSTIC_RELIABILITY_MIN: float = float(
+    os.environ.get("TRAINING_ACCEPT_ACOUSTIC_RELIABILITY_MIN", "0.62")
+)
+TRAINING_ACCEPT_TOP_MARGIN_MIN: float = float(os.environ.get("TRAINING_ACCEPT_TOP_MARGIN_MIN", "0.08"))
+TRAINING_ACCEPT_SCORE_MIN: float = float(os.environ.get("TRAINING_ACCEPT_SCORE_MIN", "0.76"))
+
+# Stage-level training dataset profile reliability and blend controls.
+TRAINING_DATASET_MIN_SAMPLES: int = int(os.environ.get("TRAINING_DATASET_MIN_SAMPLES", "120"))
+TRAINING_DATASET_BLEND_MAX_ALPHA: float = float(
+    os.environ.get("TRAINING_DATASET_BLEND_MAX_ALPHA", "0.18")
+)
+TRAINING_DATASET_BLEND_SATURATION_SAMPLES: int = int(
+    os.environ.get("TRAINING_DATASET_BLEND_SATURATION_SAMPLES", "2000")
+)
+
+# =============================================================================
+# Online Supervised Acoustic Training (Phase 3)
+# =============================================================================
+TRAINING_MODEL_MIN_TRAIN_SAMPLES: int = int(os.environ.get("TRAINING_MODEL_MIN_TRAIN_SAMPLES", "120"))
+TRAINING_MODEL_MIN_VAL_SAMPLES: int = int(os.environ.get("TRAINING_MODEL_MIN_VAL_SAMPLES", "24"))
+TRAINING_MODEL_MIN_LABEL_SUPPORT: int = int(os.environ.get("TRAINING_MODEL_MIN_LABEL_SUPPORT", "8"))
+TRAINING_MODEL_MIN_ACCURACY: float = float(os.environ.get("TRAINING_MODEL_MIN_ACCURACY", "0.55"))
+TRAINING_MODEL_PROMOTION_MARGIN: float = float(os.environ.get("TRAINING_MODEL_PROMOTION_MARGIN", "0.02"))
+TRAINING_MODEL_RETRAIN_EVERY_N: int = int(os.environ.get("TRAINING_MODEL_RETRAIN_EVERY_N", "25"))
+TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE: int = int(
+    os.environ.get("TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE", "4000")
+)

@@ -7,6 +7,7 @@ Input:  API Gateway event with feedback body
 Output: { status: "feedback_processed" }
 """
 import json
+import hashlib
 import logging
 import math
 import os
@@ -18,6 +19,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
 # Add shared utilities to path (for container image deployment)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
@@ -33,8 +35,24 @@ from constants import (
     POPULATION_MODEL_TABLE,
     SESSION_TABLE,
     SOUND_CLUSTER_TABLE,
+    MODEL_REGISTRY_TABLE,
+    TRAINING_ACCEPT_ACOUSTIC_RELIABILITY_MIN,
+    TRAINING_ACCEPT_DELTA_MIN,
+    TRAINING_ACCEPT_FRS_MIN,
+    TRAINING_ACCEPT_SCORE_MIN,
+    TRAINING_ACCEPT_TOP_MARGIN_MIN,
+    TRAINING_DATASET_MIN_SAMPLES,
+    TRAINING_CANDIDATE_TABLE,
+    TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE,
+    TRAINING_MODEL_MIN_ACCURACY,
+    TRAINING_MODEL_MIN_LABEL_SUPPORT,
+    TRAINING_MODEL_MIN_TRAIN_SAMPLES,
+    TRAINING_MODEL_MIN_VAL_SAMPLES,
+    TRAINING_MODEL_PROMOTION_MARGIN,
+    TRAINING_MODEL_RETRAIN_EVERY_N,
 )
 from intent_taxonomy import canonical_intent_key, canonical_intent_keys, normalize_intent_distribution
+from training_model import train_prototype_model
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -46,6 +64,8 @@ feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
 sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
+training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
+model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 lambda_client = boto3.client("lambda")
 
 # All intent keys — must match evidence_model.py
@@ -345,6 +365,8 @@ def save_feedback(
     training_eligible: Optional[bool] = None,
     training_stage: str = "",
     training_weight: Optional[float] = None,
+    training_acceptance_score: Optional[float] = None,
+    training_candidate_eligible: Optional[bool] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     feedback_item: Dict[str, Any] = {
@@ -381,6 +403,10 @@ def save_feedback(
         feedback_item["training_stage"] = training_stage
     if training_weight is not None:
         feedback_item["training_weight"] = _float_to_decimal(training_weight)
+    if training_acceptance_score is not None:
+        feedback_item["training_acceptance_score"] = _float_to_decimal(training_acceptance_score)
+    if training_candidate_eligible is not None:
+        feedback_item["training_candidate_eligible"] = bool(training_candidate_eligible)
 
     feedback_table.put_item(Item=feedback_item)
     logger.info(f"Saved feedback {feedback_id} alignment={alignment_score} frs={frs_before}→{frs_after}")
@@ -423,6 +449,175 @@ def update_context_reliability(child_id: str, alignment_score: float, session: D
         f"α={alpha} signal={fraud_signal}"
     )
     return fraud_signal
+
+
+def _clamp01(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except Exception:
+        return 0.0
+
+
+def compute_training_acceptance(
+    session: Dict,
+    training_stage: str,
+    response_type: str,
+    effectiveness: str,
+    training_eligible: bool,
+    delta_score: Optional[float],
+    frs_after: Optional[float],
+    fraud_signal_frs: str,
+    efp_top_intent: str = "",
+) -> Dict[str, Any]:
+    """
+    Strict acceptance gate for model-training candidates.
+
+    This gate is intentionally stricter than FL population-prior eligibility.
+    Parent feedback alone is never sufficient; model/session quality signals
+    must also pass.
+    """
+    insight = session.get("insight") or {}
+    probable = insight.get("probable_intent") or {}
+    evidence = probable.get("evidence") or {}
+    quality_gate = session.get("quality_gate") or {}
+    speaker_gate = session.get("speaker_gate") or {}
+
+    model_intent = str(probable.get("key") or efp_top_intent or "").strip().lower()
+    quality_passed = bool(quality_gate.get("passed", True))
+    speaker_status = str(speaker_gate.get("status") or "").upper().strip()
+    speaker_pass = speaker_status == "BABY_PASS"
+    agreement = bool(evidence.get("agreement", False))
+    label_matches_model = bool(model_intent and response_type == model_intent)
+
+    acoustic_reliability = _clamp01(
+        insight.get("acoustic_reliability", evidence.get("acoustic_reliability", 0.0))
+    )
+    top_margin = max(0.0, float(evidence.get("top_margin", 0.0) or 0.0))
+    margin_norm = _clamp01(top_margin / 0.20)
+    delta_norm = _clamp01(delta_score if delta_score is not None else 0.0)
+    frs_norm = _clamp01(frs_after if frs_after is not None else 0.0)
+    agreement_norm = 1.0 if agreement else 0.0
+    label_match_norm = 1.0 if label_matches_model else 0.0
+
+    # Composite score used for candidate ranking/selection quality.
+    acceptance_score = round(
+        0.34 * delta_norm
+        + 0.28 * frs_norm
+        + 0.20 * acoustic_reliability
+        + 0.10 * margin_norm
+        + 0.05 * agreement_norm
+        + 0.03 * label_match_norm,
+        4,
+    )
+
+    hard_gates_pass = bool(
+        training_eligible
+        and response_type in _ALL_INTENTS
+        and effectiveness == "helpful"
+        and fraud_signal_frs == "NONE"
+        and bool(training_stage)
+        and delta_score is not None
+        and frs_after is not None
+        and float(delta_score) >= TRAINING_ACCEPT_DELTA_MIN
+        and float(frs_after) >= TRAINING_ACCEPT_FRS_MIN
+        and acoustic_reliability >= TRAINING_ACCEPT_ACOUSTIC_RELIABILITY_MIN
+        and top_margin >= TRAINING_ACCEPT_TOP_MARGIN_MIN
+        and agreement
+        and label_matches_model
+        and quality_passed
+        and speaker_pass
+    )
+    candidate_eligible = hard_gates_pass and acceptance_score >= TRAINING_ACCEPT_SCORE_MIN
+
+    return {
+        "score": acceptance_score,
+        "eligible": candidate_eligible,
+        "signals": {
+            "training_stage": training_stage,
+            "response_type": response_type,
+            "model_intent": model_intent,
+            "label_matches_model": label_matches_model,
+            "quality_passed": quality_passed,
+            "speaker_status": speaker_status,
+            "delta_score": round(float(delta_score or 0.0), 4),
+            "frs_after": round(float(frs_after or 0.0), 4),
+            "acoustic_reliability": round(acoustic_reliability, 4),
+            "top_margin": round(top_margin, 4),
+            "agreement": agreement,
+            "hard_gates_pass": hard_gates_pass,
+        },
+    }
+
+
+def save_training_candidate(
+    session: Dict,
+    training_stage: str,
+    response_type: str,
+    effectiveness: str,
+    training_weight: Optional[float],
+    acceptance: Dict[str, Any],
+) -> Optional[str]:
+    """
+    Persist a de-identified training candidate from accepted feedback/session.
+
+    Stored record intentionally excludes child/session IDs and raw audio paths.
+    """
+    if not acceptance.get("eligible"):
+        return None
+
+    feature_scores = session.get("feature_scores") or {}
+    rich_features = session.get("rich_features") or {}
+    if not feature_scores and not rich_features:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    candidate_id = str(uuid.uuid4())
+    sample_weight = float(training_weight if training_weight is not None else acceptance.get("score", 0.0))
+    sample_weight = round(max(0.05, min(1.0, sample_weight)), 4)
+
+    signature_payload = json.dumps(
+        {
+            "stage": training_stage,
+            "label": response_type,
+            "feature_scores": feature_scores,
+            "rich_features": rich_features,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    feature_signature = hashlib.sha256(signature_payload.encode("utf-8")).hexdigest()
+    split_bucket = int(feature_signature[:8], 16) % 100
+    if split_bucket < 80:
+        split = "train"
+    elif split_bucket < 90:
+        split = "val"
+    else:
+        split = "test"
+
+    item = {
+        "candidate_id": candidate_id,
+        "accepted_at": now,
+        "developmental_stage": training_stage,
+        "developmental_mode": str(session.get("developmental_mode") or ""),
+        "accepted_label": response_type,
+        "effectiveness": effectiveness,
+        "sample_weight": sample_weight,
+        "acceptance_score": float(acceptance.get("score", 0.0) or 0.0),
+        "acceptance_signals": acceptance.get("signals") or {},
+        "feature_scores": feature_scores,
+        "rich_features": rich_features,
+        "feature_signature": feature_signature,
+        "dataset_split": split,
+        "schema_version": 1,
+        "source": "feedback_acceptance_v1",
+    }
+
+    training_candidate_table.put_item(Item=_float_to_decimal(item))
+    logger.info(
+        f"Saved training candidate {candidate_id} stage={training_stage} "
+        f"label={response_type} score={acceptance.get('score', 0.0):.4f}"
+    )
+    return candidate_id
 
 
 def _blend_with_research_floor(distribution: Dict[str, float]) -> Dict[str, float]:
@@ -483,6 +678,202 @@ def _online_update_population_prior(stage: str, intent_key: str, sample_weight: 
         )
     except Exception as e:
         logger.warning(f"Online population prior update skipped for stage={stage_key}: {e}")
+
+
+def _online_update_training_dataset_profile(stage: str, intent_key: str, sample_weight: float) -> Dict[str, Any]:
+    """
+    Update stage-level accepted training-dataset profile in PopulationModel table.
+
+    This profile is built only from strict training candidates (Phase 1 gate).
+    It is later consumed by insight blending as a safe, bounded prior refinement.
+    """
+    if not stage or not intent_key:
+        return {"dataset_n": 0, "dataset_is_reliable": False, "updated": False}
+    stage_key = stage.upper().strip()
+    if sample_weight <= 0:
+        return {"dataset_n": 0, "dataset_is_reliable": False, "updated": False}
+
+    try:
+        current = _decimal_to_float(
+            population_model_table.get_item(Key={"stage": stage_key}).get("Item", {})
+        )
+        counts_raw = current.get("dataset_intent_counts") or {}
+        counts = {k: float(counts_raw.get(k, 0.0) or 0.0) for k in _ALL_INTENTS}
+        counts[intent_key] = counts.get(intent_key, 0.0) + float(sample_weight)
+        total = sum(counts.values())
+        if total <= 0:
+            return {"dataset_n": int(current.get("dataset_n", 0) or 0), "dataset_is_reliable": False, "updated": False}
+
+        dataset_prior_raw = {k: counts[k] / total for k in _ALL_INTENTS}
+        dataset_prior = normalize_intent_distribution(
+            dataset_prior_raw, include_technical=False, fill_missing=True
+        )
+
+        dataset_n = int(current.get("dataset_n", 0) or 0) + 1
+        dataset_is_reliable = dataset_n >= TRAINING_DATASET_MIN_SAMPLES
+        now = datetime.now(timezone.utc).isoformat()
+
+        record = dict(current) if isinstance(current, dict) else {}
+        record.update(
+            {
+                "stage": stage_key,
+                "dataset_intent_counts": counts,
+                "dataset_prior": dataset_prior,
+                "dataset_n": dataset_n,
+                "dataset_is_reliable": dataset_is_reliable,
+                "dataset_updated_at": now,
+                "dataset_updated_by": "feedback_acceptance_v1",
+            }
+        )
+        population_model_table.put_item(Item=_float_to_decimal(record))
+        logger.info(
+            f"Training dataset profile updated: stage={stage_key} n={dataset_n} "
+            f"intent={intent_key} w={sample_weight:.3f}"
+        )
+        return {"dataset_n": dataset_n, "dataset_is_reliable": dataset_is_reliable, "updated": True}
+    except Exception as e:
+        logger.warning(f"Training dataset profile update skipped for stage={stage_key}: {e}")
+        return {"dataset_n": 0, "dataset_is_reliable": False, "updated": False}
+
+
+def _query_stage_training_candidates(stage_key: str, limit: int) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    kwargs: Dict[str, Any] = {
+        "IndexName": "developmental_stage-accepted_at-index",
+        "KeyConditionExpression": Key("developmental_stage").eq(stage_key),
+    }
+    response = training_candidate_table.query(**kwargs)
+    items.extend(response.get("Items", []))
+    while "LastEvaluatedKey" in response and len(items) < limit:
+        response = training_candidate_table.query(
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+            **kwargs,
+        )
+        items.extend(response.get("Items", []))
+    return _decimal_to_float(items[:limit])
+
+
+def _should_retrain_stage_model(current: Dict[str, Any], dataset_n: int) -> bool:
+    if dataset_n < TRAINING_MODEL_MIN_TRAIN_SAMPLES:
+        return False
+    last_n = int(current.get("model_last_trained_n", 0) or 0)
+    if int(current.get("model_version", 0) or 0) <= 0:
+        return True
+    return (dataset_n - last_n) >= max(1, TRAINING_MODEL_RETRAIN_EVERY_N)
+
+
+def _retrain_and_promote_stage_model(stage: str, dataset_n: int) -> Dict[str, Any]:
+    """
+    Automatic retrain+promotion loop from accepted training candidates.
+    No manual review/dashboard required.
+    """
+    stage_key = (stage or "").upper().strip()
+    if not stage_key or dataset_n <= 0:
+        return {"retrained": False, "promoted": False, "reason": "invalid_stage_or_dataset"}
+
+    current = _decimal_to_float(
+        population_model_table.get_item(Key={"stage": stage_key}).get("Item", {})
+    )
+    if not isinstance(current, dict):
+        current = {"stage": stage_key}
+
+    if not _should_retrain_stage_model(current, dataset_n):
+        return {"retrained": False, "promoted": False, "reason": "retrain_threshold_not_met"}
+
+    candidates = _query_stage_training_candidates(
+        stage_key, max(TRAINING_MODEL_MIN_TRAIN_SAMPLES, TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE)
+    )
+    if len(candidates) < TRAINING_MODEL_MIN_TRAIN_SAMPLES:
+        return {"retrained": False, "promoted": False, "reason": "insufficient_candidates"}
+
+    trained = train_prototype_model(
+        candidates=candidates,
+        min_train_samples=TRAINING_MODEL_MIN_TRAIN_SAMPLES,
+        min_val_samples=TRAINING_MODEL_MIN_VAL_SAMPLES,
+        min_label_support=TRAINING_MODEL_MIN_LABEL_SUPPORT,
+        min_accuracy=TRAINING_MODEL_MIN_ACCURACY,
+    )
+    if not trained.get("ok"):
+        current["model_last_train_status"] = f"failed:{trained.get('reason', 'unknown')}"
+        current["model_last_trained_at"] = datetime.now(timezone.utc).isoformat()
+        population_model_table.put_item(Item=_float_to_decimal(current))
+        return {"retrained": False, "promoted": False, "reason": trained.get("reason", "train_failed")}
+
+    model = trained.get("model") or {}
+    reliability = float(model.get("reliability", 0.0) or 0.0)
+    is_reliable = bool(trained.get("is_reliable", False))
+    now = datetime.now(timezone.utc).isoformat()
+    model_version = int(current.get("model_last_trained_version", 0) or 0) + 1
+    model_id = str(uuid.uuid4())
+
+    active_model_id = str(current.get("active_model_id") or "")
+    active_reliability = float(current.get("active_model_reliability", 0.0) or 0.0)
+    promote = bool(
+        is_reliable
+        and (
+            not active_model_id
+            or reliability >= (active_reliability + TRAINING_MODEL_PROMOTION_MARGIN)
+        )
+    )
+
+    model_item = {
+        "model_id": model_id,
+        "developmental_stage": stage_key,
+        "created_at": now,
+        "model_version": model_version,
+        "status": "ACTIVE" if promote else "CANDIDATE",
+        "provider": "qleam_online_supervised_v1",
+        "model_type": model.get("model_type", "prototype_v1"),
+        "reliability": reliability,
+        "training_samples": int(model.get("training_samples", 0) or 0),
+        "validation_samples": int(model.get("validation_samples", 0) or 0),
+        "test_samples": int(model.get("test_samples", 0) or 0),
+        "metrics": model.get("metrics") or {},
+        "artifact": model,
+    }
+    model_registry_table.put_item(Item=_float_to_decimal(model_item))
+
+    record = dict(current)
+    record["stage"] = stage_key
+    record["model_last_trained_at"] = now
+    record["model_last_trained_n"] = int(dataset_n)
+    record["model_last_trained_version"] = int(model_version)
+    record["model_last_train_status"] = "ok"
+    record["model_last_reliability"] = reliability
+    record["model_last_metrics"] = model.get("metrics") or {}
+
+    if promote:
+        if active_model_id:
+            try:
+                model_registry_table.update_item(
+                    Key={"model_id": active_model_id},
+                    UpdateExpression="SET #st = :retired, retired_at = :ts",
+                    ExpressionAttributeNames={"#st": "status"},
+                    ExpressionAttributeValues={":retired": "RETIRED", ":ts": now},
+                )
+            except Exception as e:
+                logger.warning(f"Failed retiring active model {active_model_id}: {e}")
+
+        record["model_version"] = int(model_version)
+        record["active_model_id"] = model_id
+        record["active_model_reliability"] = reliability
+        record["active_model_metrics"] = model.get("metrics") or {}
+        record["active_model_provider"] = "qleam_online_supervised_v1"
+        record["active_model_updated_at"] = now
+        record["active_model_training_samples"] = int(model.get("training_samples", 0) or 0)
+
+    population_model_table.put_item(Item=_float_to_decimal(record))
+    logger.info(
+        f"Stage model retrained stage={stage_key} version={model_version} "
+        f"reliability={reliability:.4f} promoted={promote}"
+    )
+    return {
+        "retrained": True,
+        "promoted": promote,
+        "model_id": model_id,
+        "model_version": model_version,
+        "reliability": reliability,
+    }
 
 
 def invoke_reinforcement_engine(payload: Dict) -> None:
@@ -570,6 +961,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     frs_after: Optional[float] = None
     fraud_signal_frs: str = "NONE"
     fraud_signal_crs: str = "NONE"
+    efp_top_intent: str = ""
 
     raw_efp = session.get("efp")
     efp = (
@@ -582,6 +974,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             scores = compute_delta_score(efp, response_type)
             alignment_score = scores["alignment_score"]
             delta_score = scores["delta_score"]
+            efp_top_intent = str(scores.get("efp_top_intent") or "").strip().lower()
             frs_before, frs_after, fraud_signal_frs = update_parent_trust_score(
                 child_id, alignment_score, session, response_type
             )
@@ -625,6 +1018,60 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         )
         _online_update_population_prior(training_stage, response_type, training_weight)
 
+    acceptance = compute_training_acceptance(
+        session=session,
+        training_stage=training_stage,
+        response_type=response_type,
+        effectiveness=effectiveness,
+        training_eligible=training_eligible,
+        delta_score=delta_score,
+        frs_after=frs_after,
+        fraud_signal_frs=fraud_signal_frs,
+        efp_top_intent=efp_top_intent,
+    )
+    training_acceptance_score = float(acceptance.get("score", 0.0) or 0.0)
+    training_candidate_eligible = bool(acceptance.get("eligible"))
+    training_candidate_id = None
+    training_model_result: Dict[str, Any] = {
+        "retrained": False,
+        "promoted": False,
+        "reason": "not_attempted",
+    }
+    if training_candidate_eligible:
+        try:
+            training_candidate_id = save_training_candidate(
+                session=session,
+                training_stage=training_stage,
+                response_type=response_type,
+                effectiveness=effectiveness,
+                training_weight=training_weight,
+                acceptance=acceptance,
+            )
+            training_candidate_eligible = training_candidate_id is not None
+            if training_candidate_eligible:
+                dataset_profile = _online_update_training_dataset_profile(
+                    training_stage, response_type, training_weight or training_acceptance_score
+                )
+                try:
+                    training_model_result = _retrain_and_promote_stage_model(
+                        training_stage, int(dataset_profile.get("dataset_n", 0) or 0)
+                    )
+                except Exception as e:
+                    logger.warning(f"Training model loop failed (non-fatal): {e}")
+                    training_model_result = {
+                        "retrained": False,
+                        "promoted": False,
+                        "reason": "model_loop_failed",
+                    }
+        except Exception as e:
+            logger.warning(f"Training candidate save failed (non-fatal): {e}")
+            training_candidate_eligible = False
+            training_model_result = {
+                "retrained": False,
+                "promoted": False,
+                "reason": "candidate_save_failed",
+            }
+
     # Build fraud_signals summary (only persisted when a signal was detected)
     detected_signals: Dict = {}
     if fraud_signal_frs != "NONE":
@@ -654,6 +1101,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         training_eligible=training_eligible,
         training_stage=training_stage,
         training_weight=training_weight,
+        training_acceptance_score=training_acceptance_score,
+        training_candidate_eligible=training_candidate_eligible,
     )
 
     # 4. Trigger reinforcement engine (async) if cluster exists
@@ -686,5 +1135,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "frs_updated": frs_after is not None,
         "training_eligible": training_eligible,
         "training_stage": training_stage or None,
+        "training_acceptance_score": training_acceptance_score,
+        "training_candidate_eligible": training_candidate_eligible,
+        "training_candidate_written": training_candidate_id is not None,
+        "training_model_retrained": bool(training_model_result.get("retrained", False)),
+        "training_model_promoted": bool(training_model_result.get("promoted", False)),
+        "training_model_reliability": training_model_result.get("reliability"),
+        "training_model_reason": training_model_result.get("reason"),
         "fraud_signals": detected_signals if detected_signals else None,
     }

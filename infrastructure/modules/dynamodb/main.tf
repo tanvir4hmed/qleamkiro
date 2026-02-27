@@ -333,3 +333,97 @@ resource "aws_dynamodb_table" "population_model" {
     Table = "PopulationModel"
   }
 }
+
+# -----------------------------------------------------------------------------
+# TrainingCandidate Table
+# De-identified accepted samples for supervised training dataset construction
+# PK: candidate_id
+# GSI: developmental_stage-accepted_at-index
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "training_candidate" {
+  name         = "${var.project}-${var.environment}-TrainingCandidate"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "candidate_id"
+
+  attribute {
+    name = "candidate_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "developmental_stage"
+    type = "S"
+  }
+
+  attribute {
+    name = "accepted_at"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "developmental_stage-accepted_at-index"
+    hash_key        = "developmental_stage"
+    range_key       = "accepted_at"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-TrainingCandidate"
+    Table = "TrainingCandidate"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ModelRegistry Table
+# Stores stage-level trained acoustic model versions and promotion status
+# PK: model_id
+# GSI: developmental_stage-created_at-index
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "model_registry" {
+  name         = "${var.project}-${var.environment}-ModelRegistry"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "model_id"
+
+  attribute {
+    name = "model_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "developmental_stage"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "developmental_stage-created_at-index"
+    hash_key        = "developmental_stage"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-ModelRegistry"
+    Table = "ModelRegistry"
+  }
+}

@@ -5,6 +5,7 @@ Routes all API Gateway requests to appropriate business logic.
 Endpoints:
   POST   /child                          → create child profile
   DELETE /child/{child_id}               → delete child + all data
+  DELETE /account                        → delete all parent-owned child data
   GET    /child/{child_id}/sessions      → list sessions
   POST   /session/upload                 → get presigned URL + start pipeline
   GET    /session/{session_id}/insight   → get session insight
@@ -17,7 +18,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import boto3
 
@@ -283,6 +284,85 @@ def create_child(event: Dict) -> Dict:
 # =============================================================================
 # DELETE /child/{child_id} — Delete child and all associated data
 # =============================================================================
+def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
+    """
+    Delete all direct personal data rows for a child.
+    Intentionally does not touch de-identified population/training aggregates.
+    """
+    _key = boto3.dynamodb.conditions.Key
+    deleted_sessions = 0
+    deleted_feedback = 0
+    deleted_clusters = 0
+    deleted_bridges = 0
+    deleted_concepts = 0
+    deleted_milestones = 0
+
+    # Delete sessions + their feedback records
+    sessions_resp = session_table.query(
+        IndexName="child_id-timestamp-index",
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for sess in sessions_resp.get("Items", []):
+        sid = sess["session_id"]
+        fb_resp = feedback_table.query(
+            IndexName="session_id-created_at-index",
+            KeyConditionExpression=_key("session_id").eq(sid)
+        )
+        for fb in fb_resp.get("Items", []):
+            feedback_table.delete_item(Key={"feedback_id": fb["feedback_id"]})
+            deleted_feedback += 1
+        session_table.delete_item(Key={"session_id": sid})
+        deleted_sessions += 1
+
+    # Delete sound clusters
+    clusters_resp = sound_cluster_table.query(
+        IndexName="child_id-last_updated-index",
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for cluster in clusters_resp.get("Items", []):
+        sound_cluster_table.delete_item(Key={"cluster_id": cluster["cluster_id"]})
+        deleted_clusters += 1
+
+    # Delete semantic bridges
+    bridges_resp = semantic_bridge_table.query(
+        IndexName="child_id-index",
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for bridge in bridges_resp.get("Items", []):
+        semantic_bridge_table.delete_item(Key={"bridge_id": bridge["bridge_id"]})
+        deleted_bridges += 1
+
+    # Delete personal concept graph (child_id is PK)
+    concepts_resp = concept_graph_table.query(
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for concept in concepts_resp.get("Items", []):
+        concept_graph_table.delete_item(
+            Key={"child_id": child_id, "concept_id": concept["concept_id"]}
+        )
+        deleted_concepts += 1
+
+    # Delete milestones (child_id is PK)
+    milestones_resp = milestones_table.query(
+        KeyConditionExpression=_key("child_id").eq(child_id)
+    )
+    for milestone in milestones_resp.get("Items", []):
+        milestones_table.delete_item(
+            Key={"child_id": child_id, "milestone_id": milestone["milestone_id"]}
+        )
+        deleted_milestones += 1
+
+    child_profile_table.delete_item(Key={"child_id": child_id})
+    return {
+        "deleted_sessions": deleted_sessions,
+        "deleted_feedback": deleted_feedback,
+        "deleted_clusters": deleted_clusters,
+        "deleted_bridges": deleted_bridges,
+        "deleted_concepts": deleted_concepts,
+        "deleted_milestones": deleted_milestones,
+    }
+
+
 def delete_child(event: Dict) -> Dict:
     user_id = get_user_id(event)
     child_id = event["pathParameters"]["child_id"]
@@ -296,63 +376,71 @@ def delete_child(event: Dict) -> Dict:
     if profile.get("parent_id") != user_id:
         return response(403, {"error": "Not authorized to delete this child profile"}, event)
 
-    _key = boto3.dynamodb.conditions.Key
-
-    # Delete sessions + their feedback records
-    sessions_resp = session_table.query(
-        IndexName="child_id-timestamp-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for sess in sessions_resp.get("Items", []):
-        sid = sess["session_id"]
-        # Delete feedback records linked to this session
-        fb_resp = feedback_table.query(
-            IndexName="session_id-created_at-index",
-            KeyConditionExpression=_key("session_id").eq(sid)
-        )
-        for fb in fb_resp.get("Items", []):
-            feedback_table.delete_item(Key={"feedback_id": fb["feedback_id"]})
-        session_table.delete_item(Key={"session_id": sid})
-
-    # Delete sound clusters
-    clusters_resp = sound_cluster_table.query(
-        IndexName="child_id-last_updated-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for cluster in clusters_resp.get("Items", []):
-        sound_cluster_table.delete_item(Key={"cluster_id": cluster["cluster_id"]})
-
-    # Delete semantic bridges
-    bridges_resp = semantic_bridge_table.query(
-        IndexName="child_id-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for bridge in bridges_resp.get("Items", []):
-        semantic_bridge_table.delete_item(Key={"bridge_id": bridge["bridge_id"]})
-
-    # Delete personal concept graph (child_id is PK)
-    concepts_resp = concept_graph_table.query(
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for concept in concepts_resp.get("Items", []):
-        concept_graph_table.delete_item(
-            Key={"child_id": child_id, "concept_id": concept["concept_id"]}
-        )
-
-    # Delete milestones (child_id is PK)
-    milestones_resp = milestones_table.query(
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for milestone in milestones_resp.get("Items", []):
-        milestones_table.delete_item(
-            Key={"child_id": child_id, "milestone_id": milestone["milestone_id"]}
-        )
-
-    # Delete child profile last
-    child_profile_table.delete_item(Key={"child_id": child_id})
+    deleted = _delete_child_direct_data(child_id)
 
     logger.info(f"Deleted all direct data for child {child_id} (population model retained)")
-    return response(200, {"message": "Child profile and all personal data deleted"}, event)
+    return response(
+        200,
+        {
+            "message": "Child profile and all personal data deleted",
+            "deleted": deleted,
+        },
+        event,
+    )
+
+
+# =============================================================================
+# DELETE /account — Delete all parent-owned child data
+# =============================================================================
+def delete_account(event: Dict) -> Dict:
+    user_id = get_user_id(event)
+    _key = boto3.dynamodb.conditions.Key
+
+    children: List[Dict[str, Any]] = []
+    query_kwargs: Dict[str, Any] = {
+        "IndexName": "parent_id-index",
+        "KeyConditionExpression": _key("parent_id").eq(user_id),
+    }
+    result = child_profile_table.query(**query_kwargs)
+    children.extend(result.get("Items", []))
+    while "LastEvaluatedKey" in result:
+        result = child_profile_table.query(
+            ExclusiveStartKey=result["LastEvaluatedKey"],
+            **query_kwargs,
+        )
+        children.extend(result.get("Items", []))
+
+    total_deleted_children = 0
+    aggregate = {
+        "deleted_sessions": 0,
+        "deleted_feedback": 0,
+        "deleted_clusters": 0,
+        "deleted_bridges": 0,
+        "deleted_concepts": 0,
+        "deleted_milestones": 0,
+    }
+    for child in children:
+        child_id = str(child.get("child_id") or "").strip()
+        if not child_id:
+            continue
+        deleted = _delete_child_direct_data(child_id)
+        total_deleted_children += 1
+        for k in aggregate:
+            aggregate[k] += int(deleted.get(k, 0) or 0)
+
+    logger.info(
+        f"Deleted account-scoped child data for parent={user_id} "
+        f"children={total_deleted_children} (de-identified training/population retained)"
+    )
+    return response(
+        200,
+        {
+            "message": "Account-linked child data deleted",
+            "deleted_children": total_deleted_children,
+            "deleted": aggregate,
+        },
+        event,
+    )
 
 
 # =============================================================================
@@ -775,6 +863,7 @@ ROUTES = {
     ("GET", "/child"): list_children,
     ("POST", "/child"): create_child,
     ("DELETE", "/child/{child_id}"): delete_child,
+    ("DELETE", "/account"): delete_account,
     ("GET", "/child/{child_id}/sessions"): list_sessions,
     ("GET", "/child/{child_id}/concepts"): list_concepts,
     ("GET", "/child/{child_id}/milestones"): list_milestones,
