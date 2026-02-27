@@ -42,7 +42,7 @@ function ConfidenceBar({ confidence }) {
       <div className="confidence-bar-wrapper">
         <div className="confidence-bar" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
-      <span className="confidence-label">{pct}% â€” {label}</span>
+      <span className="confidence-label">{pct}% {'\u2014'} {label}</span>
     </div>
   );
 }
@@ -151,7 +151,7 @@ function InsightPanel({ insight }) {
           {sections.what_i_hear && (
             <div className="insight-block insight-block--hear">
               <div className="insight-block-header">
-                <span className="insight-block-icon">ðŸ‘‚</span>
+                <span className="insight-block-icon">{'\uD83D\uDC42'}</span>
                 <h4>What I'm hearing</h4>
               </div>
               <p>{sections.what_i_hear}</p>
@@ -161,7 +161,7 @@ function InsightPanel({ insight }) {
           {sections.what_it_means && (
             <div className="insight-block insight-block--means">
               <div className="insight-block-header">
-                <span className="insight-block-icon">ðŸ’­</span>
+                <span className="insight-block-icon">{'\uD83D\uDCAD'}</span>
                 <h4>What it might mean</h4>
               </div>
               <p>{sections.what_it_means}</p>
@@ -171,7 +171,7 @@ function InsightPanel({ insight }) {
           {sections.what_to_try && sections.what_to_try.length > 0 && (
             <div className="insight-block insight-block--try">
               <div className="insight-block-header">
-                <span className="insight-block-icon">âœ‹</span>
+                <span className="insight-block-icon">{'\u270B'}</span>
                 <h4>What you can try</h4>
               </div>
               <ol className="try-list">
@@ -268,4 +268,3 @@ function InsightPanel({ insight }) {
 }
 
 export default InsightPanel;
-

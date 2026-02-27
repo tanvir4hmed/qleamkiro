@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 
-// MASTER_INDEX.md Â§7-8 â€” five-stage feedback schema
-// Base response types â€” labels adapt per mode below
+// MASTER_INDEX.md section 7-8 - five-stage feedback schema
+// Base response types - labels adapt per mode below
 const BASE_RESPONSE_TYPES = [
   { key: 'hunger',           labels: { INFANT: 'Fed baby', BABBLE: 'Fed baby', PROTO: 'Gave food or drink', TODDLER: 'Gave meal/snack' } },
   { key: 'fatigue',          labels: { INFANT: 'Sleep routine', BABBLE: 'Nap routine', PROTO: 'Tried to nap', TODDLER: 'Sleep/nap support' } },
@@ -31,18 +31,18 @@ function orderByIntent(types, intentKey) {
 }
 
 const EFFECTIVENESS_OPTIONS = [
-  { key: 'helpful',     label: 'âœ“ Helped' },
+  { key: 'helpful',     label: '\u2713 Helped' },
   { key: 'neutral',     label: '~ Hard to tell' },
-  { key: 'ineffective', label: 'âœ— Didn\'t help' },
+  { key: 'ineffective', label: '\u2717 Didn\'t help' },
 ];
 
 /**
- * Five feedback modes per MASTER_INDEX.md Â§7-8:
+ * Five feedback modes per MASTER_INDEX.md section 7-8:
  *
- *  INFANT   0â€“6m   NEWBORN, EARLY_VOCAL
- *  BABBLE   6â€“12m  CANONICAL_BABBLE
- *  PROTO    12â€“18m PROTO_WORDS
- *  TODDLER  18â€“24m FIRST_WORDS, WORD_COMBINATIONS
+ *  INFANT   0-6m   NEWBORN, EARLY_VOCAL
+ *  BABBLE   6-12m  CANONICAL_BABBLE
+ *  PROTO    12-18m PROTO_WORDS
+ *  TODDLER  18-24m FIRST_WORDS, WORD_COMBINATIONS
  *  LANGUAGE 24m+   EARLY_SENTENCES
  */
 function getMode(developmentalStage) {
@@ -86,7 +86,7 @@ const SOUND_FIELD_PLACEHOLDER = {
 const SHOWS_CONCEPTS = new Set(['PROTO', 'TODDLER', 'LANGUAGE']);
 // Effectiveness question absent for LANGUAGE (24m+)
 const SHOWS_EFFECTIVENESS = new Set(['INFANT', 'BABBLE', 'PROTO', 'TODDLER']);
-// Notes absent for INFANT (0â€“6m) per spec Â§8
+// Notes absent for INFANT (0-6m) per spec section 8
 const SHOWS_NOTES = new Set(['BABBLE', 'PROTO', 'TODDLER', 'LANGUAGE']);
 
 function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCall }) {
@@ -150,7 +150,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
       <div className="feedback-reveal">
         <button className="feedback-reveal-btn" onClick={() => setOpen(true)}>
           <span>What happened next?</span>
-          <span className="feedback-reveal-hint">Share what you tried â€” helps Qleam learn</span>
+          <span className="feedback-reveal-hint">Share what you tried {'\u2014'} helps Qleam learn</span>
         </button>
       </div>
     );
@@ -164,7 +164,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         <button className="feedback-skip-btn" onClick={() => setOpen(false)}>Skip</button>
       </div>
 
-      {/* What did you try â€” absent for LANGUAGE (24m+): child expressed clearly */}
+      {/* What did you try - absent for LANGUAGE (24m+): child expressed clearly */}
       {!isLanguage && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -185,7 +185,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         </div>
       )}
 
-      {/* How did it go â€” absent for LANGUAGE per spec Â§8 */}
+      {/* How did it go - absent for LANGUAGE per spec section 8 */}
       {showEffectiveness && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -206,7 +206,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         </div>
       )}
 
-      {/* Concept picker â€” starts at PROTO (12m+) per spec Â§8 */}
+      {/* Concept picker - starts at PROTO (12m+) per spec section 8 */}
       {showConcepts && concepts.length > 0 && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -257,7 +257,7 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
         </div>
       )}
 
-      {/* Notes â€” absent for INFANT (0â€“6m) per spec Â§8 */}
+      {/* Notes - absent for INFANT (0-6m) per spec section 8 */}
       {showNotes && (
         <div className="feedback-group">
           <label className="feedback-label">
@@ -270,8 +270,8 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
             className="notes-input"
             placeholder={
               isLanguage
-                ? 'e.g. They seemed very excited, pointed at the dogâ€¦'
-                : 'e.g. Baby calmed down quickly, seemed hungry after allâ€¦'
+                ? 'e.g. They seemed very excited, pointed at the dog\u2026'
+                : 'e.g. Baby calmed down quickly, seemed hungry after all\u2026'
             }
             value={notes}
             onChange={e => setNotes(e.target.value)}
@@ -293,4 +293,3 @@ function FeedbackForm({ onSubmit, developmentalStage, intentKey, childId, apiCal
 }
 
 export default FeedbackForm;
-

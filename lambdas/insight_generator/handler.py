@@ -1,12 +1,12 @@
 ﻿"""
-Qleam â€” Insight Generator Lambda
+Qleam - Insight Generator Lambda
 Translates system state into structured, non-diagnostic parent guidance.
 
-Phase 4 â€” Three-Source Evidence Model:
-- 60% Acoustic signal    â€” real-time audio features (summary + Phase 3 rich features)
-- 15% Research priors    â€” developmental stage norms + session context (feeding, health)
-- 25% Feedback history   â€” parent reinforcement over time
-  â†’ Acoustic is ground truth; feedback personalises without dominating early sessions.
+Phase 4 - Three-Source Evidence Model:
+- 60% Acoustic signal    - real-time audio features (summary + Phase 3 rich features)
+- 15% Research priors    - developmental stage norms + session context (feeding, health)
+- 25% Feedback history   - parent reinforcement over time
+  -> Acoustic is ground truth; feedback personalises without dominating early sessions.
 - Insight now includes evidence breakdown for transparency.
 
 Trigger: Step Function third state
@@ -159,7 +159,7 @@ def get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]
         if not item:
             return None
         if not item.get("is_reliable"):
-            logger.debug(f"Population prior for {developmental_stage} exists but not reliable â€” using literature priors")
+            logger.debug(f"Population prior for {developmental_stage} exists but not reliable - using literature priors")
             return None
         prior = item.get("population_prior")
         if prior and isinstance(prior, dict):
@@ -436,11 +436,11 @@ def _age_band_from_stage(stage: str) -> str:
 
 
 _AGE_BAND_CONTEXT = {
-    "0-3m": "At 0â€“3 months, most vocalizations are need-based and reflexive.",
-    "3-6m": "At 3â€“6 months, social coos appear alongside need-based sounds.",
-    "6-12m": "At 6â€“12 months, babbling and repetition become common.",
-    "12-24m": "At 12â€“24 months, early words can appear alongside need-based sounds.",
-    "24-36m": "At 24â€“36 months, short phrases emerge but need-based sounds still occur.",
+    "0-3m": "At 0-3 months, most vocalizations are need-based and reflexive.",
+    "3-6m": "At 3-6 months, social coos appear alongside need-based sounds.",
+    "6-12m": "At 6-12 months, babbling and repetition become common.",
+    "12-24m": "At 12-24 months, early words can appear alongside need-based sounds.",
+    "24-36m": "At 24-36 months, short phrases emerge but need-based sounds still occur.",
 }
 
 _AGE_BAND_TRY = {
@@ -511,16 +511,16 @@ LINGUISTIC_FALLBACK_INSIGHTS = {
         "what_i_hear": "Your child is producing clear, intentional word-like sounds with real communicative purpose.",
         "what_it_means": "Each session helps track their vocabulary growth. These are the building blocks of language.",
         "what_to_try": [
-            "Respond to every word attempt â€” acknowledgement encourages more speech",
+            "Respond to every word attempt - acknowledgement encourages more speech",
             "Name objects together during play to expand vocabulary",
             "Read simple picture books and point to objects as you name them",
         ],
     },
     "WORD_COMBINATIONS": {
-        "what_i_hear": "Your child is linking sounds and words in multi-word patterns â€” a key leap in language.",
+        "what_i_hear": "Your child is linking sounds and words in multi-word patterns - a key leap in language.",
         "what_it_means": "Two-word combinations show the grammar system is developing. This is a major milestone.",
         "what_to_try": [
-            "Expand what your child says â€” if they say 'more milk', respond 'yes, more cold milk'",
+            "Expand what your child says - if they say 'more milk', respond 'yes, more cold milk'",
             "Ask open questions that need more than one word to answer",
             "Narrate everyday activities: 'We're washing the big red apple'",
         ],
@@ -585,10 +585,10 @@ CHILD'S DEVELOPMENTAL STAGE: {stage_label}
 
 ACOUSTIC MEASUREMENTS FROM THIS SESSION:
 - Syllable rate: {syllable_rate} syllables/second
-- Pause ratio: {pause_ratio} (proportion of silence â€” higher = more pauses between utterances)
+- Pause ratio: {pause_ratio} (proportion of silence - higher = more pauses between utterances)
 - Pitch range: {f0_range} Hz (wider = more expressive prosody)
 - Voice clarity (HNR): {hnr_db} dB (higher = cleaner, more resonant speech)
-- Canonical babbling ratio: {cbr} (residual babble â€” lower at this stage is normal)
+- Canonical babbling ratio: {cbr} (residual babble - lower at this stage is normal)
 {transcript_note}
 
 Return ONLY a JSON object with exactly these three fields:
@@ -692,7 +692,7 @@ def _generate_linguistic_insight(
 ) -> dict:
     """
     Generate and store language-development insight for LINGUISTIC-mode sessions.
-    Skips intent classification â€” focuses on language metrics instead.
+    Skips intent classification - focuses on language metrics instead.
     """
     use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
     transcript = transcribe_session_audio(session or {}) if session else None
@@ -748,7 +748,7 @@ def _generate_linguistic_insight(
 def classify_intent_from_features(feature_scores: Dict[str, float]) -> Dict[str, float]:
     """
     Pure acoustic feature-based intent classification.
-    Does NOT use parent feedback â€” derived entirely from audio signal.
+    Does NOT use parent feedback - derived entirely from audio signal.
 
     Feature semantics (all 0.0-1.0):
     - emotional_intensity: pitch variance + energy variance (0=calm, 1=distressed)
@@ -959,7 +959,7 @@ def compute_private_language_signal(
 
 
 # =============================================================================
-# [Phase 4] Three-Source Evidence Model â€” replaces 70/30 two-source model
+# [Phase 4] Three-Source Evidence Model - replaces 70/30 two-source model
 # =============================================================================
 
 def determine_cluster_stability(cluster: Dict) -> str:
@@ -1209,7 +1209,7 @@ def build_insight(
     cluster: Dict,
     semantic_bridge: Optional[Dict],
 ) -> Dict:
-    """Build the enhanced structured insight output (Phase 4 â€” Three-Source Evidence Model)."""
+    """Build the enhanced structured insight output (Phase 4 - Three-Source Evidence Model)."""
 
     feature_scores  = session.get("feature_scores", {})
     deviation_level = session.get("deviation_level", "none")
@@ -1233,7 +1233,7 @@ def build_insight(
     acoustic_reliability = _estimate_acoustic_reliability(session)
     child_name           = str(profile.get("name") or "")
 
-    # 1. Feature narrative â€” always computed from audio data, no feedback involved
+    # 1. Feature narrative - always computed from audio data, no feedback involved
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
     emotion_profile = compute_emotion_profile(feature_scores, rich_features)
 
@@ -1352,9 +1352,9 @@ def _build_rejection_insight(
     Lightweight insight returned when recording cannot be analysed.
 
     reason values:
-      "quality"     â€” no signal / no vocal activity / too short
-      "adult"       â€” biological validation flagged adult voice
-      "mismatch"    â€” speaker type doesn't match expected child
+      "quality"     - no signal / no vocal activity / too short
+      "adult"       - biological validation flagged adult voice
+      "mismatch"    - speaker type doesn't match expected child
     """
     if reason == "adult" or reason == "mismatch":
         transcript_note = ""
@@ -1412,7 +1412,7 @@ def _build_rejection_insight(
         what_to_try = [
             "Wait for your baby to make sounds naturally, then record",
             "Make sure you're close to your baby (20-30 cm) during recording",
-            "Stay quiet yourself â€” only record the baby's vocalizations",
+            "Stay quiet yourself - only record the baby's vocalizations",
             "If someone else was speaking, try a new recording with just the baby",
         ]
     else:
@@ -1422,10 +1422,10 @@ def _build_rejection_insight(
             "captured background noise rather than your baby's voice."
         )
         what_to_try = [
-            "Hold the phone 20â€“30 cm from your baby's mouth",
+            "Hold the phone 20-30 cm from your baby's mouth",
             "Record somewhere quieter if possible",
             "Try again when baby is actively making sounds",
-            "Make sure baby is cooing, babbling, or crying â€” not silent",
+            "Make sure baby is cooing, babbling, or crying - not silent",
         ]
         label = "No baby sounds detected"
 
@@ -1445,7 +1445,7 @@ def _build_rejection_insight(
         "speaker_type_detected": speaker_type,
         "speaker_category_detected": speaker_category,
         "speaker_gate": (session.get("speaker_gate") or {}).get("status"),
-        # No developmental_stage â€” don't show a misleading stage label on rejected sessions
+        # No developmental_stage - don't show a misleading stage label on rejected sessions
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1607,9 +1607,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not session:
         raise ValueError(f"Session {session_id} not found")
 
-    # 1a. Quality gate check â€” reject recordings with no vocal content
+    # 1a. Quality gate check - reject recordings with no vocal content
     # Only truly critical issues block analysis.
-    # too_silent alone is NOT critical â€” 1s of sound in a 5s recording is still analysable.
+    # too_silent alone is NOT critical - 1s of sound in a 5s recording is still analysable.
     _CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
     quality_gate = session.get("quality_gate", {})
     gate_issues = quality_gate.get("issues", [])
@@ -1733,7 +1733,3 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "session_id": session_id,
         "insight": insight,
     }
-
-
-
-
