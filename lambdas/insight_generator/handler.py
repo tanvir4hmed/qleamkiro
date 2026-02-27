@@ -1777,9 +1777,12 @@ def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
 
     voice_type = str(age_cls.get("voice_type", "") or "").lower().strip()
     voice_type_conf = float(age_cls.get("voice_type_confidence", 0.0) or 0.0)
+    age_class = str(age_cls.get("final_class", "") or "").lower().strip()
+    age_conf = float(age_cls.get("confidence", 0.0) or 0.0)
     is_unknown = bool(age_cls.get("is_unknown", False))
     routing_type = str(routing.get("analysis_type", "") or "").lower().strip()
     baby_fraction = float(diarization.get("baby_audio_fraction", 1.0) or 1.0)
+    replay_tolerant = os.environ.get("NOISE_GATE_REPLAY_TOLERANT", "false").lower() == "true"
 
     f0_mean = float(rich.get("f0_mean", 0.0) or 0.0)
     spectral_centroid = float(rich.get("spectral_centroid", 0.0) or 0.0)
@@ -1788,9 +1791,24 @@ def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
     voiced_fraction = float(rich.get("f0_voiced_fraction", 0.0) or 0.0)
     hnr_db = float(rich.get("hnr_db", 0.0) or 0.0)
 
+    # Strong infant evidence should override noise heuristics.
+    infant_class_evidence = age_class in ("newborn", "infant") and age_conf >= 0.70
+    acoustic_baby_evidence = bool(
+        (baby_fraction >= 0.55 and cry_fraction >= 0.06)
+        or (baby_fraction >= 0.70 and voiced_fraction >= 0.12)
+    )
+    strong_infant_evidence = infant_class_evidence or acoustic_baby_evidence
+
+    # Keep hard reject only for strong noise evidence.
     noise_like = bool(
-        (voice_type == "noise" and voice_type_conf >= 0.75)
-        or (routing_type == "low_confidence" and voice_type == "noise" and is_unknown)
+        (voice_type == "noise" and voice_type_conf >= 0.84 and baby_fraction < 0.45 and cry_fraction < 0.05)
+        or (
+            routing_type == "low_confidence"
+            and voice_type == "noise"
+            and is_unknown
+            and voice_type_conf >= 0.80
+            and baby_fraction < 0.35
+        )
     )
 
     # Generic tonal non-baby footprint with weak infant evidence.
@@ -1804,10 +1822,28 @@ def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
         and baby_fraction <= 0.45
     )
 
-    if noise_like or tonal_non_baby_pattern:
+    # QA mode: tolerate replay-like tonal clips when infant evidence exists.
+    if replay_tolerant and tonal_non_baby_pattern and (baby_fraction >= 0.30 or cry_fraction >= 0.05):
+        tonal_non_baby_pattern = False
+
+    if strong_infant_evidence:
+        return {
+            "reject": False,
+            "uncertain": False,
+            "reason": "infant_evidence_override",
+            "voice_type": voice_type,
+            "voice_type_confidence": round(voice_type_conf, 3),
+            "age_class": age_class,
+            "age_confidence": round(age_conf, 3),
+            "cry_fraction": round(cry_fraction, 3),
+            "baby_fraction": round(baby_fraction, 3),
+        }
+
+    if noise_like:
         return {
             "reject": True,
-            "reason": "noise_like" if noise_like else "non_baby_tonal_pattern",
+            "uncertain": False,
+            "reason": "noise_like",
             "voice_type": voice_type,
             "voice_type_confidence": round(voice_type_conf, 3),
             "f0_mean": round(f0_mean, 2),
@@ -1816,7 +1852,21 @@ def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
             "syllable_rate": round(syllable_rate, 3),
             "baby_fraction": round(baby_fraction, 3),
         }
-    return {"reject": False}
+    if tonal_non_baby_pattern:
+        return {
+            "reject": False,
+            "uncertain": True,
+            "reason": "non_baby_tonal_pattern",
+            "message": "Tonal/non-baby-like pattern detected; proceeding with caution on infant evidence.",
+            "voice_type": voice_type,
+            "voice_type_confidence": round(voice_type_conf, 3),
+            "f0_mean": round(f0_mean, 2),
+            "spectral_centroid": round(spectral_centroid, 2),
+            "cry_fraction": round(cry_fraction, 3),
+            "syllable_rate": round(syllable_rate, 3),
+            "baby_fraction": round(baby_fraction, 3),
+        }
+    return {"reject": False, "uncertain": False}
 
 
 def _critical_quality_reject(session: Dict) -> Dict[str, Any]:
@@ -1916,11 +1966,19 @@ def _evaluate_baby_admission_gate(session: Dict) -> Dict[str, Any]:
             "noise_gate": noise_gate,
         }
 
-    if speaker_gate.get("status") == "UNCERTAIN":
+    if speaker_gate.get("status") == "UNCERTAIN" or noise_gate.get("uncertain"):
+        merged_speaker_gate = dict(speaker_gate)
+        messages = []
+        if speaker_gate.get("status") == "UNCERTAIN" and speaker_gate.get("message"):
+            messages.append(str(speaker_gate.get("message")))
+        if noise_gate.get("uncertain") and noise_gate.get("message"):
+            messages.append(str(noise_gate.get("message")))
+        if messages:
+            merged_speaker_gate["message"] = " ".join(messages)
         return {
             "status": "PASS_UNCERTAIN",
             "bucket": "uncertain",
-            "speaker_gate": speaker_gate,
+            "speaker_gate": merged_speaker_gate,
             "noise_gate": noise_gate,
         }
 
