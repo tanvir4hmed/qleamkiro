@@ -126,7 +126,7 @@ def _float_to_decimal(obj: Any) -> Any:
     
     # Handle boolean
     if isinstance(obj, bool):
-        return Decimal("1") if obj else Decimal("0")
+        return obj
     
     # Handle string - try to convert if it looks like a number
     if isinstance(obj, str):
@@ -481,10 +481,14 @@ def compute_training_acceptance(
     evidence = probable.get("evidence") or {}
     quality_gate = session.get("quality_gate") or {}
     speaker_gate = session.get("speaker_gate") or {}
+    admission_gate = session.get("admission_gate") or {}
 
     model_intent = str(probable.get("key") or efp_top_intent or "").strip().lower()
     quality_passed = bool(quality_gate.get("passed", True))
     speaker_status = str(speaker_gate.get("status") or "").upper().strip()
+    admission_status = str(admission_gate.get("status") or "").upper().strip()
+    if admission_status:
+        speaker_status = admission_status
     speaker_pass = speaker_status == "BABY_PASS"
     agreement = bool(evidence.get("agreement", False))
     label_matches_model = bool(model_intent and response_type == model_intent)
@@ -539,6 +543,7 @@ def compute_training_acceptance(
             "label_matches_model": label_matches_model,
             "quality_passed": quality_passed,
             "speaker_status": speaker_status,
+            "admission_status": admission_status or None,
             "delta_score": round(float(delta_score or 0.0), 4),
             "frs_after": round(float(frs_after or 0.0), 4),
             "acoustic_reliability": round(acoustic_reliability, 4),
@@ -950,9 +955,16 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     session = get_session(session_id)
     child_id = session["child_id"]
     cluster_id = session.get("cluster_id")
+    admission_status = str((session.get("admission_gate") or {}).get("status", "")).upper().strip()
+    admission_pass = (not admission_status) or admission_status == "BABY_PASS"
 
     if not cluster_id:
         logger.warning(f"Session {session_id} has no cluster_id yet — feedback stored but reinforcement skipped")
+    if admission_status and not admission_pass:
+        logger.warning(
+            f"Session {session_id} admission status is {admission_status}; "
+            "training/reinforcement updates will be skipped"
+        )
 
     # 2. Phase 4: compute delta score + update FRS/CRS if EFP exists
     alignment_score: Optional[float] = None
@@ -1002,6 +1014,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     training_stage = (developmental_stage or session.get("developmental_stage") or "").upper().strip()
     training_eligible = bool(
+        admission_pass
+        and
         response_type in _ALL_INTENTS
         and effectiveness == "helpful"
         and delta_score is not None
@@ -1106,7 +1120,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     )
 
     # 4. Trigger reinforcement engine (async) if cluster exists
-    if cluster_id:
+    if cluster_id and admission_pass:
         reinforcement_payload = {
             "child_id": child_id,
             "session_id": session_id,
@@ -1118,7 +1132,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         invoke_reinforcement_engine(reinforcement_payload)
 
     # 5. Trigger NLP processor (async) if notes are non-empty and cluster exists
-    if notes and cluster_id:
+    if notes and cluster_id and admission_pass:
         invoke_nlp_processor(
             child_id=child_id,
             cluster_id=cluster_id,
@@ -1130,9 +1144,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "status": "feedback_processed",
         "feedback_id": feedback_id,
         "session_id": session_id,
-        "reinforcement_triggered": cluster_id is not None,
+        "reinforcement_triggered": bool(cluster_id is not None and admission_pass),
         "delta_score": delta_score,
         "frs_updated": frs_after is not None,
+        "admission_status": admission_status or None,
         "training_eligible": training_eligible,
         "training_stage": training_stage or None,
         "training_acceptance_score": training_acceptance_score,

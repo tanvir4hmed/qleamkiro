@@ -64,6 +64,12 @@ def _get_cluster(cluster_id: str) -> Optional[Dict]:
     return _decimal_to_float(item) if item else None
 
 
+def _get_session(session_id: str) -> Optional[Dict]:
+    resp = session_table.get_item(Key={"session_id": session_id})
+    item = resp.get("Item")
+    return _decimal_to_float(item) if item else None
+
+
 def lambda_handler(event: dict, context) -> dict:
     """
     Concept Decoder handler.
@@ -80,6 +86,19 @@ def lambda_handler(event: dict, context) -> dict:
         return {"status": "skipped", "reason": "missing_fields"}
 
     logger.info(f"ConceptDecoder: child={child_id} session={session_id} cluster={cluster_id}")
+
+    session = _get_session(session_id)
+    if not session:
+        logger.warning(f"Session {session_id} not found — skipping concept decode")
+        return {"status": "skipped", "reason": "session_not_found"}
+
+    admission_status = str((session.get("admission_gate") or {}).get("status", "")).upper().strip()
+    if admission_status and admission_status != "BABY_PASS":
+        logger.info(
+            f"ConceptDecoder: skipping non-admitted session {session_id} "
+            f"(admission_status={admission_status})"
+        )
+        return {"status": "skipped", "reason": "not_admitted_baby", "admission_status": admission_status}
 
     # --- Load cluster ---
     cluster = _get_cluster(cluster_id) if cluster_id else None

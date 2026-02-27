@@ -163,6 +163,40 @@ QUALITY_MAX_CLIPPING_RATIO: float = 0.005   # Was 0.05 â€” spec: Layer 0 ga
 LOMBARD_NOISE_FLOOR_DB: float = -30.0       # Above this â†’ Lombard effect warning
 
 # =============================================================================
+# Baby Admission Gate (pre-core processing filter)
+# =============================================================================
+ADMISSION_STATUS_BABY_PASS: str = "BABY_PASS"
+ADMISSION_STATUS_PASS_UNCERTAIN: str = "PASS_UNCERTAIN"
+ADMISSION_STATUS_REJECT_NO_SOUND: str = "REJECT_NO_SOUND"
+ADMISSION_STATUS_REJECT_ADULT: str = "REJECT_ADULT"
+ADMISSION_STATUS_REJECT_NON_BABY: str = "REJECT_NON_BABY"
+
+ADMISSION_TERMINAL_REJECTS = {
+    ADMISSION_STATUS_REJECT_NO_SOUND,
+    ADMISSION_STATUS_REJECT_ADULT,
+    ADMISSION_STATUS_REJECT_NON_BABY,
+}
+
+# Confidence thresholds
+ADMISSION_PASS_CONFIDENCE_MIN: float = float(os.environ.get("ADMISSION_PASS_CONFIDENCE_MIN", "0.62"))
+ADMISSION_UNCERTAIN_CONFIDENCE_MIN: float = float(os.environ.get("ADMISSION_UNCERTAIN_CONFIDENCE_MIN", "0.45"))
+
+# Adult hard-reject thresholds
+ADMISSION_ADULT_BIO_CONFIDENCE_MIN: float = float(os.environ.get("ADMISSION_ADULT_BIO_CONFIDENCE_MIN", "0.75"))
+ADMISSION_ADULT_AGE_CONFIDENCE_MIN: float = float(os.environ.get("ADMISSION_ADULT_AGE_CONFIDENCE_MIN", "0.72"))
+ADMISSION_ADULT_FRACTION_HARD_MIN: float = float(os.environ.get("ADMISSION_ADULT_FRACTION_HARD_MIN", "0.55"))
+ADMISSION_ADULT_SEGMENTS_HARD_MIN: int = int(os.environ.get("ADMISSION_ADULT_SEGMENTS_HARD_MIN", "2"))
+
+# No-signal / no-vocal thresholds
+ADMISSION_NO_SIGNAL_VOICED_MAX: float = float(os.environ.get("ADMISSION_NO_SIGNAL_VOICED_MAX", "0.02"))
+ADMISSION_NO_SIGNAL_SILENCE_MIN: float = float(os.environ.get("ADMISSION_NO_SIGNAL_SILENCE_MIN", "0.95"))
+
+# Non-baby/noise thresholds
+ADMISSION_NOISE_VOICE_CONF_MIN: float = float(os.environ.get("ADMISSION_NOISE_VOICE_CONF_MIN", "0.84"))
+ADMISSION_NOISE_BABY_FRACTION_MAX: float = float(os.environ.get("ADMISSION_NOISE_BABY_FRACTION_MAX", "0.45"))
+ADMISSION_NOISE_CRY_FRACTION_MAX: float = float(os.environ.get("ADMISSION_NOISE_CRY_FRACTION_MAX", "0.05"))
+
+# =============================================================================
 # Milestone Types (Phase 6)
 # =============================================================================
 MILESTONE_TYPES = {

@@ -1247,7 +1247,47 @@ def biological_validation(
         f0_voiced = f0[~np.isnan(f0)] if f0 is not None else np.array([])
         f0_hz = float(np.median(f0_voiced)) if len(f0_voiced) > 0 else 0.0
     except Exception:
+        f0 = None
+        f0_voiced = np.array([])
         f0_hz = 0.0
+
+    # --- Low-signal hard guard ---
+    # Prevent silent/near-silent clips from being forced into child/adult classes.
+    try:
+        rms = librosa.feature.rms(y=y)[0]
+        peak_rms = float(np.max(rms)) if len(rms) > 0 else 0.0
+    except Exception:
+        peak_rms = 0.0
+
+    f0_voiced_fraction = float(len(f0_voiced) / max(len(f0), 1)) if f0 is not None and len(f0) > 0 else 0.0
+    low_signal = (
+        peak_rms < 1e-4
+        or (f0_hz <= 0.0 and f0_voiced_fraction < 0.08)
+    )
+    if low_signal:
+        return {
+            "vtl_cm": 0.0,
+            "f0_hz": 0.0,
+            "formants": {"F1": 0.0, "F2": 0.0, "F3": 0.0, "F4": 0.0},
+            "jitter": 0.0,
+            "shimmer": 0.0,
+            "hnr": 0.0,
+            "spectral_features": {},
+            "speech_rate_features": {},
+            "formant_bandwidth": 0.0,
+            "spoof_likelihood": 0.0,
+            "spoof_flags": [],
+            "is_infant": False,
+            "is_child": False,
+            "is_adult": False,
+            "mimicry_suspected": False,
+            "speaker_type": "unknown",
+            "speaker_category": "unknown",
+            "confidence_tier": "uncertain",
+            "vtl_zone": "unknown",
+            "bio_confidence": 0.0,
+            "evidence": ["low_signal_guard"],
+        }
 
     # --- Formants + VTL ---
     formants = extract_formants_lpc(y, sr)
@@ -1421,4 +1461,3 @@ def extract_all_features(audio_bytes: bytes, sr: int = 22050) -> Dict:
     logger.info("Starting full feature extraction")
     y, sr = load_audio_from_bytes(audio_bytes, target_sr=sr)
     return extract_all_features_from_array(y=y, sr=sr, apply_vad=True)
-

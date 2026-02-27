@@ -491,6 +491,12 @@ def classify_probabilistic(
     is_baby  = final_class in ("newborn", "infant", "toddler")
     is_child = final_class == "child"
     is_adult = final_class in ("adult_female", "adult_male")
+    baby_confidence = _compute_baby_confidence(
+        probs=probs,
+        voice_type=voice_type,
+        final_class=final_class,
+        is_unknown=is_unknown,
+    )
 
     logger.info(
         f"age_classifier: voice_type={voice_type} final={final_class} "
@@ -500,6 +506,7 @@ def classify_probabilistic(
     return {
         "final_class":              final_class,
         "confidence":               round(confidence, 4),
+        "baby_confidence":          round(baby_confidence, 4),
         "is_baby":                  is_baby,
         "is_child":                 is_child,
         "is_adult":                 is_adult,
@@ -556,6 +563,7 @@ def _unknown_result(vtl_cm: float, voice_type: str, voice_type_conf: float) -> D
     return {
         "final_class":              "unknown",
         "confidence":               0.0,
+        "baby_confidence":          0.0,
         "is_baby":                  False,
         "is_child":                 False,
         "is_adult":                 False,
@@ -565,3 +573,24 @@ def _unknown_result(vtl_cm: float, voice_type: str, voice_type_conf: float) -> D
         "probability_distribution": zero_probs,
         "vtl_cm_used":              round(vtl_cm, 2),
     }
+
+
+def _compute_baby_confidence(
+    probs: Dict[str, float],
+    voice_type: str,
+    final_class: str,
+    is_unknown: bool,
+) -> float:
+    """Derive a stable baby-confidence score from class probabilities + voice type."""
+    raw = float(
+        probs.get("newborn", 0.0)
+        + probs.get("infant", 0.0)
+        + probs.get("toddler", 0.0)
+    )
+    if final_class == "child":
+        raw *= 0.60
+    if voice_type == "noise":
+        raw *= 0.25
+    elif is_unknown:
+        raw *= 0.50
+    return max(0.0, min(1.0, raw))

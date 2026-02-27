@@ -32,6 +32,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
 sys.path.insert(0, "/var/task/shared")
 
 from constants import (
+    ADMISSION_STATUS_BABY_PASS,
+    ADMISSION_STATUS_PASS_UNCERTAIN,
+    ADMISSION_STATUS_REJECT_ADULT,
+    ADMISSION_STATUS_REJECT_NON_BABY,
+    ADMISSION_STATUS_REJECT_NO_SOUND,
     BEDROCK_MODEL_ID,
     CHILD_PROFILE_TABLE,
     DISCLAIMER,
@@ -103,7 +108,7 @@ def _float_to_decimal(obj: Any) -> Any:
             return Decimal("0") if obj < 0 else Decimal("1")
         return Decimal(str(obj))
     if isinstance(obj, bool):
-        return Decimal("1") if obj else Decimal("0")
+        return obj
     if isinstance(obj, str):
         try:
             return Decimal(obj)
@@ -1682,7 +1687,7 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         }
 
     adult_bio_suspected = (
-        biological.get("mimicry_suspected") is True
+        bool(biological.get("mimicry_suspected", False))
         or speaker_type == "adult"
         or speaker_category in ("adult_male", "adult_female")
         or spoof_likelihood >= 0.65
@@ -1902,7 +1907,8 @@ def _critical_quality_reject(session: Dict) -> Dict[str, Any]:
             int(diar.get("total_segments", 0) or 0) > 0
             or float(diar.get("baby_audio_fraction", 0.0) or 0.0) >= 0.10
             or float(diar.get("adult_audio_fraction", 0.0) or 0.0) >= 0.10
-            or str(bio.get("speaker_type", "") or "").strip().lower() in ("infant", "toddler", "child", "adult")
+            or float(bio.get("f0_hz", 0.0) or 0.0) >= 80.0
+            or float(bio.get("vtl_cm", 0.0) or 0.0) >= 6.0
             or float(rich.get("f0_voiced_fraction", 0.0) or 0.0) >= 0.08
             or float(rich.get("cry_fraction", 0.0) or 0.0) >= 0.06
         )
@@ -1990,6 +1996,111 @@ def _evaluate_baby_admission_gate(session: Dict) -> Dict[str, Any]:
     }
 
 
+def _recording_gate_from_admission(session: Dict) -> Optional[Dict[str, Any]]:
+    """Prefer persisted admission-gate decision from feature extraction when present."""
+    admission = session.get("admission_gate") or {}
+    status = str(admission.get("status", "") or "").upper().strip()
+    if not status:
+        return None
+
+    speaker_type = str(admission.get("speaker_type") or session.get("biological", {}).get("speaker_type", "unknown"))
+    speaker_category = str(admission.get("speaker_category") or session.get("biological", {}).get("speaker_category", "unknown"))
+    message = str(admission.get("message") or "").strip()
+    signals = admission.get("signals") or {}
+    adult_fraction = signals.get("adult_fraction")
+    baby_fraction = signals.get("baby_fraction")
+    bio_confidence = signals.get("bio_confidence")
+    spoof_likelihood = signals.get("spoof_likelihood")
+
+    if status == ADMISSION_STATUS_BABY_PASS:
+        return {
+            "status": "BABY_PASS",
+            "bucket": "baby",
+            "speaker_gate": {
+                "status": "BABY_PASS",
+                "speaker_type": speaker_type,
+                "speaker_category": speaker_category,
+                "adult_fraction": adult_fraction,
+                "baby_fraction": baby_fraction,
+                "bio_confidence": bio_confidence,
+                "spoof_likelihood": spoof_likelihood,
+            },
+            "noise_gate": {"reject": False, "uncertain": False},
+        }
+
+    if status == ADMISSION_STATUS_REJECT_NO_SOUND:
+        return {
+            "status": "REJECT_NO_SOUND",
+            "bucket": "no_sound",
+            "reason": "quality",
+            "critical_issues": admission.get("reasons", []),
+        }
+
+    if status == ADMISSION_STATUS_REJECT_ADULT:
+        return {
+            "status": "REJECT_ADULT",
+            "bucket": "adult",
+            "reason": "adult",
+            "speaker_gate": {
+                "status": "ADULT_REJECT",
+                "speaker_type": speaker_type,
+                "speaker_category": speaker_category,
+                "message": message,
+                "adult_fraction": adult_fraction,
+                "baby_fraction": baby_fraction,
+                "bio_confidence": bio_confidence,
+                "spoof_likelihood": spoof_likelihood,
+            },
+        }
+
+    if status == ADMISSION_STATUS_REJECT_NON_BABY:
+        return {
+            "status": "REJECT_NOISE",
+            "bucket": "noise",
+            "reason": "noise",
+            "speaker_gate": {
+                "status": "BABY_PASS",
+                "speaker_type": speaker_type,
+                "speaker_category": speaker_category,
+                "adult_fraction": adult_fraction,
+                "baby_fraction": baby_fraction,
+                "bio_confidence": bio_confidence,
+                "spoof_likelihood": spoof_likelihood,
+            },
+            "noise_gate": {
+                "reject": True,
+                "uncertain": False,
+                "reason": admission.get("reason", "non_baby_noise"),
+                "message": message,
+                "voice_type": signals.get("voice_type"),
+                "voice_type_confidence": signals.get("voice_type_confidence"),
+                "f0_mean": signals.get("f0_mean"),
+                "spectral_centroid": signals.get("spectral_centroid"),
+                "cry_fraction": signals.get("cry_fraction"),
+                "baby_fraction": baby_fraction,
+            },
+        }
+
+    if status == ADMISSION_STATUS_PASS_UNCERTAIN:
+        return {
+            "status": "PASS_UNCERTAIN",
+            "bucket": "uncertain",
+            "speaker_gate": {
+                "status": "UNCERTAIN",
+                "speaker_type": speaker_type,
+                "speaker_category": speaker_category,
+                "message": message or "Baby evidence is uncertain.",
+                "adult_fraction": adult_fraction,
+                "baby_fraction": baby_fraction,
+                "bio_confidence": bio_confidence,
+                "spoof_likelihood": spoof_likelihood,
+            },
+            "noise_gate": {"reject": False, "uncertain": True, "message": message} if message else {"reject": False, "uncertain": False},
+        }
+
+    return None
+
+
 # =============================================================================
 # Lambda Handler
 # =============================================================================
@@ -2016,9 +2127,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if not session:
         raise ValueError(f"Session {session_id} not found")
 
-    # 1a. Unified recording gate: only baby recordings proceed to insight.
-    # Outcomes: no_sound, adult/mismatch, noise, uncertain, baby_pass.
-    recording_gate = _evaluate_baby_admission_gate(session)
+    # 1a. Unified recording gate: prefer persisted admission gate from feature extraction.
+    # Falls back to in-lambda evaluation for backward compatibility with older sessions.
+    recording_gate = _recording_gate_from_admission(session) or _evaluate_baby_admission_gate(session)
     session["recording_gate"] = recording_gate
     speaker_gate = recording_gate.get("speaker_gate") or {}
     noise_gate = recording_gate.get("noise_gate") or {}
@@ -2099,12 +2210,22 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         }
 
     if gate_status == "PASS_UNCERTAIN":
-        session["speaker_warning"] = {
-            "message": speaker_gate.get("message"),
-            "adult_fraction": speaker_gate.get("adult_fraction"),
-            "baby_fraction": speaker_gate.get("baby_fraction"),
-            "bio_confidence": speaker_gate.get("bio_confidence"),
-            "spoof_likelihood": speaker_gate.get("spoof_likelihood"),
+        logger.warning(
+            f"Unified gate rejection (uncertain) for session {session_id}: "
+            f"adult_fraction={speaker_gate.get('adult_fraction', 0.0)} "
+            f"baby_fraction={speaker_gate.get('baby_fraction', 0.0)} "
+            f"msg={speaker_gate.get('message', '')}"
+        )
+        rejection_insight = _build_rejection_insight(session, reason="quality")
+        uncertain_msg = str(speaker_gate.get("message") or "").strip()
+        if uncertain_msg:
+            base = rejection_insight.get("insight_sections", {}).get("what_it_means", "")
+            rejection_insight["insight_sections"]["what_it_means"] = f"{base} {uncertain_msg}".strip()
+        save_insight_to_session(session_id, rejection_insight)
+        return {
+            "status": "insight_generated",
+            "session_id": session_id,
+            "insight": rejection_insight,
         }
 
     # Branch: LINGUISTIC mode sessions get language-development insight

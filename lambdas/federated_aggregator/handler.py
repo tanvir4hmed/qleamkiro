@@ -139,10 +139,13 @@ def _get_session_intent_distribution(session_id: str) -> Optional[Dict[str, floa
     try:
         response = session_table.get_item(
             Key={"session_id": session_id},
-            ProjectionExpression="efp, developmental_stage",
+            ProjectionExpression="efp, developmental_stage, admission_gate",
         )
         item = response.get("Item")
         if not item:
+            return None
+        admission_status = str(((item.get("admission_gate") or {}).get("status", ""))).upper().strip()
+        if admission_status and admission_status != "BABY_PASS":
             return None
         efp_raw = _decimal_to_float(item.get("efp") or {})
         if efp_raw and isinstance(efp_raw, dict):

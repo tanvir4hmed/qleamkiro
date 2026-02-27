@@ -72,7 +72,7 @@ def _float_to_decimal(obj: Any) -> Any:
     
     # Handle boolean
     if isinstance(obj, bool):
-        return Decimal("1") if obj else Decimal("0")
+        return obj
     
     # Handle string - try to convert if it looks like a number
     if isinstance(obj, str):
@@ -200,6 +200,30 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     child_id = event["child_id"]
     session_id = event["session_id"]
     embedding_vector = event["embedding_vector"]
+
+    # Fail-safe: non-admitted sessions should not enter clustering.
+    try:
+        session_resp = session_table.get_item(Key={"session_id": session_id})
+        session_item = _decimal_to_float(session_resp.get("Item", {}))
+        admission_status = str(
+            (session_item.get("admission_gate") or {}).get("status", "")
+        ).upper().strip()
+        if admission_status and admission_status != "BABY_PASS":
+            logger.warning(
+                f"Skipping clustering for non-admitted session {session_id}: "
+                f"admission_status={admission_status}"
+            )
+            return {
+                "status": "skipped_not_admitted",
+                "cluster_id": "",
+                "action": "skipped",
+                "similarity_score": 0.0,
+                "session_id": session_id,
+                "child_id": child_id,
+                "admission_status": admission_status,
+            }
+    except Exception as e:
+        logger.warning(f"Admission fail-safe check failed (continuing): {e}")
     
     threshold = float(os.environ.get("CLUSTER_SIMILARITY_THRESHOLD", str(CLUSTER_SIMILARITY_THRESHOLD)))
     

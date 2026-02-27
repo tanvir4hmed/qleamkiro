@@ -140,6 +140,14 @@ def lambda_handler(event: dict, context) -> dict:
         logger.warning(f"Session {session_id} not found")
         return {"status": "skipped", "reason": "session_not_found"}
 
+    admission_status = str((session.get("admission_gate") or {}).get("status", "")).upper().strip()
+    if admission_status and admission_status != "BABY_PASS":
+        logger.info(
+            f"SpeechAnalyzer: skipping non-admitted session {session_id} "
+            f"(admission_status={admission_status})"
+        )
+        return {"status": "skipped", "reason": "not_admitted_baby", "admission_status": admission_status}
+
     # --- Early exit for non-LINGUISTIC sessions ---
     developmental_mode = session.get("developmental_mode", "")
     if developmental_mode != "LINGUISTIC":

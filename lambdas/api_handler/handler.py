@@ -117,7 +117,7 @@ def _float_to_decimal(obj: Any) -> Any:
     
     # Handle boolean
     if isinstance(obj, bool):
-        return Decimal("1") if obj else Decimal("0")
+        return obj
     
     # Handle string - try to convert if it looks like a number
     if isinstance(obj, str):
@@ -702,6 +702,7 @@ def get_insight(event: Dict) -> Dict:
         "concept_decode": session.get("concept_decode"),
         # Phase 7: Speech analysis output (LINGUISTIC mode only)
         "speech_analysis": session.get("speech_analysis"),
+        "admission_gate": session.get("admission_gate"),
         # Phase 1: Biological validation summary
         "biological": {
             k: v for k, v in (session.get("biological") or {}).items()

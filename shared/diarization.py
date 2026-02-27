@@ -457,14 +457,19 @@ def diarize(y: np.ndarray, sr: int) -> Dict:
 # Baby audio extraction
 # ---------------------------------------------------------------------------
 
-def extract_baby_audio(y: np.ndarray, sr: int, diarization_result: Dict) -> np.ndarray:
+def extract_baby_audio(
+    y: np.ndarray,
+    sr: int,
+    diarization_result: Dict,
+    strict: bool = False,
+) -> np.ndarray:
     """
     Concatenate all baby-labeled segments (newborn, infant, toddler, child).
     
     Also includes "unknown" segments in case they are baby sounds.
 
-    Falls back to full audio if no baby segments are found — ensures
-    feature extraction always has input to work with.
+    Falls back to full audio if no baby segments are found (default behavior).
+    In strict mode, returns an empty array instead of full-audio fallback.
 
     Returns:
         np.ndarray: concatenated baby audio samples
@@ -482,6 +487,10 @@ def extract_baby_audio(y: np.ndarray, sr: int, diarization_result: Dict) -> np.n
 
     if baby_chunks:
         return np.concatenate(baby_chunks)
+
+    if strict:
+        logger.warning("No baby segments found in diarization (strict mode)")
+        return np.array([], dtype=y.dtype)
 
     # No baby segments found → use full audio with a warning
     logger.warning("No baby segments found in diarization — using full audio")

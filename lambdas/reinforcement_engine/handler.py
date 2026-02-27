@@ -78,7 +78,7 @@ def _float_to_decimal(obj: Any) -> Any:
     
     # Handle boolean
     if isinstance(obj, bool):
-        return Decimal("1") if obj else Decimal("0")
+        return obj
     
     # Handle string - try to convert if it looks like a number
     if isinstance(obj, str):

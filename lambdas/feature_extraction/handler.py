@@ -23,6 +23,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
 sys.path.insert(0, "/var/task/shared")
 
 from constants import (
+    ADMISSION_STATUS_BABY_PASS,
+    ADMISSION_STATUS_REJECT_ADULT,
+    ADMISSION_STATUS_REJECT_NO_SOUND,
     ALPHA_VALUE,
     CHILD_PROFILE_TABLE,
     MIN_SESSIONS_FOR_DEVIATION,
@@ -56,6 +59,7 @@ from rich_features import extract_rich_features
 
 # Phase 4 imports — probabilistic age classifier
 from age_classifier import classify_probabilistic, age_class_to_stage_hint
+from baby_admission import evaluate_baby_admission
 
 # Configure logging
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -102,7 +106,7 @@ def _float_to_decimal(obj: Any) -> Any:
     
     # Handle boolean
     if isinstance(obj, bool):
-        return Decimal("1") if obj else Decimal("0")
+        return obj
     
     # Handle string - try to convert if it looks like a number
     if isinstance(obj, str):
@@ -251,6 +255,7 @@ def save_session(
     rich_features: Optional[Dict] = None,
     session_context: Optional[Dict] = None,
     age_classification: Optional[Dict] = None,
+    admission_gate: Optional[Dict] = None,
 ):
     """Save session record to DynamoDB with Phase 1–4 metadata."""
     now = datetime.now(timezone.utc).isoformat()
@@ -282,6 +287,7 @@ def save_session(
         "session_context": session_context or {},
         # Phase 4 — probabilistic age classification
         "age_classification": age_classification or {},
+        "admission_gate": admission_gate or {},
     }
 
     session_table.put_item(Item=_float_to_decimal(session_item))
@@ -488,6 +494,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "analysis_type": "low_confidence",
             "adult_evidence": [f"quality_gate_critical:{'|'.join(critical_issues)}"],
         }
+        admission_gate = {
+            "status": ADMISSION_STATUS_REJECT_NO_SOUND,
+            "reason": "quality",
+            "message": "Critical audio-quality failure before baby admission.",
+            "reasons": critical_issues,
+            "baby_confidence": 0.0,
+        }
         deviation = {
             "deviation_flag": False,
             "deviation_level": "none",
@@ -512,6 +525,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             rich_features={},
             session_context=session_context,
             age_classification={},
+            admission_gate=admission_gate,
         )
         return {
             "status": "features_extracted",
@@ -532,6 +546,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "developmental_mode": developmental_mode,
             "session_context": session_context,
             "age_classification": {},
+            "admission_gate": admission_gate,
             "fast_reject": True,
         }
 
@@ -558,7 +573,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             )
             # 4. Extract baby-labeled audio for clean downstream analysis
             # "unknown" segments are included (conservative — might be quiet baby sounds)
-            baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result)
+            baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result, strict=True)
             baby_audio = _enhance_baby_signal(baby_audio)
             baby_secs  = len(baby_audio) / max(sample_rate, 1)
             logger.info(f"Baby audio extracted: {baby_secs:.1f}s of {duration_seconds:.1f}s total")
@@ -617,6 +632,92 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             _reconcile_bio_with_age_class(bio_result, age_classification_result)
         except Exception as e:
             logger.warning(f"Bio reconciliation error (non-blocking): {e}")
+
+    # 8b. Dedicated baby admission gate — only BABY_PASS should enter core pipeline.
+    admission_gate = evaluate_baby_admission(
+        quality_gate=quality_gate_result,
+        diarization=diarization_result,
+        biological=bio_result,
+        age_classification=age_classification_result,
+        rich_features=rich_features_result,
+    )
+    admission_status = str(admission_gate.get("status", "") or "").upper().strip()
+    logger.info(
+        f"Admission gate: status={admission_status} "
+        f"baby_conf={admission_gate.get('baby_confidence', 0.0)} "
+        f"reason={admission_gate.get('reason', '')}"
+    )
+
+    if admission_status != ADMISSION_STATUS_BABY_PASS:
+        profile = get_or_create_child_profile(child_id)
+        age_days = compute_age_days(profile.get("birth_date"))
+        age_stage_info = developmental_stage_from_age(age_days)
+        developmental_stage = age_stage_info["stage"]
+        developmental_mode = age_stage_info["mode"]
+
+        if admission_status == ADMISSION_STATUS_REJECT_ADULT:
+            routing_result = {
+                "mode": developmental_mode,
+                "stage": developmental_stage,
+                "analysis_type": "adult_mimicry_flagged",
+                "adult_evidence": admission_gate.get("reasons", []),
+            }
+        else:
+            routing_result = {
+                "mode": developmental_mode,
+                "stage": developmental_stage,
+                "analysis_type": "low_confidence",
+                "adult_evidence": admission_gate.get("reasons", []),
+            }
+
+        deviation = {
+            "deviation_flag": False,
+            "deviation_level": "none",
+            "deviation_score": 0.0,
+        }
+        save_session(
+            session_id=session_id,
+            child_id=child_id,
+            s3_audio_path=s3_audio_path,
+            feature_scores=feature_scores,
+            embedding_vector=embedding_vector,
+            deviation=deviation,
+            duration_seconds=duration_seconds,
+            quality_gate=quality_gate_result,
+            biological=bio_result,
+            age_days_at_recording=age_days,
+            developmental_stage=developmental_stage,
+            developmental_mode=developmental_mode,
+            diarization=diarization_result,
+            enrollment={},
+            routing=routing_result,
+            rich_features=rich_features_result,
+            session_context=session_context,
+            age_classification=age_classification_result,
+            admission_gate=admission_gate,
+        )
+        return {
+            "status": "features_extracted",
+            "session_id": session_id,
+            "child_id": child_id,
+            "feature_scores": feature_scores,
+            "rich_features": rich_features_result,
+            "embedding_vector": embedding_vector,
+            "deviation": deviation,
+            "readiness_score": 0.0,
+            "duration_seconds": duration_seconds,
+            "quality_gate": quality_gate_result,
+            "biological": bio_result,
+            "diarization": diarization_result,
+            "enrollment": {},
+            "routing": routing_result,
+            "developmental_stage": developmental_stage,
+            "developmental_mode": developmental_mode,
+            "session_context": session_context,
+            "age_classification": age_classification_result,
+            "admission_gate": admission_gate,
+            "fast_reject": True,
+        }
 
     # 9. [Phase 2] Load historical embeddings → enrolled baby identity verification
     # Uses FULL-audio embedding (not baby-only) — intentional for identity consistency.
@@ -753,6 +854,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         rich_features=rich_features_result,
         session_context=session_context,
         age_classification=age_classification_result,
+        admission_gate=admission_gate,
     )
 
     logger.info(f"Feature extraction complete for session {session_id}")
@@ -776,5 +878,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "developmental_mode": developmental_mode,
         "session_context": session_context,
         "age_classification": age_classification_result,
+        "admission_gate": admission_gate,
         "fast_reject": False,
     }
