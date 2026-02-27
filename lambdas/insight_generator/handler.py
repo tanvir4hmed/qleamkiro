@@ -1687,21 +1687,31 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         or speaker_category in ("adult_male", "adult_female")
         or spoof_likelihood >= 0.65
     )
-    adult_hard_by_bio = adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.75
+    adult_hard_by_age_classifier = (
+        age_class in ("adult_female", "adult_male")
+        and age_conf >= 0.62
+    )
+    adult_hard_by_bio = adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.68
     adult_hard_by_primary = (
         primary_speaker in ("adult_male", "adult_female")
-        and adult_fraction >= 0.55
-        and baby_fraction <= 0.35
+        and adult_fraction >= 0.50
+        and baby_fraction <= 0.40
     )
     adult_hard_by_dominance = (
         total_segments > 0
         and adult_segments >= 2
-        and adult_fraction >= 0.65
-        and baby_fraction < 0.25
+        and adult_fraction >= 0.60
+        and baby_fraction < 0.30
     )
-    adult_hard_by_spoof = spoof_likelihood >= 0.82 and adult_fraction >= 0.15
+    adult_hard_by_spoof = spoof_likelihood >= 0.78 and adult_fraction >= 0.15
 
-    if adult_hard_by_bio or adult_hard_by_primary or adult_hard_by_dominance or adult_hard_by_spoof:
+    if (
+        adult_hard_by_age_classifier
+        or adult_hard_by_bio
+        or adult_hard_by_primary
+        or adult_hard_by_dominance
+        or adult_hard_by_spoof
+    ):
         return {
             "status": "ADULT_REJECT",
             "speaker_type": speaker_type,
