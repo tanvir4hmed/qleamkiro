@@ -81,6 +81,11 @@ function InsightPanel({ insight }) {
     speaker_warning,
     acoustic_reliability,
     speech_transcript,
+    detected_words,
+    age_mismatch_evidence,
+    speech_evidence,
+    speaker_authenticity,
+    secondary_signals,
   } = insight;
 
   const intentKey = probable_intent?.key || 'distress_unknown';
@@ -88,6 +93,18 @@ function InsightPanel({ insight }) {
   const icon = INTENT_ICONS[intentKey] || '📊';
   const sections = insight_sections || null;
   const topEmotions = emotion_profile?.top_states || [];
+  const wordSignals = detected_words || [];
+  const mismatchScore = age_mismatch_evidence?.score || 0;
+  const authenticity = speaker_authenticity || speaker_gate || {};
+  const speechSummary = speech_evidence || {};
+  const segmentSummary = speechSummary?.segment_summary || {};
+  const secondarySignals = secondary_signals || {};
+  const secondarySignalLabels = {
+    laugh: 'laugh',
+    shout_frustration: 'shout/frustration',
+    distress_pressure: 'distress pressure',
+    soothing_need: 'soothing need',
+  };
 
   // Alt intents (excluding top one)
   const altIntents = probable_intent?.top_intents?.slice(1, 3) || [];
@@ -130,6 +147,84 @@ function InsightPanel({ insight }) {
         <div className="alt-intents">
           <span className="alt-intents-label">Speaker gate: </span>
           <span className="alt-intent-chip">UNCERTAIN</span>
+        </div>
+      )}
+
+      {authenticity?.status && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Speaker authenticity: </span>
+          <span className="alt-intent-chip">{authenticity.status}</span>
+          {typeof authenticity.adult_fraction === 'number' && (
+            <span className="alt-intent-chip">adult {Math.round(authenticity.adult_fraction * 100)}%</span>
+          )}
+          {typeof authenticity.baby_fraction === 'number' && (
+            <span className="alt-intent-chip">baby {Math.round(authenticity.baby_fraction * 100)}%</span>
+          )}
+        </div>
+      )}
+
+      {speechSummary?.presence_label && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Speech signal: </span>
+          <span className="alt-intent-chip">{speechSummary.presence_label.replace(/_/g, ' ')}</span>
+          {typeof speechSummary.presence_score === 'number' && (
+            <span className="alt-intent-chip">{Math.round(speechSummary.presence_score * 100)}%</span>
+          )}
+        </div>
+      )}
+
+      {wordSignals.length > 0 && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Detected words: </span>
+          {wordSignals.map((w) => (
+            <span key={`${w.word}-${w.count}`} className="alt-intent-chip">
+              {w.word} {w.count > 1 ? `x${w.count}` : ''}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {mismatchScore >= 0.35 && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Age consistency: </span>
+          <span className="alt-intent-chip">
+            mismatch score {Math.round(mismatchScore * 100)}%
+          </span>
+          {age_mismatch_evidence?.reason && (
+            <span className="alt-intent-chip">{age_mismatch_evidence.reason}</span>
+          )}
+        </div>
+      )}
+
+      {Object.keys(secondarySignals).filter((k) => secondarySignals?.[k]?.detected).length > 0 && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Secondary signal: </span>
+          {Object.entries(secondarySignals)
+            .filter(([, v]) => Boolean(v?.detected))
+            .map(([k, v]) => (
+              <span key={k} className="alt-intent-chip">
+                {secondarySignalLabels[k] || k} {Math.round((v?.confidence || 0) * 100)}%
+              </span>
+            ))}
+        </div>
+      )}
+
+      {typeof segmentSummary?.segments_analyzed === 'number' && segmentSummary.segments_analyzed > 0 && (
+        <div className="alt-intents">
+          <span className="alt-intents-label">Segment evidence: </span>
+          <span className="alt-intent-chip">{segmentSummary.segments_analyzed} segments</span>
+          {typeof segmentSummary.cry_ratio === 'number' && (
+            <span className="alt-intent-chip">cry {Math.round(segmentSummary.cry_ratio * 100)}%</span>
+          )}
+          {typeof segmentSummary.speech_ratio === 'number' && (
+            <span className="alt-intent-chip">speech {Math.round(segmentSummary.speech_ratio * 100)}%</span>
+          )}
+          {typeof segmentSummary.laugh_ratio === 'number' && (
+            <span className="alt-intent-chip">laugh {Math.round(segmentSummary.laugh_ratio * 100)}%</span>
+          )}
+          {typeof segmentSummary.adult_speech_ratio === 'number' && (
+            <span className="alt-intent-chip">adult-speech {Math.round(segmentSummary.adult_speech_ratio * 100)}%</span>
+          )}
         </div>
       )}
 
@@ -260,6 +355,18 @@ function InsightPanel({ insight }) {
               <span className="narrative-key">Transcript</span>
               <span className="narrative-val">{speech_transcript.text}</span>
             </div>
+            {typeof speech_transcript.confidence === 'number' && (
+              <div className="narrative-item">
+                <span className="narrative-key">ASR confidence</span>
+                <span className="narrative-val">{Math.round(speech_transcript.confidence * 100)}%</span>
+              </div>
+            )}
+            {typeof speech_transcript.token_count === 'number' && (
+              <div className="narrative-item">
+                <span className="narrative-key">Token count</span>
+                <span className="narrative-val">{speech_transcript.token_count}</span>
+              </div>
+            )}
           </div>
         </details>
       )}

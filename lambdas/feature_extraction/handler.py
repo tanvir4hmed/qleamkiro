@@ -48,7 +48,7 @@ from audio_utils import (
 )
 
 # Phase 2 imports
-from diarization import diarize, extract_baby_audio
+from diarization import classify_segment_detailed, diarize, extract_baby_audio
 from speaker_identity import determine_routing, verify_enrolled_baby
 
 # Phase 3 imports
@@ -251,6 +251,7 @@ def save_session(
     rich_features: Optional[Dict] = None,
     session_context: Optional[Dict] = None,
     age_classification: Optional[Dict] = None,
+    segment_evidence: Optional[Dict] = None,
 ):
     """Save session record to DynamoDB with Phase 1–4 metadata."""
     now = datetime.now(timezone.utc).isoformat()
@@ -282,6 +283,7 @@ def save_session(
         "session_context": session_context or {},
         # Phase 4 — probabilistic age classification
         "age_classification": age_classification or {},
+        "segment_evidence": segment_evidence or {},
     }
 
     session_table.put_item(Item=_float_to_decimal(session_item))
@@ -400,6 +402,158 @@ def _critical_quality_issues(quality_gate_result: Dict) -> list:
     return critical
 
 
+def _clamp01(v: float) -> float:
+    return max(0.0, min(1.0, float(v)))
+
+
+def _segment_energy_variability(y_segment: np.ndarray, sr: int) -> float:
+    if y_segment is None or len(y_segment) < 4:
+        return 0.0
+    frame_len = max(128, int(sr * 0.020))
+    hop = max(64, frame_len // 2)
+    if len(y_segment) < frame_len:
+        return 0.0
+    n_frames = max(1, (len(y_segment) - frame_len) // hop + 1)
+    rms = []
+    for i in range(n_frames):
+        chunk = y_segment[i * hop:i * hop + frame_len]
+        if len(chunk) == 0:
+            continue
+        rms.append(float(np.sqrt(np.mean(chunk ** 2))))
+    if not rms:
+        return 0.0
+    arr = np.array(rms, dtype=np.float32)
+    return float(np.std(arr) / (float(np.mean(arr)) + 1e-9))
+
+
+def _segment_zcr(y_segment: np.ndarray) -> float:
+    if y_segment is None or len(y_segment) < 3:
+        return 0.0
+    signs = np.sign(y_segment)
+    return float(np.sum(signs[:-1] != signs[1:])) / max(1, len(y_segment))
+
+
+def _build_segment_evidence(audio_array: np.ndarray, sample_rate: int, diarization_result: Dict) -> Dict:
+    """
+    Segment-first evidence extraction for downstream inference and UI.
+    """
+    if audio_array is None or sample_rate <= 0 or not isinstance(diarization_result, dict):
+        return {"segments": [], "summary": {}}
+
+    raw_segments = diarization_result.get("segments", []) or []
+    segment_records = []
+    total_duration = 0.0
+    speech_duration = 0.0
+    cry_duration = 0.0
+    laugh_duration = 0.0
+    adult_like_duration = 0.0
+    mixed_duration = 0.0
+
+    for idx, seg in enumerate(raw_segments[:14]):
+        try:
+            start_s = float(seg.get("start_s", 0.0) or 0.0)
+            end_s = float(seg.get("end_s", 0.0) or 0.0)
+            label = str(seg.get("label", "unknown") or "unknown").strip().lower()
+            if end_s <= start_s:
+                continue
+            start_i = int(max(0, start_s * sample_rate))
+            end_i = int(min(len(audio_array), end_s * sample_rate))
+            if end_i <= start_i:
+                continue
+
+            y_seg = audio_array[start_i:end_i]
+            dur = float(end_s - start_s)
+            if dur < 0.15:
+                continue
+
+            detailed = classify_segment_detailed(y_seg, sample_rate)
+            f0_median = float(detailed.get("f0_median", 0.0) or 0.0)
+            f0_instability = float(detailed.get("f0_instability", 0.0) or 0.0)
+            confidence = float(detailed.get("confidence", 0.0) or 0.0)
+            zcr = _segment_zcr(y_seg)
+            energy_var = _segment_energy_variability(y_seg, sample_rate)
+
+            speech_score = (
+                (0.22 if label in ("child", "toddler") else 0.0)
+                + (0.30 if label in ("adult_male", "adult_female") else 0.0)
+                + 0.22 * _clamp01((0.14 - f0_instability) / 0.14)
+                + 0.12 * _clamp01((zcr - 0.015) / 0.070)
+                + 0.14 * _clamp01((dur - 0.35) / 1.8)
+            )
+            cry_score = (
+                (0.26 if label in ("newborn", "infant") else 0.0)
+                + 0.22 * _clamp01((f0_median - 300.0) / 320.0)
+                + 0.22 * _clamp01((f0_instability - 0.10) / 0.30)
+                + 0.18 * _clamp01((energy_var - 0.35) / 1.0)
+                + 0.12 * _clamp01((dur - 0.20) / 1.0)
+            )
+            laugh_score = (
+                0.18 * _clamp01((f0_median - 240.0) / 280.0)
+                + 0.22 * _clamp01((f0_instability - 0.04) / 0.18)
+                + 0.20 * _clamp01((zcr - 0.020) / 0.060)
+                + 0.20 * _clamp01((energy_var - 0.28) / 0.80)
+                + 0.20 * _clamp01((dur - 0.20) / 0.90)
+            )
+
+            speech_score = _clamp01(speech_score)
+            cry_score = _clamp01(cry_score)
+            laugh_score = _clamp01(laugh_score)
+
+            signal_type = "mixed_vocal"
+            dominant = max(
+                (("speech_like", speech_score), ("cry_like", cry_score), ("laugh_like", laugh_score)),
+                key=lambda x: x[1],
+            )
+            if dominant[1] >= 0.56:
+                signal_type = dominant[0]
+
+            if label in ("adult_male", "adult_female") and speech_score >= 0.45:
+                signal_type = "adult_speech_like"
+
+            segment_records.append({
+                "index": idx,
+                "start_s": round(start_s, 3),
+                "end_s": round(end_s, 3),
+                "duration_s": round(dur, 3),
+                "speaker_label": label,
+                "signal_type": signal_type,
+                "f0_median": round(f0_median, 2),
+                "f0_instability": round(f0_instability, 3),
+                "zcr": round(zcr, 4),
+                "energy_var": round(energy_var, 3),
+                "speech_score": round(speech_score, 3),
+                "cry_score": round(cry_score, 3),
+                "laugh_score": round(laugh_score, 3),
+                "classifier_confidence": round(confidence, 3),
+            })
+
+            total_duration += dur
+            if signal_type == "speech_like":
+                speech_duration += dur
+            elif signal_type == "cry_like":
+                cry_duration += dur
+            elif signal_type == "laugh_like":
+                laugh_duration += dur
+            elif signal_type == "adult_speech_like":
+                adult_like_duration += dur
+            else:
+                mixed_duration += dur
+        except Exception as e:
+            logger.warning(f"Segment evidence extraction failed for index={idx}: {e}")
+
+    denom = max(0.001, total_duration)
+    summary = {
+        "segments_analyzed": len(segment_records),
+        "analyzed_duration_s": round(total_duration, 3),
+        "speech_ratio": round(speech_duration / denom, 3),
+        "cry_ratio": round(cry_duration / denom, 3),
+        "laugh_ratio": round(laugh_duration / denom, 3),
+        "adult_speech_ratio": round(adult_like_duration / denom, 3),
+        "mixed_ratio": round(mixed_duration / denom, 3),
+    }
+    return {"segments": segment_records, "summary": summary}
+
+
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
     Feature Extraction Lambda handler — Phase 1–4.
@@ -512,6 +666,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             rich_features={},
             session_context=session_context,
             age_classification={},
+            segment_evidence={},
         )
         return {
             "status": "features_extracted",
@@ -533,6 +688,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "session_context": session_context,
             "age_classification": {},
             "fast_reject": True,
+            "segment_evidence": {},
         }
 
     # 3. Full-audio feature extraction on already-decoded array.
@@ -547,6 +703,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # 3. [Phase 2] Diarization on FULL audio — segment and label by speaker type
     # Running this FIRST allows us to isolate baby audio before bio/rich feature extraction.
     diarization_result = {}
+    segment_evidence_result = {}
     baby_audio = audio_array   # fallback: full audio
     if audio_array is not None:
         try:
@@ -562,6 +719,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             baby_audio = _enhance_baby_signal(baby_audio)
             baby_secs  = len(baby_audio) / max(sample_rate, 1)
             logger.info(f"Baby audio extracted: {baby_secs:.1f}s of {duration_seconds:.1f}s total")
+            segment_evidence_result = _build_segment_evidence(audio_array, sample_rate, diarization_result)
         except Exception as e:
             logger.warning(f"Diarization error (non-blocking): {e}")
             baby_audio = audio_array  # safe fallback
@@ -753,6 +911,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         rich_features=rich_features_result,
         session_context=session_context,
         age_classification=age_classification_result,
+        segment_evidence=segment_evidence_result,
     )
 
     logger.info(f"Feature extraction complete for session {session_id}")
@@ -777,4 +936,5 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "session_context": session_context,
         "age_classification": age_classification_result,
         "fast_reject": False,
+        "segment_evidence": segment_evidence_result,
     }

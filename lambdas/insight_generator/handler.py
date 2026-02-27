@@ -21,6 +21,7 @@ import sys
 import time
 import uuid
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -359,9 +360,9 @@ def invoke_internal_stage_model(session: Dict, developmental_stage: str) -> Dict
         return {}
 
 
-def transcribe_session_audio(session: Dict) -> Optional[Dict[str, str]]:
+def transcribe_session_audio(session: Dict) -> Optional[Dict[str, Any]]:
     """
-    Optional transcription for LINGUISTIC sessions via Amazon Transcribe.
+    Optional transcription via Amazon Transcribe.
     Returns None on timeout/failure.
     """
     if not USE_TRANSCRIBE_FOR_LINGUISTIC:
@@ -407,6 +408,24 @@ def transcribe_session_audio(session: Dict) -> Optional[Dict[str, str]]:
                 ).strip()
                 if not text:
                     return None
+                items = data.get("results", {}).get("items", []) or []
+                confidence_values: List[float] = []
+                token_count = 0
+                for item in items:
+                    if str(item.get("type", "")).lower() != "pronunciation":
+                        continue
+                    token_count += 1
+                    alts = item.get("alternatives", []) or []
+                    if not alts:
+                        continue
+                    try:
+                        confidence_values.append(float(alts[0].get("confidence", 0.0) or 0.0))
+                    except Exception:
+                        continue
+                avg_confidence = (
+                    round(sum(confidence_values) / len(confidence_values), 3)
+                    if confidence_values else 0.0
+                )
                 language_code = (
                     job.get("LanguageCode")
                     or data.get("results", {}).get("language_code")
@@ -416,6 +435,8 @@ def transcribe_session_audio(session: Dict) -> Optional[Dict[str, str]]:
                     "text": text,
                     "language_code": language_code,
                     "source": "aws-transcribe",
+                    "confidence": avg_confidence,
+                    "token_count": int(token_count),
                 }
             if status == "FAILED":
                 logger.warning(f"Transcribe failed: {job.get('FailureReason', 'unknown')}")
@@ -427,6 +448,590 @@ def transcribe_session_audio(session: Dict) -> Optional[Dict[str, str]]:
 
     logger.warning(f"Transcribe timeout after {timeout_s}s for job {job_name}")
     return None
+
+
+_WORD_RE = re.compile(r"[A-Za-z\u00C0-\u024F']{2,}")
+_STOPWORDS = {
+    "the", "and", "for", "that", "this", "with", "have", "from", "your", "you",
+    "are", "was", "were", "been", "will", "would", "should", "could", "they",
+    "them", "their", "there", "then", "than", "when", "what", "where", "which",
+    "into", "onto", "about", "after", "before", "again", "very", "just", "baby",
+    "mama", "dada",
+}
+
+
+def _clamp01(v: float) -> float:
+    return max(0.0, min(1.0, float(v)))
+
+
+def _estimate_speech_presence_score(
+    rich_features: Dict[str, Any],
+    segment_summary: Optional[Dict[str, Any]] = None,
+) -> float:
+    """
+    Estimate whether lexical speech is likely present.
+    Returns a score in [0, 1].
+    """
+    syllable_rate = float(rich_features.get("syllable_rate", 0.0) or 0.0)
+    hnr_db = float(rich_features.get("hnr_db", 0.0) or 0.0)
+    pause_ratio = float(rich_features.get("pause_ratio", 0.5) or 0.5)
+    f0_range = float(rich_features.get("f0_range", 0.0) or 0.0)
+    voiced_fraction = float(rich_features.get("f0_voiced_fraction", 0.0) or 0.0)
+    cry_fraction = float(rich_features.get("cry_fraction", 0.0) or 0.0)
+    babble_fraction = float(rich_features.get("babble_fraction", 0.0) or 0.0)
+
+    speech_rate = _clamp01((syllable_rate - 1.2) / 4.8)
+    clarity = _clamp01((hnr_db - 6.0) / 16.0)
+    prosody = _clamp01((f0_range - 70.0) / 280.0)
+    continuity = _clamp01((0.75 - pause_ratio) / 0.75)
+    voiced = _clamp01((voiced_fraction - 0.10) / 0.70)
+    cry_penalty = _clamp01((cry_fraction - 0.15) / 0.55)
+    babble_bonus = _clamp01((babble_fraction - 0.10) / 0.60)
+
+    score = (
+        speech_rate * 0.28
+        + clarity * 0.24
+        + prosody * 0.14
+        + continuity * 0.14
+        + voiced * 0.12
+        + babble_bonus * 0.08
+        - cry_penalty * 0.22
+    )
+    if isinstance(segment_summary, dict) and segment_summary:
+        seg_speech = float(segment_summary.get("speech_ratio", 0.0) or 0.0)
+        seg_adult_speech = float(segment_summary.get("adult_speech_ratio", 0.0) or 0.0)
+        seg_cry = float(segment_summary.get("cry_ratio", 0.0) or 0.0)
+        score = (
+            score * 0.72
+            + _clamp01(seg_speech + seg_adult_speech * 0.7) * 0.33
+            - _clamp01(seg_cry) * 0.10
+        )
+    return round(_clamp01(score), 3)
+
+
+def _extract_detected_words(transcript_text: str, max_words: int = 8) -> List[Dict[str, Any]]:
+    """
+    Extract frequent lexical tokens from transcript for UI evidence display.
+    """
+    if not transcript_text:
+        return []
+    tokens = [t.lower() for t in _WORD_RE.findall(transcript_text)]
+    tokens = [t for t in tokens if t not in _STOPWORDS and len(t) >= 2]
+    if not tokens:
+        return []
+    counts = Counter(tokens)
+    out: List[Dict[str, Any]] = []
+    for word, count in counts.most_common(max_words):
+        out.append({"word": word, "count": int(count)})
+    return out
+
+
+def _evaluate_age_mismatch_evidence(
+    age_days: Optional[float],
+    transcript: Optional[Dict[str, Any]],
+    detected_words: List[Dict[str, Any]],
+    speech_presence_score: float,
+) -> Dict[str, Any]:
+    """
+    Estimate how inconsistent lexical speech evidence is with registered age.
+    """
+    if age_days is None:
+        return {
+            "score": 0.0,
+            "level": "none",
+            "reason": "age_missing",
+            "registered_age_days": None,
+            "transcript_word_count": 0,
+            "lexical_complexity": 0.0,
+        }
+
+    text = str((transcript or {}).get("text", "") or "").strip()
+    tokens = [t.lower() for t in _WORD_RE.findall(text)]
+    word_count = len(tokens)
+    if word_count <= 0:
+        return {
+            "score": 0.0,
+            "level": "none",
+            "reason": "no_lexical_tokens_detected",
+            "registered_age_days": int(age_days),
+            "transcript_word_count": 0,
+            "lexical_complexity": 0.0,
+            "unique_word_count": 0,
+        }
+    unique_count = len(set(tokens))
+    long_ratio = (sum(1 for t in tokens if len(t) >= 4) / max(1, word_count)) if word_count else 0.0
+    multiword_phrase = 1.0 if word_count >= 2 else 0.0
+    lexical_complexity = _clamp01(
+        (0.40 * _clamp01(word_count / 8.0))
+        + (0.30 * _clamp01(unique_count / 6.0))
+        + (0.20 * long_ratio)
+        + (0.10 * multiword_phrase)
+    )
+
+    score = 0.0
+    reason = "age_consistent"
+    if age_days < 180:
+        # 0-6 months: lexical speech is highly unlikely.
+        score = (
+            0.30 * _clamp01(word_count / 2.0)
+            + 0.32 * lexical_complexity
+            + 0.18 * multiword_phrase
+            + 0.20 * _clamp01(speech_presence_score)
+        )
+        reason = "clear lexical speech is atypical for 0-6 months"
+    elif age_days < 366:
+        # 6-12 months: proto-words possible, fluent lexical speech still unlikely.
+        score = (
+            0.22 * _clamp01(max(0.0, word_count - 1.0) / 4.0)
+            + 0.30 * lexical_complexity
+            + 0.18 * multiword_phrase
+            + 0.15 * _clamp01(speech_presence_score)
+            + 0.15 * _clamp01(unique_count / 5.0)
+        )
+        reason = "speech complexity appears higher than expected for 6-12 months"
+    elif age_days < 730:
+        # 12-24 months: words are expected; mismatch only for very complex lexical bursts.
+        score = (
+            0.18 * _clamp01(max(0.0, word_count - 4.0) / 8.0)
+            + 0.20 * _clamp01(max(0.0, unique_count - 3.0) / 8.0)
+            + 0.12 * long_ratio
+            + 0.10 * _clamp01(speech_presence_score)
+        )
+        reason = "lexical complexity is somewhat advanced for 12-24 months"
+    else:
+        score = 0.0
+        reason = "lexical speech is age-expected"
+
+    score = round(_clamp01(score), 3)
+    if score >= 0.80:
+        level = "high"
+    elif score >= 0.60:
+        level = "moderate"
+    elif score >= 0.35:
+        level = "mild"
+    else:
+        level = "none"
+
+    return {
+        "score": score,
+        "level": level,
+        "reason": reason,
+        "registered_age_days": int(age_days),
+        "transcript_word_count": int(word_count),
+        "lexical_complexity": round(lexical_complexity, 3),
+        "unique_word_count": int(unique_count),
+    }
+
+
+def _collect_speech_evidence(session: Dict, force_transcribe: bool = False) -> Dict[str, Any]:
+    """
+    Build speech evidence bundle (speech presence, transcript, detected words, age mismatch).
+    Caches result on session object to avoid duplicate Transcribe calls.
+    """
+    cached = session.get("_speech_evidence_cache")
+    if isinstance(cached, dict):
+        if not force_transcribe:
+            return cached
+        if cached.get("transcript") or not USE_TRANSCRIBE_FOR_LINGUISTIC:
+            return cached
+
+    rich_features = session.get("rich_features", {}) or {}
+    segment_summary = ((session.get("segment_evidence") or {}).get("summary") or {})
+    age_days = session.get("age_days_at_recording")
+    speech_presence_score = _estimate_speech_presence_score(
+        rich_features,
+        segment_summary=segment_summary,
+    )
+    if speech_presence_score >= 0.66:
+        presence_label = "speech_likely"
+    elif speech_presence_score >= 0.42:
+        presence_label = "mixed_or_emerging_speech"
+    else:
+        presence_label = "non_speech_or_cry"
+
+    transcribe_attempted = False
+    transcript: Optional[Dict[str, Any]] = None
+    should_transcribe = bool(
+        USE_TRANSCRIBE_FOR_LINGUISTIC and (force_transcribe or speech_presence_score >= 0.42)
+    )
+    if should_transcribe:
+        transcribe_attempted = True
+        transcript = transcribe_session_audio(session)
+
+    detected_words = _extract_detected_words(str((transcript or {}).get("text", "") or ""))
+    age_mismatch = _evaluate_age_mismatch_evidence(
+        age_days=age_days if isinstance(age_days, (int, float)) else None,
+        transcript=transcript,
+        detected_words=detected_words,
+        speech_presence_score=speech_presence_score,
+    )
+
+    evidence = {
+        "speech_presence_score": speech_presence_score,
+        "speech_presence_label": presence_label,
+        "transcribe_attempted": transcribe_attempted,
+        "transcript": transcript,
+        "detected_words": detected_words,
+        "age_mismatch_evidence": age_mismatch,
+        "segment_summary": segment_summary,
+    }
+    session["_speech_evidence_cache"] = evidence
+    return evidence
+
+
+def _infer_laugh_signal(
+    feature_scores: Dict[str, Any],
+    rich_features: Dict[str, Any],
+    segment_summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Heuristic laugh signal detector used as a secondary evidence tag.
+    """
+    hnr_db = float(rich_features.get("hnr_db", 0.0) or 0.0)
+    syllable_rate = float(rich_features.get("syllable_rate", 0.0) or 0.0)
+    f0_range = float(rich_features.get("f0_range", 0.0) or 0.0)
+    babble_fraction = float(rich_features.get("babble_fraction", 0.0) or 0.0)
+    cry_fraction = float(rich_features.get("cry_fraction", 0.0) or 0.0)
+    repetition = float(feature_scores.get("repetition", 0.0) or 0.0)
+    emotional_intensity = float(feature_scores.get("emotional_intensity", 0.0) or 0.0)
+
+    clarity = _clamp01((hnr_db - 8.0) / 14.0)
+    rhythm = _clamp01((syllable_rate - 2.0) / 4.0)
+    prosody = _clamp01((f0_range - 120.0) / 240.0)
+    babble = _clamp01((babble_fraction - 0.15) / 0.60)
+    non_cry = _clamp01(1.0 - cry_fraction)
+    rep = _clamp01(repetition)
+
+    score = (
+        clarity * 0.27
+        + rhythm * 0.20
+        + prosody * 0.16
+        + babble * 0.15
+        + non_cry * 0.12
+        + rep * 0.10
+    )
+    if isinstance(segment_summary, dict) and segment_summary:
+        seg_laugh = float(segment_summary.get("laugh_ratio", 0.0) or 0.0)
+        seg_cry = float(segment_summary.get("cry_ratio", 0.0) or 0.0)
+        score = score * 0.78 + _clamp01(seg_laugh) * 0.35 - _clamp01(seg_cry) * 0.08
+    if cry_fraction > 0.30:
+        score -= 0.20 * _clamp01((cry_fraction - 0.30) / 0.40)
+    if emotional_intensity > 0.88 and cry_fraction > 0.20:
+        score -= 0.08
+    score = round(_clamp01(score), 3)
+
+    return {
+        "detected": bool(score >= 0.62),
+        "confidence": score,
+        "source": "acoustic_secondary",
+    }
+
+
+def _infer_secondary_signals(
+    feature_scores: Dict[str, Any],
+    rich_features: Dict[str, Any],
+    segment_summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Additional non-primary cues for better UX transparency and stage-aware tuning.
+    """
+    laugh = _infer_laugh_signal(
+        feature_scores=feature_scores,
+        rich_features=rich_features,
+        segment_summary=segment_summary,
+    )
+
+    ei = float(feature_scores.get("emotional_intensity", 0.0) or 0.0)
+    rh = float(feature_scores.get("rhythm", 0.0) or 0.0)
+    rep = float(feature_scores.get("repetition", 0.0) or 0.0)
+    ef = float(feature_scores.get("expressive_flow", 0.0) or 0.0)
+
+    cry_fraction = float(rich_features.get("cry_fraction", 0.0) or 0.0)
+    jitter = float(rich_features.get("jitter_percent", 0.0) or 0.0)
+    hnr_db = float(rich_features.get("hnr_db", 0.0) or 0.0)
+    f0_range = float(rich_features.get("f0_range", 0.0) or 0.0)
+
+    seg = segment_summary or {}
+    seg_cry = float(seg.get("cry_ratio", 0.0) or 0.0)
+    seg_speech = float(seg.get("speech_ratio", 0.0) or 0.0)
+    seg_laugh = float(seg.get("laugh_ratio", 0.0) or 0.0)
+
+    shout_score = (
+        0.34 * _clamp01((ei - 0.52) / 0.48)
+        + 0.22 * _clamp01((1.0 - rh - 0.18) / 0.82)
+        + 0.20 * _clamp01((jitter - 6.0) / 14.0)
+        + 0.12 * _clamp01((cry_fraction - 0.12) / 0.68)
+        + 0.12 * _clamp01((f0_range - 140.0) / 280.0)
+    )
+    shout_score += 0.15 * _clamp01(seg_cry) + 0.05 * _clamp01(seg_speech)
+    shout_score -= 0.10 * _clamp01(seg_laugh) + 0.08 * _clamp01(laugh.get("confidence", 0.0))
+    shout_score = round(_clamp01(shout_score), 3)
+
+    distress_score = (
+        0.36 * _clamp01((cry_fraction - 0.20) / 0.70)
+        + 0.24 * _clamp01((jitter - 7.0) / 14.0)
+        + 0.18 * _clamp01((10.0 - hnr_db) / 10.0)
+        + 0.12 * _clamp01((ei - 0.45) / 0.55)
+        + 0.10 * _clamp01((1.0 - rh - 0.20) / 0.80)
+    )
+    distress_score += 0.20 * _clamp01(seg_cry)
+    distress_score -= 0.08 * _clamp01(seg_laugh)
+    distress_score = round(_clamp01(distress_score), 3)
+
+    soothing_need_score = (
+        0.28 * _clamp01((ei - 0.30) / 0.70)
+        + 0.22 * _clamp01((rep - 0.20) / 0.80)
+        + 0.22 * _clamp01((1.0 - ef - 0.10) / 0.90)
+        + 0.16 * _clamp01((cry_fraction - 0.08) / 0.60)
+        + 0.12 * _clamp01((1.0 - rh) / 1.0)
+    )
+    soothing_need_score += 0.08 * _clamp01(seg_cry)
+    soothing_need_score -= 0.08 * _clamp01(seg_laugh)
+    soothing_need_score = round(_clamp01(soothing_need_score), 3)
+
+    return {
+        "laugh": laugh,
+        "shout_frustration": {
+            "detected": bool(shout_score >= 0.60),
+            "confidence": shout_score,
+            "source": "acoustic_secondary",
+        },
+        "distress_pressure": {
+            "detected": bool(distress_score >= 0.58),
+            "confidence": distress_score,
+            "source": "acoustic_secondary",
+        },
+        "soothing_need": {
+            "detected": bool(soothing_need_score >= 0.56),
+            "confidence": soothing_need_score,
+            "source": "acoustic_secondary",
+        },
+    }
+
+
+def _augment_sections_with_evidence(
+    sections: Dict[str, Any],
+    speech_evidence: Dict[str, Any],
+    secondary_signals: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Add evidence-specific lines to section text to avoid static-feel outputs.
+    """
+    out = dict(sections or {})
+    what_i_hear = str(out.get("what_i_hear", "") or "").strip()
+    what_it_means = str(out.get("what_it_means", "") or "").strip()
+    what_to_try = list(out.get("what_to_try", []) or [])
+
+    transcript = speech_evidence.get("transcript") or {}
+    detected_words = speech_evidence.get("detected_words") or []
+    mismatch = speech_evidence.get("age_mismatch_evidence") or {}
+    speech_presence_label = str(speech_evidence.get("speech_presence_label", "") or "")
+    laugh_signal = (secondary_signals or {}).get("laugh") or {}
+    shout_signal = (secondary_signals or {}).get("shout_frustration") or {}
+    distress_signal = (secondary_signals or {}).get("distress_pressure") or {}
+    soothing_signal = (secondary_signals or {}).get("soothing_need") or {}
+
+    if transcript.get("text"):
+        lang = str(transcript.get("language_code", "") or "").strip() or "unknown"
+        what_i_hear = (
+            f"{what_i_hear} Detected speech transcript in {lang}."
+        ).strip()
+    elif speech_presence_label == "speech_likely":
+        what_i_hear = (
+            f"{what_i_hear} Speech-like vocal patterns are present in this recording."
+        ).strip()
+
+    if detected_words:
+        preview = ", ".join([w.get("word", "") for w in detected_words[:4] if w.get("word")])
+        if preview:
+            what_i_hear = (
+                f"{what_i_hear} Detected words: {preview}."
+            ).strip()
+
+    mismatch_score = float(mismatch.get("score", 0.0) or 0.0)
+    if mismatch_score >= 0.60:
+        what_it_means = (
+            f"{what_it_means} Speech complexity appears higher than expected for the registered age profile."
+        ).strip()
+        if "Re-check child slot and who was speaking in the clip" not in what_to_try:
+            what_to_try.insert(0, "Re-check child slot and who was speaking in the clip")
+    elif mismatch_score >= 0.35:
+        what_it_means = (
+            f"{what_it_means} Some speech cues may be age-advanced for this profile."
+        ).strip()
+
+    if bool(laugh_signal.get("detected")):
+        what_i_hear = (
+            f"{what_i_hear} Laughter-like vocal bursts are also present."
+        ).strip()
+    if bool(shout_signal.get("detected")) and float(shout_signal.get("confidence", 0.0) or 0.0) >= 0.62:
+        what_i_hear = (
+            f"{what_i_hear} I also hear shout-like/frustrated bursts."
+        ).strip()
+    if bool(distress_signal.get("detected")) and float(distress_signal.get("confidence", 0.0) or 0.0) >= 0.60:
+        what_it_means = (
+            f"{what_it_means} Distress pressure is elevated in this sample."
+        ).strip()
+    if bool(soothing_signal.get("detected")) and float(soothing_signal.get("confidence", 0.0) or 0.0) >= 0.60:
+        if "Try close soothing (hold, rocking, gentle voice) for 2-3 minutes then re-check" not in what_to_try:
+            what_to_try.insert(0, "Try close soothing (hold, rocking, gentle voice) for 2-3 minutes then re-check")
+
+    out["what_i_hear"] = what_i_hear
+    out["what_it_means"] = what_it_means
+    out["what_to_try"] = what_to_try[:3] if what_to_try else []
+    return out
+
+
+def _calibrate_probable_intent_with_phase_rules(
+    probable_intent: Dict[str, Any],
+    developmental_stage: str,
+    feature_scores: Dict[str, Any],
+    rich_features: Dict[str, Any],
+    speech_evidence: Dict[str, Any],
+    secondary_signals: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Post-fusion calibration:
+      - age/stage-aware smoothing
+      - anger/hunger/discomfort conflict tuning
+      - laugh secondary signal influence
+      - lexical mismatch confidence penalty for infant buckets
+    """
+    if not isinstance(probable_intent, dict):
+        return probable_intent
+    evidence = dict(probable_intent.get("evidence") or {})
+    blended_raw = evidence.get("blended") or {}
+    if not isinstance(blended_raw, dict) or not blended_raw:
+        return probable_intent
+
+    blended: Dict[str, float] = {
+        str(k): max(0.0, float(v or 0.0)) for k, v in blended_raw.items()
+    }
+    stage = str(developmental_stage or "UNKNOWN").upper().strip()
+    infant_stage = stage in {"NEWBORN", "EARLY_VOCAL", "CANONICAL_BABBLE", "PROTO_WORDS"}
+
+    cry_fraction = float(rich_features.get("cry_fraction", 0.0) or 0.0)
+    hnr_db = float(rich_features.get("hnr_db", 0.0) or 0.0)
+    jitter = float(rich_features.get("jitter_percent", 0.0) or 0.0)
+    rhythm = float(feature_scores.get("rhythm", 0.0) or 0.0)
+    repetition = float(feature_scores.get("repetition", 0.0) or 0.0)
+    emotional_intensity = float(feature_scores.get("emotional_intensity", 0.0) or 0.0)
+
+    calibration = {
+        "applied": [],
+        "stage": stage,
+    }
+    laugh_signal = (secondary_signals or {}).get("laugh") or {}
+    shout_signal = (secondary_signals or {}).get("shout_frustration") or {}
+    distress_signal = (secondary_signals or {}).get("distress_pressure") or {}
+    soothing_signal = (secondary_signals or {}).get("soothing_need") or {}
+
+    # 1) Laugh signal boosts positive affect and exploratory intent.
+    laugh_conf = float(laugh_signal.get("confidence", 0.0) or 0.0)
+    if bool(laugh_signal.get("detected")) and laugh_conf >= 0.62:
+        boost = min(0.08, 0.04 + 0.04 * laugh_conf)
+        blended["happy"] = blended.get("happy", 0.0) + boost
+        blended["exploration"] = blended.get("exploration", 0.0) + boost * 0.45
+        blended["pain"] = max(0.0, blended.get("pain", 0.0) - boost * 0.45)
+        blended["discomfort"] = max(0.0, blended.get("discomfort", 0.0) - boost * 0.35)
+        calibration["applied"].append("laugh_positive_shift")
+    shout_conf = float(shout_signal.get("confidence", 0.0) or 0.0)
+    if bool(shout_signal.get("detected")) and shout_conf >= 0.60:
+        boost = min(0.08, 0.03 + 0.05 * shout_conf)
+        blended["frustration"] = blended.get("frustration", 0.0) + boost
+        blended["discomfort"] = blended.get("discomfort", 0.0) + boost * 0.35
+        blended["happy"] = max(0.0, blended.get("happy", 0.0) - boost * 0.50)
+        blended["closeness"] = max(0.0, blended.get("closeness", 0.0) - boost * 0.20)
+        calibration["applied"].append("shout_frustration_shift")
+    distress_conf = float(distress_signal.get("confidence", 0.0) or 0.0)
+    if bool(distress_signal.get("detected")) and distress_conf >= 0.58:
+        boost = min(0.08, 0.03 + 0.05 * distress_conf)
+        blended["pain"] = blended.get("pain", 0.0) + boost * 0.50
+        blended["discomfort"] = blended.get("discomfort", 0.0) + boost * 0.50
+        blended["distress_unknown"] = blended.get("distress_unknown", 0.0) + boost * 0.25
+        blended["happy"] = max(0.0, blended.get("happy", 0.0) - boost * 0.60)
+        calibration["applied"].append("distress_pressure_shift")
+    soothing_conf = float(soothing_signal.get("confidence", 0.0) or 0.0)
+    if bool(soothing_signal.get("detected")) and soothing_conf >= 0.56:
+        boost = min(0.06, 0.02 + 0.04 * soothing_conf)
+        blended["closeness"] = blended.get("closeness", 0.0) + boost
+        blended["frustration"] = max(0.0, blended.get("frustration", 0.0) - boost * 0.30)
+        calibration["applied"].append("soothing_need_shift")
+
+    # 2) Strong cry distress pushes pain/discomfort signal for infant stages.
+    if infant_stage and cry_fraction >= 0.45 and jitter >= 7.0 and hnr_db <= 10.0:
+        shift = min(0.09, 0.04 + (cry_fraction - 0.45) * 0.08)
+        blended["pain"] = blended.get("pain", 0.0) + shift * 0.55
+        blended["discomfort"] = blended.get("discomfort", 0.0) + shift * 0.45
+        blended["happy"] = max(0.0, blended.get("happy", 0.0) - shift * 0.45)
+        blended["exploration"] = max(0.0, blended.get("exploration", 0.0) - shift * 0.30)
+        calibration["applied"].append("infant_distress_shift")
+
+    # 3) Resolve hunger vs frustration/discomfort ties.
+    hunger = blended.get("hunger", 0.0)
+    frustration = blended.get("frustration", 0.0)
+    discomfort = blended.get("discomfort", 0.0)
+    if abs(hunger - frustration) <= 0.08:
+        irregular = max(0.0, 1.0 - rhythm)
+        frustration_support = irregular * 0.55 + min(jitter / 20.0, 1.0) * 0.45
+        hunger_support = rhythm * 0.55 + repetition * 0.45
+        shift = min(0.05, abs(frustration_support - hunger_support) * 0.08)
+        if frustration_support > hunger_support:
+            blended["frustration"] = frustration + shift
+            blended["hunger"] = max(0.0, hunger - shift * 0.7)
+            calibration["applied"].append("frustration_over_hunger")
+        elif hunger_support > frustration_support:
+            blended["hunger"] = hunger + shift
+            blended["frustration"] = max(0.0, frustration - shift * 0.7)
+            calibration["applied"].append("hunger_over_frustration")
+    if abs(hunger - discomfort) <= 0.08 and infant_stage:
+        hunger_support = rhythm * 0.50 + repetition * 0.30 + min(cry_fraction / 0.8, 1.0) * 0.20
+        discomfort_support = (1.0 - rhythm) * 0.45 + min(jitter / 20.0, 1.0) * 0.35 + min(cry_fraction / 0.8, 1.0) * 0.20
+        shift = min(0.05, abs(hunger_support - discomfort_support) * 0.08)
+        if hunger_support > discomfort_support:
+            blended["hunger"] = blended.get("hunger", 0.0) + shift
+            blended["discomfort"] = max(0.0, blended.get("discomfort", 0.0) - shift * 0.7)
+            calibration["applied"].append("hunger_over_discomfort")
+        elif discomfort_support > hunger_support:
+            blended["discomfort"] = blended.get("discomfort", 0.0) + shift
+            blended["hunger"] = max(0.0, blended.get("hunger", 0.0) - shift * 0.7)
+            calibration["applied"].append("discomfort_over_hunger")
+
+    # Normalize
+    blended = normalize_probability_distribution(blended)
+    top_intents = sorted(blended.items(), key=lambda x: -x[1])[:3]
+    best_key = top_intents[0][0] if top_intents else probable_intent.get("key", "distress_unknown")
+    best_conf = float(probable_intent.get("confidence", 0.0) or 0.0)
+
+    # 4) Lexical mismatch penalty for infant stages.
+    mismatch_score = float((speech_evidence.get("age_mismatch_evidence") or {}).get("score", 0.0) or 0.0)
+    presence_score = float(speech_evidence.get("speech_presence_score", 0.0) or 0.0)
+    if infant_stage and mismatch_score >= 0.35:
+        penalty = min(0.28, 0.10 + mismatch_score * 0.20 + max(0.0, presence_score - 0.45) * 0.08)
+        best_conf *= max(0.55, 1.0 - penalty)
+        calibration["applied"].append("lexical_mismatch_confidence_penalty")
+        calibration["mismatch_penalty"] = round(penalty, 3)
+
+    best_conf = round(max(0.10, min(0.92, best_conf)), 3)
+    label = INTENT_LABELS.get(best_key, best_key.replace("_", " ").title())
+
+    evidence["blended"] = {k: round(v, 3) for k, v in blended.items()}
+    evidence["calibration"] = calibration
+    return {
+        **probable_intent,
+        "key": best_key,
+        "label": label,
+        "confidence": best_conf,
+        "top_intents": [
+            {
+                "key": k,
+                "label": INTENT_LABELS.get(k, k.replace("_", " ").title()),
+                "weight": round(v, 3),
+            }
+            for k, v in top_intents
+        ],
+        "evidence": evidence,
+    }
 
 
 # =============================================================================
@@ -767,11 +1372,19 @@ def _build_dynamic_linguistic_fallback(
     pause_ratio = float(rich_features.get("pause_ratio", 0.5))
     hnr_db = float(rich_features.get("hnr_db", 0.0))
     f0_range = float(rich_features.get("f0_range", 0.0))
+    stage_label = developmental_stage.replace("_", " ").title()
+    transcript_text = str((transcript or {}).get("text", "") or "").strip()
+    transcript_tokens = [t.lower() for t in _WORD_RE.findall(transcript_text)]
+    transcript_preview = " ".join(transcript_tokens[:6]).strip()
 
-    if transcript and transcript.get("text"):
+    if transcript_text:
         what_i_hear = (
             "I can hear speech-like vocalization and detected words in this recording."
         )
+        if transcript_preview:
+            what_i_hear = (
+                f"{what_i_hear} Transcript sample: {transcript_preview}."
+            )
     elif syllable_rate >= 2.0 and hnr_db >= 9.0:
         what_i_hear = (
             "I can hear speech-like vocalization with clear syllable activity in this recording."
@@ -782,23 +1395,33 @@ def _build_dynamic_linguistic_fallback(
         )
 
     what_it_means = (
-        f"This pattern is consistent with the {developmental_stage.replace('_', ' ').lower()} stage, "
+        f"This pattern is consistent with the {stage_label.lower()} stage, "
         "but confidence improves with repeated sessions."
     )
     if pause_ratio > 0.45:
         what_it_means += " There are notable pauses, so language clarity may be reduced in this sample."
     if f0_range < 90:
         what_it_means += " Prosody range is narrow in this recording."
+    if len(transcript_tokens) >= 4:
+        what_it_means += " Multi-word speech is present in this clip."
 
-    actions = [
-        "Use short face-to-face phrases and wait for a reply",
-        "Record during calm play with lower background noise",
-        "Repeat key words slowly and consistently",
-    ]
+    actions: List[str] = []
+    if len(transcript_tokens) >= 3:
+        actions.append("Repeat detected key words back in short phrases")
+    else:
+        actions.append("Use short face-to-face phrases and wait for a reply")
+    if pause_ratio > 0.45:
+        actions.append("Record during calm play with lower background noise")
+    else:
+        actions.append("Keep 15-30 second clips focused on one activity")
+    if syllable_rate < 1.5:
+        actions.append("Use rhythmic turn-taking sounds and pauses")
+    else:
+        actions.append("Repeat key words slowly and consistently")
     return {
         "what_i_hear": what_i_hear,
         "what_it_means": what_it_means,
-        "what_to_try": actions,
+        "what_to_try": actions[:3],
         "source": "dynamic-fallback",
     }
 
@@ -816,7 +1439,12 @@ def _generate_linguistic_insight(
     Skips intent classification - focuses on language metrics instead.
     """
     use_bedrock = os.environ.get("USE_BEDROCK", str(USE_BEDROCK)).lower() == "true"
-    transcript = transcribe_session_audio(session or {}) if session else None
+    speech_evidence = _collect_speech_evidence(session or {}, force_transcribe=True) if session else {}
+    transcript = speech_evidence.get("transcript")
+    detected_words = speech_evidence.get("detected_words", [])
+    age_mismatch_evidence = speech_evidence.get("age_mismatch_evidence", {})
+    segment_summary = speech_evidence.get("segment_summary") or ((session or {}).get("segment_evidence", {}) or {}).get("summary", {})
+    secondary_signals = _infer_secondary_signals(feature_scores or {}, rich_features or {}, segment_summary=segment_summary)
 
     insight_sections = None
     if use_bedrock:
@@ -828,6 +1456,11 @@ def _generate_linguistic_insight(
         insight_sections = _build_dynamic_linguistic_fallback(
             developmental_stage, rich_features, transcript=transcript
         )
+    insight_sections = _augment_sections_with_evidence(
+        insight_sections,
+        speech_evidence=speech_evidence,
+        secondary_signals=secondary_signals,
+    )
 
     # Build observed_pattern from feature_scores so the acoustic chart can render
     fs = feature_scores or {}
@@ -845,6 +1478,15 @@ def _generate_linguistic_insight(
         "insight_sections": insight_sections,
         "suggested_response": "  |  ".join(insight_sections.get("what_to_try", [])),
         "speech_transcript": transcript,
+        "detected_words": detected_words,
+        "age_mismatch_evidence": age_mismatch_evidence,
+        "speech_evidence": {
+            "presence_score": speech_evidence.get("speech_presence_score", 0.0),
+            "presence_label": speech_evidence.get("speech_presence_label", "non_speech_or_cry"),
+            "segment_summary": segment_summary,
+        },
+        "secondary_signals": secondary_signals,
+        "speaker_authenticity": session.get("speaker_gate") if isinstance(session, dict) else None,
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1339,6 +1981,11 @@ def build_insight(
     # Phase 3 data stored in session by feature_extraction Lambda
     rich_features     = session.get("rich_features") or {}
     session_context   = session.get("session_context") or {}
+    speech_evidence   = session.get("speech_evidence") or _collect_speech_evidence(session, force_transcribe=False)
+    transcript        = speech_evidence.get("transcript")
+    detected_words    = speech_evidence.get("detected_words", [])
+    age_mismatch      = speech_evidence.get("age_mismatch_evidence", {})
+    segment_summary   = speech_evidence.get("segment_summary") or ((session.get("segment_evidence") or {}).get("summary") or {})
 
     # Developmental stage: prefer session-level (recorded at analysis time), fall back to profile
     developmental_stage = (
@@ -1357,6 +2004,11 @@ def build_insight(
     # 1. Feature narrative - always computed from audio data, no feedback involved
     feature_narrative = describe_features_in_words(feature_scores, deviation_level)
     emotion_profile = compute_emotion_profile(feature_scores, rich_features)
+    secondary_signals = _infer_secondary_signals(
+        feature_scores,
+        rich_features,
+        segment_summary=segment_summary,
+    )
 
     # 2. [Phase 4] Three-source evidence model: 60% acoustic + 15% research + 25% feedback
     #    [Phase 8] Research prior replaced by FL population prior when available + reliable
@@ -1391,6 +2043,14 @@ def build_insight(
         training_dataset_n=int(training_dataset.get("n") or 0),
         training_dataset_reliable=bool(training_dataset.get("is_reliable")),
     )
+    probable_intent = _calibrate_probable_intent_with_phase_rules(
+        probable_intent=probable_intent,
+        developmental_stage=developmental_stage,
+        feature_scores=feature_scores,
+        rich_features=rich_features,
+        speech_evidence=speech_evidence,
+        secondary_signals=secondary_signals,
+    )
     cluster_stability = determine_cluster_stability(cluster)
     private_language_signal = compute_private_language_signal(
         cluster=cluster,
@@ -1417,6 +2077,11 @@ def build_insight(
             feature_narrative=feature_narrative,
             child_name=child_name,
         )
+    insight_sections = _augment_sections_with_evidence(
+        insight_sections,
+        speech_evidence=speech_evidence,
+        secondary_signals=secondary_signals,
+    )
 
     # First-session hardening: never overstate confidence on cold start text.
     if session_count <= 1:
@@ -1453,6 +2118,25 @@ def build_insight(
         "speaker_warning": session.get("speaker_warning"),
         "semantic_alignment": semantic_alignment,
         "private_language_signal": private_language_signal,
+        "speech_transcript": transcript,
+        "detected_words": detected_words,
+        "age_mismatch_evidence": age_mismatch,
+        "speech_evidence": {
+            "presence_score": speech_evidence.get("speech_presence_score", 0.0),
+            "presence_label": speech_evidence.get("speech_presence_label", "non_speech_or_cry"),
+            "segment_summary": segment_summary,
+        },
+        "speaker_authenticity": {
+            "status": (session.get("speaker_gate") or {}).get("status", "UNKNOWN"),
+            "speaker_type": (session.get("speaker_gate") or {}).get("speaker_type", "unknown"),
+            "speaker_category": (session.get("speaker_gate") or {}).get("speaker_category", "unknown"),
+            "bio_confidence": (session.get("speaker_gate") or {}).get("bio_confidence", 0.0),
+            "spoof_likelihood": (session.get("speaker_gate") or {}).get("spoof_likelihood", 0.0),
+            "adult_fraction": (session.get("speaker_gate") or {}).get("adult_fraction", 0.0),
+            "baby_fraction": (session.get("speaker_gate") or {}).get("baby_fraction", 0.0),
+        },
+        "secondary_signals": secondary_signals,
+        "segment_evidence": session.get("segment_evidence") or {},
         "managed_inference": managed_inference.get("managed_model"),
         "training_dataset_profile": {
             "n": int(training_dataset.get("n") or 0),
@@ -1491,16 +2175,20 @@ def _build_rejection_insight(
       "adult"       - biological validation flagged adult voice
       "mismatch"    - speaker type doesn't match expected child
     """
+    speech_evidence = _collect_speech_evidence(
+        session,
+        force_transcribe=bool(reason in ("adult", "mismatch")),
+    )
+    transcript = speech_evidence.get("transcript")
+    detected_words = speech_evidence.get("detected_words", [])
+    age_mismatch = speech_evidence.get("age_mismatch_evidence", {})
+
     source = "quality-rejection"
     if reason == "adult" or reason == "mismatch":
         source = "speaker-rejection"
         transcript_note = ""
-        try:
-            t = transcribe_session_audio(session)
-            if t and t.get("text"):
-                transcript_note = f" Detected speech snippet: \"{t.get('text', '')[:120]}\"."
-        except Exception:
-            transcript_note = ""
+        if transcript and transcript.get("text"):
+            transcript_note = f" Detected speech snippet: \"{transcript.get('text', '')[:120]}\"."
 
         # Build specific message based on detected speaker category
         if speaker_category in ("adult_male", "adult_female") or speaker_type == "adult":
@@ -1545,6 +2233,12 @@ def _build_rejection_insight(
 
         if transcript_note:
             what_it_means = (what_it_means + transcript_note).strip()
+        if detected_words:
+            detected_preview = ", ".join([w.get("word", "") for w in detected_words[:4] if w.get("word")])
+            if detected_preview:
+                what_it_means = (
+                    f"{what_it_means} Detected words: {detected_preview}."
+                ).strip()
         
         what_to_try = [
             "Wait for your baby to make sounds naturally, then record",
@@ -1582,6 +2276,15 @@ def _build_rejection_insight(
         "speaker_type_detected": speaker_type,
         "speaker_category_detected": speaker_category,
         "speaker_gate": (session.get("speaker_gate") or {}).get("status"),
+        "speech_transcript": transcript,
+        "detected_words": detected_words,
+        "age_mismatch_evidence": age_mismatch,
+        "speech_evidence": {
+            "presence_score": speech_evidence.get("speech_presence_score", 0.0),
+            "presence_label": speech_evidence.get("speech_presence_label", "non_speech_or_cry"),
+            "segment_summary": speech_evidence.get("segment_summary", {}),
+        },
+        "segment_evidence": session.get("segment_evidence") or {},
         # No developmental_stage - don't show a misleading stage label on rejected sessions
         "note": DISCLAIMER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1636,6 +2339,17 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
     age_classification = session.get("age_classification", {}) or {}
     age_class = str(age_classification.get("final_class", "") or "").lower().strip()
     age_conf = float(age_classification.get("confidence", 0.0) or 0.0)
+    segment_summary = ((session.get("segment_evidence") or {}).get("summary") or {})
+    segment_adult_speech_ratio = float(segment_summary.get("adult_speech_ratio", 0.0) or 0.0)
+    segment_speech_ratio = float(segment_summary.get("speech_ratio", 0.0) or 0.0)
+    segment_count = int(segment_summary.get("segments_analyzed", 0) or 0)
+    speech_evidence = session.get("speech_evidence") or {}
+    age_mismatch_evidence = speech_evidence.get("age_mismatch_evidence") or {}
+    speech_presence_score = float(speech_evidence.get("speech_presence_score", 0.0) or 0.0)
+    mismatch_score = float(age_mismatch_evidence.get("score", 0.0) or 0.0)
+    lexical_complexity = float(age_mismatch_evidence.get("lexical_complexity", 0.0) or 0.0)
+    transcript_word_count = int(age_mismatch_evidence.get("transcript_word_count", 0) or 0)
+    bio_f0 = float(biological.get("f0_hz", 0.0) or 0.0)
 
     if (
         isinstance(age_days, (int, float))
@@ -1661,6 +2375,10 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         or speaker_category in ("adult_male", "adult_female")
         or spoof_likelihood >= 0.65
     )
+    adult_hard_by_age_classifier = (
+        age_class in ("adult_female", "adult_male")
+        and age_conf >= 0.68
+    )
     adult_hard_by_bio = adult_bio_suspected and max(bio_confidence, spoof_likelihood) >= 0.75
     adult_hard_by_primary = (
         primary_speaker in ("adult_male", "adult_female")
@@ -1674,12 +2392,35 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         and baby_fraction < 0.25
     )
     adult_hard_by_spoof = spoof_likelihood >= 0.82 and adult_fraction >= 0.15
+    adult_hard_by_segments = (
+        segment_count >= 2
+        and segment_adult_speech_ratio >= 0.45
+        and (adult_fraction >= 0.25 or segment_speech_ratio >= 0.35)
+    )
+    adult_hard_by_lexical_voice = (
+        transcript_word_count >= 5
+        and speech_presence_score >= 0.72
+        and lexical_complexity >= 0.55
+        and (
+            (bio_f0 > 0 and bio_f0 < 235 and spoof_likelihood >= 0.40)
+            or (age_class in ("adult_female", "adult_male") and age_conf >= 0.55)
+        )
+    )
+    lexical_hard_mismatch = bool(
+        isinstance(age_days, (int, float))
+        and age_days < 366
+        and mismatch_score >= 0.82
+        and transcript_word_count >= 2
+    )
 
     if (
-        adult_hard_by_bio
+        adult_hard_by_age_classifier
+        or adult_hard_by_bio
         or adult_hard_by_primary
         or adult_hard_by_dominance
         or adult_hard_by_spoof
+        or adult_hard_by_segments
+        or adult_hard_by_lexical_voice
     ):
         return {
             "status": "ADULT_REJECT",
@@ -1689,6 +2430,25 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
             "spoof_likelihood": round(spoof_likelihood, 3),
             "adult_fraction": round(adult_fraction, 3),
             "baby_fraction": round(baby_fraction, 3),
+            "age_mismatch_score": round(mismatch_score, 3),
+            "speech_presence_score": round(speech_presence_score, 3),
+            "lexical_complexity": round(lexical_complexity, 3),
+            "segment_adult_speech_ratio": round(segment_adult_speech_ratio, 3),
+        }
+
+    if lexical_hard_mismatch:
+        return {
+            "status": "AGE_MISMATCH_REJECT",
+            "speaker_type": speaker_type,
+            "speaker_category": speaker_category or "child",
+            "bio_confidence": round(max(bio_confidence, age_conf), 3),
+            "spoof_likelihood": round(spoof_likelihood, 3),
+            "adult_fraction": round(adult_fraction, 3),
+            "baby_fraction": round(baby_fraction, 3),
+            "age_days": int(age_days),
+            "age_class_confidence": round(age_conf, 3),
+            "age_mismatch_score": round(mismatch_score, 3),
+            "message": "Detected lexical speech appears too advanced for the registered age profile.",
         }
 
     # Soft-warning gate: require corroborating evidence (not spoof-only) to
@@ -1702,6 +2462,12 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         soft_signals += 1
     if primary_speaker in ("adult_male", "adult_female") and adult_fraction >= 0.35:
         soft_signals += 1
+    if mismatch_score >= 0.60 and transcript_word_count >= 2:
+        soft_signals += 1
+    if segment_adult_speech_ratio >= 0.30:
+        soft_signals += 1
+    if transcript_word_count >= 4 and speech_presence_score >= 0.62 and lexical_complexity >= 0.45:
+        soft_signals += 1
 
     # In lower-SNR recordings, raise bar for uncertain warnings unless
     # diarization also supports adult presence.
@@ -1714,7 +2480,9 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
     )
 
     if uncertain:
-        if spoof_likelihood >= 0.55:
+        if mismatch_score >= 0.60 and transcript_word_count >= 2:
+            msg = "Speech complexity appears age-mismatched; recording may include an older speaker."
+        elif spoof_likelihood >= 0.55:
             msg = "Possible adult imitation pattern detected; insight is based on isolated baby-like segments."
         else:
             msg = "Mixed speakers detected; insight is based on baby-segment analysis."
@@ -1728,6 +2496,8 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
             "adult_fraction": round(adult_fraction, 3),
             "baby_fraction": round(baby_fraction, 3),
             "soft_signal_count": soft_signals,
+            "age_mismatch_score": round(mismatch_score, 3),
+            "segment_adult_speech_ratio": round(segment_adult_speech_ratio, 3),
         }
 
     return {
@@ -1738,6 +2508,8 @@ def _evaluate_speaker_gate(session: Dict) -> Dict[str, Any]:
         "spoof_likelihood": round(spoof_likelihood, 3),
         "adult_fraction": round(adult_fraction, 3),
         "baby_fraction": round(baby_fraction, 3),
+        "age_mismatch_score": round(mismatch_score, 3),
+        "segment_adult_speech_ratio": round(segment_adult_speech_ratio, 3),
     }
 
 
@@ -1831,6 +2603,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "insight": rejection_insight,
         }
 
+    # 1b. Speech evidence bundle for transcript/word/mismatch-aware decisions.
+    speech_evidence = _collect_speech_evidence(session, force_transcribe=False)
+    session["speech_evidence"] = speech_evidence
+
     # 1b. Speaker authenticity gate.
     speaker_gate = _evaluate_speaker_gate(session)
     session["speaker_gate"] = speaker_gate
@@ -1884,6 +2660,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             "baby_fraction": speaker_gate.get("baby_fraction"),
             "bio_confidence": speaker_gate.get("bio_confidence"),
             "spoof_likelihood": speaker_gate.get("spoof_likelihood"),
+            "age_mismatch_score": speaker_gate.get("age_mismatch_score"),
+            "segment_adult_speech_ratio": speaker_gate.get("segment_adult_speech_ratio"),
         }
 
     # Branch: LINGUISTIC mode sessions get language-development insight
