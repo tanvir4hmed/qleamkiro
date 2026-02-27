@@ -375,15 +375,29 @@ def _enhance_baby_signal(y: np.ndarray) -> np.ndarray:
 def _critical_quality_issues(quality_gate_result: Dict) -> list:
     """
     Return critical gate issues that warrant fast rejection.
+
+    Keep no_vocal_activity_detected as a soft signal unless the clip is
+    extremely silence-dominant; this avoids false fast-reject on valid crying
+    clips recorded on low-gain devices.
     """
     if not isinstance(quality_gate_result, dict):
         return []
-    critical_prefixes = ("no_signal", "no_vocal_activity_detected", "too_short:")
+    critical_prefixes = ("no_signal", "too_short:")
     issues = quality_gate_result.get("issues", []) or []
-    return [
+    critical = [
         issue for issue in issues
         if any(str(issue).startswith(prefix) for prefix in critical_prefixes)
     ]
+    if "no_vocal_activity_detected" in issues:
+        try:
+            voiced_fraction = float(quality_gate_result.get("voiced_energy_fraction", 0.0) or 0.0)
+            silence_ratio = float(quality_gate_result.get("silence_ratio", 1.0) or 1.0)
+        except Exception:
+            voiced_fraction = 0.0
+            silence_ratio = 1.0
+        if voiced_fraction <= 0.02 and silence_ratio >= 0.95:
+            critical.append("no_vocal_activity_detected")
+    return critical
 
 
 def lambda_handler(event: Dict, context: Any) -> Dict:

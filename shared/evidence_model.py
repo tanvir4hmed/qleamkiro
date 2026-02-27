@@ -29,7 +29,7 @@ Design principles:
 """
 import logging
 import math
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from normalization import normalize_probability_distribution
 from intent_taxonomy import normalize_intent_distribution
@@ -60,6 +60,148 @@ _INFANT_STAGE_SET = {"NEWBORN", "EARLY_VOCAL", "CANONICAL_BABBLE", "PROTO_WORDS"
 def _base_weights_for_stage(developmental_stage: str) -> Dict[str, float]:
     stage = (developmental_stage or "UNKNOWN").upper().strip()
     return _STAGE_BASE_WEIGHTS.get(stage, _STAGE_BASE_WEIGHTS["UNKNOWN"])
+
+
+def _clamp01(v: float) -> float:
+    return max(0.0, min(1.0, float(v)))
+
+
+def _resolve_hunger_discomfort_pair(
+    blended: Dict[str, float],
+    acoustic_scores: Dict[str, float],
+    research_priors: Dict[str, float],
+    feature_scores: Dict[str, float],
+    rich_features: Optional[Dict[str, float]],
+    session_context: Optional[Dict],
+    context_reliability: float,
+    acoustic_reliability: float,
+) -> Tuple[Dict[str, float], Dict[str, object]]:
+    """
+    Pairwise resolver for hunger vs discomfort when both are competitive.
+
+    Goal:
+      - Prevent discomfort from winning by a tiny margin when hunger evidence is
+        stronger in combined acoustic + context + research signals.
+      - Keep changes conservative and local to this pair only.
+    """
+    h = float(blended.get("hunger", 0.0) or 0.0)
+    d = float(blended.get("discomfort", 0.0) or 0.0)
+    pair_total = h + d
+    pair_margin = abs(h - d)
+
+    if pair_total < 0.20 or pair_margin > 0.12:
+        return blended, {
+            "applied": False,
+            "direction": "none",
+            "shift": 0.0,
+            "support_delta": 0.0,
+        }
+
+    ranked = sorted(blended.items(), key=lambda x: -x[1])
+    top2 = {k for k, _ in ranked[:2]}
+    if "hunger" not in top2 and "discomfort" not in top2:
+        return blended, {
+            "applied": False,
+            "direction": "none",
+            "shift": 0.0,
+            "support_delta": 0.0,
+        }
+
+    rf = rich_features or {}
+    ei = float(feature_scores.get("emotional_intensity", 0.5) or 0.5)
+    rh = float(feature_scores.get("rhythm", 0.5) or 0.5)
+    rep = float(feature_scores.get("repetition", 0.5) or 0.5)
+    cry_fraction = float(rf.get("cry_fraction", 0.0) or 0.0)
+    jitter_pct = float(rf.get("jitter_percent", 0.0) or 0.0)
+
+    distress = _clamp01(ei * 0.65 + min(cry_fraction, 0.8) * 0.35)
+    irregular = _clamp01(1.0 - rh)
+    high_jitter = _clamp01((jitter_pct - 3.0) / 17.0)
+
+    hunger_signal = (
+        distress * 0.40
+        + rh * 0.26
+        + rep * 0.18
+        + min(cry_fraction, 0.8) * 0.16
+    )
+    discomfort_signal = (
+        distress * 0.28
+        + irregular * 0.34
+        + high_jitter * 0.28
+        + min(cry_fraction, 0.6) * 0.10
+    )
+    acoustic_delta = hunger_signal - discomfort_signal
+    acoustic_pair_delta = float(
+        (acoustic_scores.get("hunger", 0.0) or 0.0)
+        - (acoustic_scores.get("discomfort", 0.0) or 0.0)
+    )
+    prior_delta = float(
+        (research_priors.get("hunger", 0.0) or 0.0)
+        - (research_priors.get("discomfort", 0.0) or 0.0)
+    )
+
+    context_delta = 0.0
+    if session_context:
+        cr = max(0.2, min(1.0, float(context_reliability)))
+        feeding_ago = session_context.get("feeding_minutes_ago")
+        if isinstance(feeding_ago, (int, float)) and feeding_ago >= 0:
+            if feeding_ago >= 180:
+                context_delta += 0.12 * cr
+            elif feeding_ago >= 120:
+                context_delta += 0.09 * cr
+            elif feeding_ago >= 90:
+                context_delta += 0.05 * cr
+            elif feeding_ago <= 30:
+                context_delta -= 0.12 * cr
+            elif feeding_ago <= 45:
+                context_delta -= 0.08 * cr
+
+        health = str(session_context.get("health_state", "") or "").lower().strip()
+        if health in ("sick", "teething"):
+            context_delta -= 0.06 * cr
+
+    rel = max(0.4, min(1.0, float(acoustic_reliability)))
+    support_delta = (
+        acoustic_delta * (0.46 * rel)
+        + acoustic_pair_delta * 0.22
+        + prior_delta * 0.20
+        + context_delta * 0.12
+    )
+
+    out = dict(blended)
+    applied = False
+    direction = "none"
+    shift = 0.0
+
+    if d >= h and support_delta >= 0.04:
+        needed = (d - h) + 0.002
+        shift = min(0.05, needed, 0.018 + support_delta * 0.22)
+        if shift > 0:
+            out["hunger"] = h + shift
+            out["discomfort"] = max(0.0, d - shift)
+            out = normalize_probability_distribution(out)
+            applied = True
+            direction = "to_hunger"
+    elif h > d and support_delta <= -0.04:
+        needed = (h - d) + 0.002
+        shift = min(0.05, needed, 0.018 + abs(support_delta) * 0.22)
+        if shift > 0:
+            out["discomfort"] = d + shift
+            out["hunger"] = max(0.0, h - shift)
+            out = normalize_probability_distribution(out)
+            applied = True
+            direction = "to_discomfort"
+
+    return out, {
+        "applied": applied,
+        "direction": direction,
+        "shift": round(shift, 4),
+        "support_delta": round(support_delta, 4),
+        "acoustic_delta": round(acoustic_delta, 4),
+        "acoustic_pair_delta": round(acoustic_pair_delta, 4),
+        "prior_delta": round(prior_delta, 4),
+        "context_delta": round(context_delta, 4),
+    }
 
 # ---------------------------------------------------------------------------
 # Source 1 â€” Acoustic Intent Classifier
@@ -262,8 +404,11 @@ def compute_research_priors(
     the research prior.  context_reliability starts at 0.8 and is updated via EMA in the
     feedback_processor as parent-provided context is validated against actual outcomes.
 
-        feeding_minutes_ago >= 120  â†’ hunger += 0.15 Ã— cr  (not fed in > 2 hours)
-        feeding_minutes_ago <= 30   â†’ hunger -= 0.10 Ã— cr  (recently fed)
+        feeding_minutes_ago >= 180  -> hunger += 0.20 x cr
+        feeding_minutes_ago >= 120  -> hunger += 0.15 x cr
+        feeding_minutes_ago >= 90   -> hunger += 0.08 x cr
+        feeding_minutes_ago <= 30   -> hunger -= 0.12 x cr
+        feeding_minutes_ago <= 45   -> hunger -= 0.08 x cr
         health_state == "sick"      â†’ discomfort/pain/distress_unknown are boosted
         health_state == "teething"  â†’ pain/discomfort are boosted
 
@@ -295,10 +440,16 @@ def compute_research_priors(
         # --- Feeding time adjustment ---
         feeding_ago = session_context.get("feeding_minutes_ago")
         if isinstance(feeding_ago, (int, float)) and feeding_ago >= 0:
-            if feeding_ago >= 120:
+            if feeding_ago >= 180:
+                priors["hunger"] += 0.20 * cr    # Not fed in > 3 hours
+            elif feeding_ago >= 120:
                 priors["hunger"] += 0.15 * cr    # Not fed in > 2 hours
+            elif feeding_ago >= 90:
+                priors["hunger"] += 0.08 * cr    # Not fed in > 1.5 hours
             elif feeding_ago <= 30:
-                priors["hunger"] = max(0.0, priors["hunger"] - 0.10 * cr)  # Recently fed
+                priors["hunger"] = max(0.0, priors["hunger"] - 0.12 * cr)  # Recently fed
+            elif feeding_ago <= 45:
+                priors["hunger"] = max(0.0, priors["hunger"] - 0.08 * cr)
 
         # --- Health state adjustment ---
         health = str(session_context.get("health_state", "")).lower().strip()
@@ -622,6 +773,18 @@ def determine_probable_intent_v2(
     # --- Blend ---
     blended = blend_evidence_sources(acoustic_scores, research_priors, feedback_intents, acoustic_w, research_w, feedback_w)
 
+    # Pairwise resolver for common confusion between hunger and discomfort.
+    blended, hunger_discomfort_meta = _resolve_hunger_discomfort_pair(
+        blended=blended,
+        acoustic_scores=acoustic_scores,
+        research_priors=research_priors,
+        feature_scores=feature_scores,
+        rich_features=rich_features,
+        session_context=session_context,
+        context_reliability=context_reliability,
+        acoustic_reliability=acoustic_reliability,
+    )
+
     # Infant-stage stability guard:
     # when blended top intents are nearly tied but acoustics are clearly decisive,
     # add a tiny acoustic-consistent boost to avoid age-prior driven label flips.
@@ -712,5 +875,6 @@ def determine_probable_intent_v2(
             "managed_acoustic_alpha": round(managed_acoustic_alpha, 4),
             "acoustic_tiebreak_applied": acoustic_tiebreak_applied,
             "acoustic_tiebreak_key": acoustic_tiebreak_key,
+            "hunger_discomfort_adjustment": hunger_discomfort_meta,
         },
     }

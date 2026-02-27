@@ -65,7 +65,7 @@ semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 
-_CRITICAL_GATE_ISSUES = ("no_signal", "no_vocal_activity_detected", "too_short:")
+_CRITICAL_GATE_ISSUES = ("no_signal", "too_short:")
 
 
 # =============================================================================
@@ -1819,6 +1819,55 @@ def _evaluate_non_baby_noise_gate(session: Dict) -> Dict[str, Any]:
     return {"reject": False}
 
 
+def _critical_quality_reject(session: Dict) -> Dict[str, Any]:
+    """
+    Decide whether quality should hard-reject in insight stage.
+
+    no_vocal_activity_detected is treated as hard-reject only when there is
+    very weak signal evidence and no downstream vocal evidence.
+    """
+    quality_gate = session.get("quality_gate", {}) or {}
+    issues = quality_gate.get("issues", []) or []
+    passed = bool(quality_gate.get("passed", True))
+    if passed or not issues:
+        return {"reject": False, "critical_issues": []}
+
+    critical_issues = [
+        i for i in issues
+        if any(str(i).startswith(p) for p in _CRITICAL_GATE_ISSUES)
+    ]
+
+    if "no_vocal_activity_detected" in issues:
+        diar = session.get("diarization", {}) or {}
+        bio = session.get("biological", {}) or {}
+        rich = session.get("rich_features", {}) or {}
+        try:
+            voiced_fraction = float(quality_gate.get("voiced_energy_fraction", 0.0) or 0.0)
+            silence_ratio = float(quality_gate.get("silence_ratio", 1.0) or 1.0)
+        except Exception:
+            voiced_fraction = 0.0
+            silence_ratio = 1.0
+
+        has_voice_evidence = bool(
+            int(diar.get("total_segments", 0) or 0) > 0
+            or float(diar.get("baby_audio_fraction", 0.0) or 0.0) >= 0.10
+            or float(diar.get("adult_audio_fraction", 0.0) or 0.0) >= 0.10
+            or str(bio.get("speaker_type", "") or "").strip().lower() in ("infant", "toddler", "child", "adult")
+            or float(rich.get("f0_voiced_fraction", 0.0) or 0.0) >= 0.08
+            or float(rich.get("cry_fraction", 0.0) or 0.0) >= 0.06
+        )
+        # Escalate only for near-silence with no vocal evidence at all.
+        if (
+            voiced_fraction <= 0.02
+            and silence_ratio >= 0.95
+            and not has_voice_evidence
+        ):
+            critical_issues.append("no_vocal_activity_detected")
+
+    critical_issues = list(dict.fromkeys(critical_issues))
+    return {"reject": bool(critical_issues), "critical_issues": critical_issues}
+
+
 def _evaluate_baby_admission_gate(session: Dict) -> Dict[str, Any]:
     """
     Unified recording admission gate.
@@ -1831,13 +1880,9 @@ def _evaluate_baby_admission_gate(session: Dict) -> Dict[str, Any]:
       - PASS_UNCERTAIN
       - BABY_PASS
     """
-    quality_gate = session.get("quality_gate", {}) or {}
-    gate_issues = quality_gate.get("issues", []) or []
-    critical_issues = [
-        i for i in gate_issues
-        if any(str(i).startswith(p) for p in _CRITICAL_GATE_ISSUES)
-    ]
-    if critical_issues and not quality_gate.get("passed", True):
+    quality_decision = _critical_quality_reject(session)
+    critical_issues = quality_decision.get("critical_issues", [])
+    if quality_decision.get("reject"):
         return {
             "status": "REJECT_NO_SOUND",
             "bucket": "no_sound",
