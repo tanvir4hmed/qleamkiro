@@ -41,7 +41,6 @@ function InsightPanel({ insight }) {
     headline,
     headline_icon,
     description,
-    is_adult,
     adult_detected,
     // Transcript / words
     words_detected,
@@ -50,7 +49,6 @@ function InsightPanel({ insight }) {
     // Cry emotion
     emotion,
     emotion_confidence,
-    top_emotions,
     insight_sections,
     dunstan_sound,
     also_possible,
