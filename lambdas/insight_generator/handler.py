@@ -123,11 +123,17 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     profile = _get_child_profile(child_id)
 
     # Build insight based on routing
+    # Include classification scores for the frontend graph
+    classification_scores = sound_classification.get("scores", {})
+    classification_confidence = sound_classification.get("confidence", 0)
+
     insight = {
         "sound_type": sound_type,
         "is_adult": is_adult,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "disclaimer": DISCLAIMER,
+        "classification_scores": classification_scores,
+        "classification_confidence": classification_confidence,
     }
 
     # --- Fast reject path ---

@@ -140,6 +140,8 @@ def analyze_words_by_age(
         speaker = "adult"  # Too many words for registered age
     elif has_sentences and age_bracket in ("0_6m", "6_12m"):
         speaker = "adult"  # Sentences at this age = adult
+    elif has_sentences and age_bracket == "12_18m" and unique_words > 15:
+        speaker = "adult"  # Complex sentences at 12-18m = likely adult
     elif word_count == 0:
         speaker = "baby"
     else:
@@ -152,6 +154,10 @@ def analyze_words_by_age(
                 speaker = "baby"
             elif unique_words > expectations["max_words"]:
                 speaker = "adult"
+            # Fix 3: No overlap with baby words AND word count above expected
+            # → lean toward adult/older speaker instead of "uncertain"
+            elif len(overlap) == 0 and unique_words > expectations.get("expected_words", 0):
+                speaker = "adult"
             else:
                 speaker = "uncertain"
         else:
@@ -162,8 +168,9 @@ def analyze_words_by_age(
     probable_bracket = age_bracket
     mismatch_warning = None
 
-    if word_count > 0:
-        # Find which age bracket the word count best matches
+    if word_count > 0 and speaker != "adult":
+        # Only run age match for non-adult speakers.
+        # Adult words should never be compared to baby age expectations.
         probable_bracket = _estimate_age_from_words(unique_words, has_sentences, display_text)
 
         if probable_bracket != age_bracket:
@@ -174,7 +181,9 @@ def analyze_words_by_age(
             )
 
     # --- Word count assessment ---
-    if word_count == 0:
+    if speaker == "adult":
+        word_assessment = f"Adult speech — {word_count} word(s) detected"
+    elif word_count == 0:
         word_assessment = "No words detected"
     elif unique_words <= expectations.get("expected_words", 0):
         word_assessment = f"{unique_words} word(s) — within typical range for {bracket_labels[age_bracket]}"
@@ -185,7 +194,10 @@ def analyze_words_by_age(
 
     # --- Build display summary ---
     if speaker == "adult":
-        summary = f"Adult speech detected with {word_count} words"
+        summary = (
+            f"Adult speech detected with {word_count} word(s). "
+            f"Your child ({bracket_labels[age_bracket]}) was not the speaker."
+        )
     elif speaker == "baby" and word_count > 0:
         if age_match:
             summary = f"Your baby said {word_count} word(s) — consistent with {bracket_labels[age_bracket]}"

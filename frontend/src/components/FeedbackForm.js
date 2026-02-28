@@ -1,18 +1,14 @@
 import { useState, useMemo } from 'react';
 
 /**
- * FeedbackForm — Two-section feedback for model training.
+ * FeedbackForm — Context-aware feedback for model training.
  *
- * Section 1: Cry Emotion Feedback
- *   - Was our detection correct? (yes/no)
- *   - Select what baby was feeling (multi-select, age-appropriate emotions)
- *   - Write field for additional notes
+ * Adapts based on what was detected:
+ * - Adult detected → "Was speaker detection correct?" (Adult / Baby / Both)
+ * - Cry detected → Emotion feedback (multi-select, age-appropriate)
+ * - Speech/laugh/other → Baby language feedback (sound + meaning text fields)
  *
- * Section 2: Baby's Own Language
- *   - What sound did baby make? (text)
- *   - What do you think they meant? (text)
- *
- * Both sections feed into self-learning models.
+ * Both emotion + language sections feed into self-learning models.
  */
 
 // Age-specific emotion lists matching cry_analyzer.py brackets
@@ -52,7 +48,7 @@ const EMOTIONS_24_36M = [
 ];
 
 function getEmotionsForAge(ageDays) {
-  if (!ageDays || ageDays < 0) return EMOTIONS_24_36M; // show all if unknown
+  if (!ageDays || ageDays < 0) return EMOTIONS_24_36M;
   const months = ageDays / 30.44;
   if (months < 6) return EMOTIONS_0_6M;
   if (months < 12) return EMOTIONS_6_12M;
@@ -61,11 +57,21 @@ function getEmotionsForAge(ageDays) {
   return EMOTIONS_24_36M;
 }
 
-function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
+function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays, isAdult }) {
+  // Determine which tabs are relevant
+  const showSpeakerTab = isAdult || displayType === 'speech' || displayType === 'laugh';
+  const showEmotionTab = displayType === 'cry' || displayType === 'mixed';
+  const showLanguageTab = !isAdult && displayType !== 'silence' && displayType !== 'noise';
+
+  // Pick default active tab based on context
+  const defaultTab = isAdult ? 'speaker' : showEmotionTab ? 'emotion' : 'language';
+
   const [open, setOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState(
-    displayType === 'cry' ? 'emotion' : 'language'
-  );
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
+  // Speaker feedback state
+  const [speakerAnswer, setSpeakerAnswer] = useState('');
+  const [speakerNotes, setSpeakerNotes] = useState('');
 
   // Language feedback state
   const [babySound, setBabySound] = useState('');
@@ -76,14 +82,16 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
   const [selectedEmotions, setSelectedEmotions] = useState([]);
   const [emotionNotes, setEmotionNotes] = useState('');
 
-  const showLanguageTab = displayType !== 'silence' && displayType !== 'noise';
-  const showEmotionTab = displayType === 'cry' || displayType === 'mixed';
-
   const emotions = useMemo(() => getEmotionsForAge(ageDays), [ageDays]);
 
+  const canSubmitSpeaker = !!speakerAnswer;
   const canSubmitLanguage = !!(babySound.trim() || parentMeaning.trim());
   const canSubmitEmotion = wasCorrect !== null && (wasCorrect || selectedEmotions.length > 0);
-  const canSubmit = activeTab === 'language' ? canSubmitLanguage : canSubmitEmotion;
+
+  const canSubmit =
+    activeTab === 'speaker' ? canSubmitSpeaker :
+    activeTab === 'language' ? canSubmitLanguage :
+    canSubmitEmotion;
 
   const toggleEmotion = (key) => {
     setSelectedEmotions(prev =>
@@ -94,7 +102,13 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
   const handleSubmit = () => {
     if (!canSubmit) return;
 
-    if (activeTab === 'language') {
+    if (activeTab === 'speaker') {
+      onSubmit({
+        feedback_type: 'speaker_verification',
+        speaker_answer: speakerAnswer,
+        notes: speakerNotes.trim() || undefined,
+      });
+    } else if (activeTab === 'language') {
       onSubmit({
         feedback_type: 'language',
         baby_sound: babySound.trim(),
@@ -110,6 +124,8 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
     }
 
     // Reset and close
+    setSpeakerAnswer('');
+    setSpeakerNotes('');
     setBabySound('');
     setParentMeaning('');
     setWasCorrect(null);
@@ -118,8 +134,9 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
     setOpen(false);
   };
 
-  // Only show feedback button when there's something to give feedback on
-  if (!showLanguageTab && !showEmotionTab) return null;
+  // Don't show feedback at all for silence/noise with no other tabs
+  const hasTabs = showSpeakerTab || showEmotionTab || showLanguageTab;
+  if (!hasTabs) return null;
 
   if (!open) {
     return (
@@ -134,6 +151,12 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
     );
   }
 
+  // Count available tabs for tab bar display
+  const availableTabs = [];
+  if (showSpeakerTab) availableTabs.push('speaker');
+  if (showEmotionTab) availableTabs.push('emotion');
+  if (showLanguageTab) availableTabs.push('language');
+
   return (
     <div
       className="feedback-modal-overlay"
@@ -147,21 +170,77 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
           </button>
         </div>
 
-        {/* Tab selector — only show if both tabs available */}
-        {showLanguageTab && showEmotionTab && (
+        {/* Tab selector — only show if multiple tabs */}
+        {availableTabs.length > 1 && (
           <div className="feedback-tabs">
-            <button
-              className={`feedback-tab ${activeTab === 'emotion' ? 'active' : ''}`}
-              onClick={() => setActiveTab('emotion')}
-            >
-              😢 Cry Emotion
-            </button>
-            <button
-              className={`feedback-tab ${activeTab === 'language' ? 'active' : ''}`}
-              onClick={() => setActiveTab('language')}
-            >
-              🗣️ Baby Language
-            </button>
+            {showSpeakerTab && (
+              <button
+                className={`feedback-tab ${activeTab === 'speaker' ? 'active' : ''}`}
+                onClick={() => setActiveTab('speaker')}
+              >
+                🔊 Speaker
+              </button>
+            )}
+            {showEmotionTab && (
+              <button
+                className={`feedback-tab ${activeTab === 'emotion' ? 'active' : ''}`}
+                onClick={() => setActiveTab('emotion')}
+              >
+                😢 Cry Emotion
+              </button>
+            )}
+            {showLanguageTab && (
+              <button
+                className={`feedback-tab ${activeTab === 'language' ? 'active' : ''}`}
+                onClick={() => setActiveTab('language')}
+              >
+                🗣️ Baby Language
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Speaker Verification Section */}
+        {activeTab === 'speaker' && showSpeakerTab && (
+          <div className="feedback-section-inner">
+            <p className="feedback-section-desc">
+              Was our speaker detection correct? This helps us better separate
+              adult and baby voices in recordings.
+            </p>
+
+            <div className="feedback-group">
+              <label className="feedback-label">Who was speaking in this recording?</label>
+              <div className="speaker-selector-grid">
+                {[
+                  { key: 'adult', label: 'Adult / Parent', icon: '👤' },
+                  { key: 'baby', label: 'My Baby', icon: '👶' },
+                  { key: 'both', label: 'Both Present', icon: '👨‍👩‍👦' },
+                  { key: 'other', label: 'Older Child', icon: '🧒' },
+                ].map((opt) => (
+                  <button
+                    key={opt.key}
+                    className={`speaker-option-btn ${speakerAnswer === opt.key ? 'selected' : ''}`}
+                    onClick={() => setSpeakerAnswer(opt.key)}
+                  >
+                    <span className="speaker-option-icon">{opt.icon}</span>
+                    <span className="speaker-option-label">{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="feedback-group">
+              <label className="feedback-label">
+                Anything else? <span className="feedback-optional">(optional)</span>
+              </label>
+              <textarea
+                className="feedback-textarea"
+                placeholder="e.g. baby was in background, father was talking..."
+                value={speakerNotes}
+                onChange={(e) => setSpeakerNotes(e.target.value)}
+                rows={2}
+              />
+            </div>
           </div>
         )}
 

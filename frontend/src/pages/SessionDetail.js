@@ -167,6 +167,7 @@ function SessionDetail() {
                 displayType={displayType}
                 detectedEmotion={insight?.emotion}
                 ageDays={ageDays}
+                isAdult={insight?.adult_detected || insight?.is_adult || false}
               />
             </section>
           ) : (

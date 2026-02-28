@@ -4,9 +4,7 @@ import React from 'react';
  * InsightPanel — Dynamic display based on new insight_generator output.
  *
  * Only shows sections that have data. No empty labels.
- * Matches: display_type, headline, transcript, words_detected,
- *          word_age_match, emotion, insight_sections, private_language,
- *          adult_detected, age_mismatch, also_possible, dunstan_sound
+ * Includes sound classification graph for visual appeal.
  */
 
 const DISPLAY_COLORS = {
@@ -16,6 +14,14 @@ const DISPLAY_COLORS = {
   silence: '#C7C7C7',
   noise: '#8A8A8A',
   mixed: '#FFE66D',
+};
+
+const SCORE_LABELS = {
+  speech: { label: 'Speech', icon: '🗣️', color: '#4ECDC4' },
+  cry: { label: 'Cry', icon: '😢', color: '#FF6B6B' },
+  laugh: { label: 'Laugh', icon: '😄', color: '#7CCB7C' },
+  silence: { label: 'Silence', icon: '🔇', color: '#C7C7C7' },
+  noise: { label: 'Noise', icon: '🔊', color: '#8A8A8A' },
 };
 
 function ConfidenceBar({ confidence }) {
@@ -32,33 +38,84 @@ function ConfidenceBar({ confidence }) {
   );
 }
 
+/**
+ * Sound classification graph — horizontal bars showing what the
+ * classifier detected (speech, cry, laugh, silence, noise).
+ * Highlights the dominant sound type.
+ */
+function ClassificationGraph({ scores, dominantType }) {
+  if (!scores || Object.keys(scores).length === 0) return null;
+
+  // Sort: dominant first, then by score descending
+  const entries = Object.entries(scores)
+    .filter(([key]) => SCORE_LABELS[key])
+    .sort((a, b) => {
+      if (a[0] === dominantType) return -1;
+      if (b[0] === dominantType) return 1;
+      return b[1] - a[1];
+    });
+
+  // Only show bars with score > 0
+  const visible = entries.filter(([, val]) => val > 0.01);
+  if (visible.length === 0) return null;
+
+  return (
+    <div className="classification-graph">
+      <div className="classification-graph-header">
+        <span className="section-icon">📊</span>
+        <h3>Sound Analysis</h3>
+      </div>
+      <div className="classification-bars">
+        {visible.map(([key, val]) => {
+          const meta = SCORE_LABELS[key];
+          const pct = Math.round(val * 100);
+          const isDominant = key === dominantType;
+          return (
+            <div key={key} className={`class-bar-row ${isDominant ? 'class-bar-dominant' : ''}`}>
+              <span className="class-bar-icon">{meta.icon}</span>
+              <span className="class-bar-label">{meta.label}</span>
+              <div className="class-bar-track">
+                <div
+                  className="class-bar-fill"
+                  style={{
+                    width: `${pct}%`,
+                    backgroundColor: isDominant ? meta.color : `${meta.color}66`,
+                  }}
+                />
+              </div>
+              <span className="class-bar-pct">{pct}%</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function InsightPanel({ insight }) {
   if (!insight) return null;
 
-  // ---- NEW data structure from insight_generator ----
   const {
     display_type,
     headline,
     headline_icon,
     description,
     adult_detected,
-    // Transcript / words
     words_detected,
     transcript,
     word_age_match,
-    // Cry emotion
     emotion,
     emotion_confidence,
     insight_sections,
     dunstan_sound,
     also_possible,
     age_mismatch,
-    // Private language
     private_language,
-    // Disclaimer (handled by parent)
+    classification_scores,
+    sound_type,
   } = insight;
 
-  // ---- BACKWARD COMPAT: old sessions with probable_intent ----
+  // Backward compat for old sessions
   const isOldFormat = !display_type && insight.probable_intent;
   if (isOldFormat) {
     return <OldFormatPanel insight={insight} />;
@@ -234,13 +291,18 @@ function InsightPanel({ insight }) {
           </div>
         </div>
       )}
+
+      {/* Sound Classification Graph */}
+      <ClassificationGraph
+        scores={classification_scores}
+        dominantType={sound_type || display_type}
+      />
     </div>
   );
 }
 
 /**
- * Backward compatibility for old sessions that used the previous insight format.
- * Shows basic info so old sessions don't break.
+ * Backward compatibility for old sessions.
  */
 function OldFormatPanel({ insight }) {
   const intent = insight.probable_intent || {};
