@@ -8,13 +8,10 @@ import FeedbackForm from '../components/FeedbackForm';
 /**
  * SessionDetail — Clean, simple session analysis page.
  *
- * Shows:
- * 1. Insight (based on sound type)
- * 2. Feedback form (language + cry emotion)
+ * Shows only what's available:
+ * 1. Insight (dynamic based on sound type)
+ * 2. Feedback form (cry emotion + baby language, age-appropriate)
  * 3. Disclaimer
- *
- * No more: feature charts, developmental views, speech analysis panels,
- * concept chips, semantic alignment sections.
  */
 
 function SessionDetail() {
@@ -33,6 +30,19 @@ function SessionDetail() {
     } catch (_) { return ''; }
   };
 
+  const getChildAgeDays = (childId) => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('qleam_children') || '[]');
+      const child = cached.find(c => c.child_id === childId);
+      if (child?.birth_date) {
+        const birth = new Date(child.birth_date);
+        const now = new Date();
+        return Math.floor((now - birth) / (1000 * 60 * 60 * 24));
+      }
+    } catch (_) {}
+    return null;
+  };
+
   const getAuthHeaders = async () => {
     const s = await fetchAuthSession();
     const token = s.tokens?.idToken?.toString();
@@ -47,13 +57,16 @@ function SessionDetail() {
   }, []);
 
   useEffect(() => {
-    let pollInterval;
+    let pollTimeout;
     let pollCount = 0;
     const MAX_POLLS = 20;
+    let cancelled = false;
 
     const fetchInsight = async () => {
       try {
         const data = await apiCall(`/session/${sessionId}/insight`);
+        if (cancelled) return;
+
         if (data.status === 'processing') {
           pollCount += 1;
           if (pollCount >= MAX_POLLS) {
@@ -61,18 +74,26 @@ function SessionDetail() {
             setLoading(false);
             return;
           }
-          pollInterval = setTimeout(fetchInsight, 3000);
+          // Progressive backoff: 2s, 2s, 3s, 3s, 4s, 5s...
+          const delay = pollCount <= 2 ? 2000 : pollCount <= 4 ? 3000 : Math.min(pollCount * 1000, 5000);
+          pollTimeout = setTimeout(fetchInsight, delay);
         } else {
           setSession(data);
           setLoading(false);
         }
       } catch (err) {
-        setError('Could not load analysis. Please go back and try again.');
-        setLoading(false);
+        if (!cancelled) {
+          setError('Could not load analysis. Please go back and try again.');
+          setLoading(false);
+        }
       }
     };
+
     fetchInsight();
-    return () => clearTimeout(pollInterval);
+    return () => {
+      cancelled = true;
+      clearTimeout(pollTimeout);
+    };
   }, [sessionId, apiCall]);
 
   const handleFeedback = async (feedbackData) => {
@@ -92,6 +113,7 @@ function SessionDetail() {
   };
 
   const childName = session?.child_name || getChildName(session?.child_id || '');
+  const ageDays = getChildAgeDays(session?.child_id || '');
 
   if (loading) {
     return (
@@ -114,6 +136,7 @@ function SessionDetail() {
 
   const insight = session?.insight;
   const displayType = insight?.display_type || 'unknown';
+  const hasInsight = insight && (insight.headline || insight.display_type);
 
   return (
     <div className="session-detail">
@@ -127,7 +150,7 @@ function SessionDetail() {
       </p>
 
       {/* Main Insight */}
-      {insight && (
+      {hasInsight ? (
         <>
           <section className="insight-section">
             <InsightPanel insight={insight} />
@@ -143,6 +166,7 @@ function SessionDetail() {
                 onSubmit={handleFeedback}
                 displayType={displayType}
                 detectedEmotion={insight?.emotion}
+                ageDays={ageDays}
               />
             </section>
           ) : (
@@ -156,6 +180,10 @@ function SessionDetail() {
             <p className="disclaimer">{insight.disclaimer}</p>
           )}
         </>
+      ) : (
+        <div className="no-insight">
+          <p>No analysis data available for this session.</p>
+        </div>
       )}
     </div>
   );

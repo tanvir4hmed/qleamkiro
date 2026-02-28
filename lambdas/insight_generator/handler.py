@@ -503,7 +503,8 @@ def _save_insight(session_id: str, insight: Dict):
     try:
         session_table.update_item(
             Key={"session_id": session_id},
-            UpdateExpression="SET insight = :ins, insight_generated_at = :ts",
+            UpdateExpression="SET #ins = :ins, insight_generated_at = :ts",
+            ExpressionAttributeNames={"#ins": "insight"},
             ExpressionAttributeValues={
                 ":ins": _float_to_decimal(insight),
                 ":ts": datetime.now(timezone.utc).isoformat(),

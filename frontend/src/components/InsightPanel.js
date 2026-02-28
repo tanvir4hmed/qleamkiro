@@ -1,38 +1,23 @@
 import React from 'react';
 
-const INTENT_COLORS = {
-  hunger: '#FF6B6B',
-  fatigue: '#A8E6CF',
-  pain: '#FF4D4D',
-  discomfort: '#FFE66D',
-  closeness: '#4ECDC4',
-  frustration: '#FF8B94',
-  happy: '#7CCB7C',
-  exploration: '#88D8B0',
-  distress_unknown: '#C7C7C7',
-  non_baby_spoof_noise: '#8A8A8A',
-  // Backward compatibility
-  connection: '#4ECDC4',
-  overstimulation: '#FF8B94',
-  unknown: '#C7C7C7',
+/**
+ * InsightPanel — Dynamic display based on new insight_generator output.
+ *
+ * Only shows sections that have data. No empty labels.
+ * Matches: display_type, headline, transcript, words_detected,
+ *          word_age_match, emotion, insight_sections, private_language,
+ *          adult_detected, age_mismatch, also_possible, dunstan_sound
+ */
+
+const DISPLAY_COLORS = {
+  cry: '#FF6B6B',
+  speech: '#4ECDC4',
+  laugh: '#7CCB7C',
+  silence: '#C7C7C7',
+  noise: '#8A8A8A',
+  mixed: '#FFE66D',
 };
 
-const INTENT_ICONS = {
-  hunger: '🍼',
-  fatigue: '😴',
-  pain: '🩹',
-  discomfort: '😟',
-  closeness: '🤗',
-  frustration: '😣',
-  happy: '😊',
-  exploration: '🔍',
-  distress_unknown: '📊',
-  non_baby_spoof_noise: '🚫',
-  // Backward compatibility
-  connection: '🤗',
-  overstimulation: '😣',
-  unknown: '📊',
-};
 function ConfidenceBar({ confidence }) {
   const pct = Math.round((confidence || 0) * 100);
   const color = pct >= 60 ? '#4ECDC4' : pct >= 30 ? '#FFE66D' : '#C7C7C7';
@@ -42,27 +27,7 @@ function ConfidenceBar({ confidence }) {
       <div className="confidence-bar-wrapper">
         <div className="confidence-bar" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
-      <span className="confidence-label">{pct}% {'\u2014'} {label}</span>
-    </div>
-  );
-}
-
-function NarrativeGrid({ narrative }) {
-  const labels = {
-    emotional_tone: 'Tone',
-    sound_pattern: 'Pattern',
-    repetition: 'Sounds',
-    continuity: 'Duration',
-    vs_baseline: 'vs. Usual',
-  };
-  return (
-    <div className="narrative-grid">
-      {Object.entries(narrative).map(([key, val]) => (
-        <div key={key} className="narrative-item">
-          <span className="narrative-key">{labels[key] || key}</span>
-          <span className="narrative-val">{val}</span>
-        </div>
-      ))}
+      <span className="confidence-label">{pct}% — {label}</span>
     </div>
   );
 }
@@ -70,205 +35,253 @@ function NarrativeGrid({ narrative }) {
 function InsightPanel({ insight }) {
   if (!insight) return null;
 
+  // ---- NEW data structure from insight_generator ----
   const {
-    probable_intent,
+    display_type,
+    headline,
+    headline_icon,
+    description,
+    is_adult,
+    adult_detected,
+    // Transcript / words
+    words_detected,
+    transcript,
+    word_age_match,
+    // Cry emotion
+    emotion,
+    emotion_confidence,
+    top_emotions,
     insight_sections,
-    feature_narrative,
-    suggested_response,
-    emotion_profile,
-    private_language_signal,
-    speaker_gate,
-    speaker_warning,
-    acoustic_reliability,
-    speech_transcript,
-    detected_words,
-    age_mismatch_evidence,
-    speech_evidence,
-    speaker_authenticity,
-    secondary_signals,
+    dunstan_sound,
+    also_possible,
+    age_mismatch,
+    // Private language
+    private_language,
+    // Disclaimer (handled by parent)
   } = insight;
 
-  const intentKey = probable_intent?.key || 'distress_unknown';
-  const color = INTENT_COLORS[intentKey] || INTENT_COLORS.distress_unknown;
-  const icon = INTENT_ICONS[intentKey] || '📊';
-  const sections = insight_sections || null;
-  const topEmotions = emotion_profile?.top_states || [];
-  const wordSignals = detected_words || [];
-  const mismatchScore = age_mismatch_evidence?.score || 0;
-  const authenticity = speaker_authenticity || speaker_gate || {};
-  const speechSummary = speech_evidence || {};
-  const transcribeAttempted = Boolean(speechSummary?.transcribe_attempted);
-  const hasTranscriptText = Boolean(speech_transcript?.text);
-  const segmentSummary = speechSummary?.segment_summary || {};
-  const secondarySignals = secondary_signals || {};
-  const secondarySignalLabels = {
-    laugh: 'laugh',
-    shout_frustration: 'shout/frustration',
-    distress_pressure: 'distress pressure',
-    soothing_need: 'soothing need',
-  };
+  // ---- BACKWARD COMPAT: old sessions with probable_intent ----
+  const isOldFormat = !display_type && insight.probable_intent;
+  if (isOldFormat) {
+    return <OldFormatPanel insight={insight} />;
+  }
 
-  // Alt intents (excluding top one)
-  const altIntents = probable_intent?.top_intents?.slice(1, 3) || [];
+  const borderColor = DISPLAY_COLORS[display_type] || DISPLAY_COLORS.mixed;
 
   return (
-    <div className="insight-panel" style={{ borderLeftColor: color }}>
+    <div className="insight-panel" style={{ borderLeftColor: borderColor }}>
 
-      {/* Intent + Confidence */}
-      {probable_intent && (
-        <div className="intent-section">
-          <div className="intent-badge" style={{ backgroundColor: color }}>
-            <span className="intent-icon">{icon}</span>
-            {probable_intent.label}
+      {/* Headline */}
+      {headline && (
+        <div className="insight-headline">
+          {headline_icon && <span className="headline-icon">{headline_icon}</span>}
+          <h2 className="headline-text">{headline}</h2>
+        </div>
+      )}
+
+      {/* Description */}
+      {description && (
+        <p className="insight-description">{description}</p>
+      )}
+
+      {/* Adult warning */}
+      {adult_detected && (
+        <div className="insight-alert insight-alert--adult">
+          🔊 Adult voice detected in this recording
+        </div>
+      )}
+
+      {/* Transcript — always show if words found */}
+      {words_detected && transcript && (
+        <div className="insight-transcript-section">
+          <div className="insight-section-header">
+            <span className="section-icon">🗣️</span>
+            <h3>Words Detected</h3>
           </div>
-          <ConfidenceBar confidence={probable_intent.confidence} />
+          <div className="transcript-text">"{transcript.text}"</div>
+          <div className="transcript-meta">
+            {transcript.word_count > 0 && (
+              <span className="meta-chip">{transcript.word_count} word{transcript.word_count !== 1 ? 's' : ''}</span>
+            )}
+            {transcript.unique_words > 0 && transcript.unique_words !== transcript.word_count && (
+              <span className="meta-chip">{transcript.unique_words} unique</span>
+            )}
+            {transcript.has_sentences && (
+              <span className="meta-chip">sentences formed</span>
+            )}
+            {transcript.confidence > 0 && (
+              <span className="meta-chip">{Math.round(transcript.confidence * 100)}% confidence</span>
+            )}
+          </div>
+        </div>
+      )}
 
-          {altIntents.length > 0 && (
-            <div className="alt-intents">
-              <span className="alt-intents-label">Also possible: </span>
-              {altIntents.map((i) => (
-                <span key={i.key} className="alt-intent-chip">
-                  {INTENT_ICONS[i.key] || ''} {i.label} {Math.round(i.weight * 100)}%
-                </span>
-              ))}
+      {/* Word age match */}
+      {word_age_match && (
+        <div className="insight-age-match">
+          {word_age_match.speaker && (
+            <span className={`speaker-badge speaker-badge--${word_age_match.speaker}`}>
+              {word_age_match.speaker === 'adult' ? '👤 Adult speaker' :
+               word_age_match.speaker === 'baby' ? '👶 Baby speaker' : '❓ Uncertain speaker'}
+            </span>
+          )}
+          {word_age_match.summary && (
+            <p className="age-match-summary">{word_age_match.summary}</p>
+          )}
+          {word_age_match.mismatch_warning && (
+            <div className="insight-alert insight-alert--mismatch">
+              ⚠️ {word_age_match.mismatch_warning}
             </div>
           )}
         </div>
       )}
 
-      {speaker_warning?.message && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Recording note: </span>
-          <span className="alt-intent-chip">
-            {speaker_warning.message}
-          </span>
+      {/* Cry emotion confidence */}
+      {emotion && emotion_confidence > 0 && (
+        <div className="insight-emotion-section">
+          <ConfidenceBar confidence={emotion_confidence} />
         </div>
       )}
 
-      {speaker_gate?.status === 'UNCERTAIN' && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Speaker gate: </span>
-          <span className="alt-intent-chip">UNCERTAIN</span>
-        </div>
-      )}
-
-      {authenticity?.status && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Speaker authenticity: </span>
-          <span className="alt-intent-chip">{authenticity.status}</span>
-          {typeof authenticity.adult_fraction === 'number' && (
-            <span className="alt-intent-chip">adult {Math.round(authenticity.adult_fraction * 100)}%</span>
-          )}
-          {typeof authenticity.baby_fraction === 'number' && (
-            <span className="alt-intent-chip">baby {Math.round(authenticity.baby_fraction * 100)}%</span>
-          )}
-        </div>
-      )}
-
-      {speechSummary?.presence_label && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Speech signal: </span>
-          <span className="alt-intent-chip">{speechSummary.presence_label.replace(/_/g, ' ')}</span>
-          {typeof speechSummary.presence_score === 'number' && (
-            <span className="alt-intent-chip">{Math.round(speechSummary.presence_score * 100)}%</span>
-          )}
-        </div>
-      )}
-
-      {wordSignals.length > 0 && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Detected words: </span>
-          {wordSignals.map((w) => (
-            <span key={`${w.word}-${w.count}`} className="alt-intent-chip">
-              {w.word} {w.count > 1 ? `x${w.count}` : ''}
+      {/* Also possible emotions */}
+      {also_possible && also_possible.length > 0 && (
+        <div className="insight-also-possible">
+          <span className="also-label">Also possible:</span>
+          {also_possible.map((e, i) => (
+            <span key={i} className="alt-emotion-chip">
+              {e.icon || ''} {e.label} {e.score ? `${Math.round(e.score * 100)}%` : ''}
             </span>
           ))}
         </div>
       )}
 
-      {mismatchScore >= 0.35 && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Age consistency: </span>
-          <span className="alt-intent-chip">
-            mismatch score {Math.round(mismatchScore * 100)}%
-          </span>
-          {age_mismatch_evidence?.reason && (
-            <span className="alt-intent-chip">{age_mismatch_evidence.reason}</span>
+      {/* Dunstan sound reference (0-6m) */}
+      {dunstan_sound && (
+        <div className="insight-dunstan">
+          <span className="dunstan-label">Dunstan sound:</span>
+          <span className="dunstan-value">{dunstan_sound}</span>
+        </div>
+      )}
+
+      {/* Three insight cards (cry emotion) */}
+      {insight_sections && (
+        <div className="insight-sections">
+          {insight_sections.what_i_hear && (
+            <div className="insight-block insight-block--hear">
+              <div className="insight-block-header">
+                <span className="insight-block-icon">👂</span>
+                <h4>What I'm hearing</h4>
+              </div>
+              <p>{insight_sections.what_i_hear}</p>
+            </div>
+          )}
+          {insight_sections.what_it_means && (
+            <div className="insight-block insight-block--means">
+              <div className="insight-block-header">
+                <span className="insight-block-icon">💭</span>
+                <h4>What it might mean</h4>
+              </div>
+              <p>{insight_sections.what_it_means}</p>
+            </div>
+          )}
+          {insight_sections.what_to_try && insight_sections.what_to_try.length > 0 && (
+            <div className="insight-block insight-block--try">
+              <div className="insight-block-header">
+                <span className="insight-block-icon">✋</span>
+                <h4>What you can try</h4>
+              </div>
+              <ol className="try-list">
+                {insight_sections.what_to_try.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ol>
+            </div>
           )}
         </div>
       )}
 
-      {Object.keys(secondarySignals).filter((k) => secondarySignals?.[k]?.detected).length > 0 && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Secondary signal: </span>
-          {Object.entries(secondarySignals)
-            .filter(([, v]) => Boolean(v?.detected))
-            .map(([k, v]) => (
-              <span key={k} className="alt-intent-chip">
-                {secondarySignalLabels[k] || k} {Math.round((v?.confidence || 0) * 100)}%
-              </span>
-            ))}
+      {/* Age mismatch (cry frequency or word) */}
+      {age_mismatch && (
+        <div className="insight-alert insight-alert--mismatch">
+          ⚠️ Age Mismatch: {age_mismatch.message}
         </div>
       )}
 
-      {typeof segmentSummary?.segments_analyzed === 'number' && segmentSummary.segments_analyzed > 0 && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Segment evidence: </span>
-          <span className="alt-intent-chip">{segmentSummary.segments_analyzed} segments</span>
-          {typeof segmentSummary.cry_ratio === 'number' && (
-            <span className="alt-intent-chip">cry {Math.round(segmentSummary.cry_ratio * 100)}%</span>
+      {/* Private language match */}
+      {private_language && private_language.matched && (
+        <div className="insight-private-lang">
+          <div className="insight-section-header">
+            <span className="section-icon">🔤</span>
+            <h3>Baby's Own Language</h3>
+          </div>
+          {private_language.parent_label && (
+            <div className="private-lang-item">
+              <span className="pl-label">Recognized as:</span>
+              <span className="pl-value">"{private_language.parent_label}"</span>
+            </div>
           )}
-          {typeof segmentSummary.speech_ratio === 'number' && (
-            <span className="alt-intent-chip">speech {Math.round(segmentSummary.speech_ratio * 100)}%</span>
+          {private_language.parent_description && (
+            <div className="private-lang-item">
+              <span className="pl-label">Meaning:</span>
+              <span className="pl-value">{private_language.parent_description}</span>
+            </div>
           )}
-          {typeof segmentSummary.laugh_ratio === 'number' && (
-            <span className="alt-intent-chip">laugh {Math.round(segmentSummary.laugh_ratio * 100)}%</span>
-          )}
-          {typeof segmentSummary.adult_speech_ratio === 'number' && (
-            <span className="alt-intent-chip">adult-speech {Math.round(segmentSummary.adult_speech_ratio * 100)}%</span>
-          )}
+          <div className="private-lang-meta">
+            {private_language.times_heard > 0 && (
+              <span className="meta-chip">heard {private_language.times_heard} times</span>
+            )}
+            {private_language.confidence > 0 && (
+              <span className="meta-chip">{Math.round(private_language.confidence * 100)}% match</span>
+            )}
+          </div>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Emotion profile */}
-      {topEmotions.length > 0 && (
-        <div className="alt-intents">
-          <span className="alt-intents-label">Emotional cues: </span>
-          {topEmotions.map((e) => (
-            <span key={e.key} className="alt-intent-chip">
-              {e.key.replace(/_/g, ' ')} {Math.round((e.score || 0) * 100)}%
-            </span>
-          ))}
+/**
+ * Backward compatibility for old sessions that used the previous insight format.
+ * Shows basic info so old sessions don't break.
+ */
+function OldFormatPanel({ insight }) {
+  const intent = insight.probable_intent || {};
+  const sections = insight.insight_sections;
+
+  return (
+    <div className="insight-panel" style={{ borderLeftColor: '#C7C7C7' }}>
+      {intent.label && (
+        <div className="insight-headline">
+          <h2 className="headline-text">{intent.label}</h2>
         </div>
       )}
-
-      {/* 3-Section Insight */}
-      {sections ? (
+      {intent.confidence > 0 && (
+        <ConfidenceBar confidence={intent.confidence} />
+      )}
+      {sections && (
         <div className="insight-sections">
           {sections.what_i_hear && (
             <div className="insight-block insight-block--hear">
               <div className="insight-block-header">
-                <span className="insight-block-icon">{'\uD83D\uDC42'}</span>
+                <span className="insight-block-icon">👂</span>
                 <h4>What I'm hearing</h4>
               </div>
               <p>{sections.what_i_hear}</p>
             </div>
           )}
-
           {sections.what_it_means && (
             <div className="insight-block insight-block--means">
               <div className="insight-block-header">
-                <span className="insight-block-icon">{'\uD83D\uDCAD'}</span>
+                <span className="insight-block-icon">💭</span>
                 <h4>What it might mean</h4>
               </div>
               <p>{sections.what_it_means}</p>
             </div>
           )}
-
           {sections.what_to_try && sections.what_to_try.length > 0 && (
             <div className="insight-block insight-block--try">
               <div className="insight-block-header">
-                <span className="insight-block-icon">{'\u270B'}</span>
+                <span className="insight-block-icon">✋</span>
                 <h4>What you can try</h4>
               </div>
               <ol className="try-list">
@@ -279,98 +292,9 @@ function InsightPanel({ insight }) {
             </div>
           )}
         </div>
-      ) : suggested_response ? (
-        <div className="suggested-response">
-          <h3>Suggested Response</h3>
-          <p>{suggested_response}</p>
-        </div>
-      ) : null}
-
-      {/* Audio Characteristics (collapsible) */}
-      {feature_narrative && (
-        <details className="narrative-details">
-          <summary>Audio characteristics</summary>
-          <NarrativeGrid narrative={feature_narrative} />
-        </details>
       )}
-
-      {probable_intent?.evidence?.weights && (
-        <details className="narrative-details">
-          <summary>Why this insight</summary>
-          <div className="narrative-grid">
-            <div className="narrative-item">
-              <span className="narrative-key">Acoustic signal</span>
-              <span className="narrative-val">{Math.round((probable_intent.evidence.weights.acoustic || 0) * 100)}%</span>
-            </div>
-            <div className="narrative-item">
-              <span className="narrative-key">Research prior</span>
-              <span className="narrative-val">{Math.round((probable_intent.evidence.weights.research || 0) * 100)}%</span>
-            </div>
-            <div className="narrative-item">
-              <span className="narrative-key">Feedback history</span>
-              <span className="narrative-val">{Math.round((probable_intent.evidence.weights.feedback || 0) * 100)}%</span>
-            </div>
-            <div className="narrative-item">
-              <span className="narrative-key">Signal reliability</span>
-              <span className="narrative-val">{Math.round((acoustic_reliability || probable_intent.evidence.acoustic_reliability || 0) * 100)}%</span>
-            </div>
-          </div>
-        </details>
-      )}
-
-      {/* Private language signal */}
-      {private_language_signal && (
-        <details className="narrative-details">
-          <summary>Private language signal</summary>
-          <div className="narrative-grid">
-            <div className="narrative-item">
-              <span className="narrative-key">Status</span>
-              <span className="narrative-val">{private_language_signal.level || 'forming'}</span>
-            </div>
-            <div className="narrative-item">
-              <span className="narrative-key">Pattern repeats</span>
-              <span className="narrative-val">{private_language_signal.cluster_frequency || 0}</span>
-            </div>
-            {private_language_signal.word_candidate && (
-              <div className="narrative-item">
-                <span className="narrative-key">Word candidate</span>
-                <span className="narrative-val">{private_language_signal.word_candidate}</span>
-              </div>
-            )}
-            <div className="narrative-item">
-              <span className="narrative-key">What this means</span>
-              <span className="narrative-val">{private_language_signal.message}</span>
-            </div>
-          </div>
-        </details>
-      )}
-
-      {(hasTranscriptText || transcribeAttempted) && (
-        <details className="narrative-details">
-          <summary>Detected speech (AWS Transcribe)</summary>
-          <div className="narrative-grid">
-            <div className="narrative-item">
-              <span className="narrative-key">Language</span>
-              <span className="narrative-val">{speech_transcript?.language_code || 'unknown'}</span>
-            </div>
-            <div className="narrative-item">
-              <span className="narrative-key">Transcript</span>
-              <span className="narrative-val">{hasTranscriptText ? speech_transcript.text : 'No clear words detected in this clip'}</span>
-            </div>
-            {typeof speech_transcript?.confidence === 'number' && (
-              <div className="narrative-item">
-                <span className="narrative-key">ASR confidence</span>
-                <span className="narrative-val">{Math.round(speech_transcript.confidence * 100)}%</span>
-              </div>
-            )}
-            {typeof speech_transcript?.token_count === 'number' && (
-              <div className="narrative-item">
-                <span className="narrative-key">Token count</span>
-                <span className="narrative-val">{speech_transcript.token_count}</span>
-              </div>
-            )}
-          </div>
-        </details>
+      {insight.suggested_response && !sections && (
+        <p className="insight-description">{insight.suggested_response}</p>
       )}
     </div>
   );
