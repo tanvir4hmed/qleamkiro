@@ -1,10 +1,19 @@
 """
-Qleam — Feature Extraction Lambda
-Extracts acoustic features from uploaded audio and updates child baseline.
+Qleam — Audio Classifier Lambda (formerly Feature Extraction)
+First step in the pipeline: classifies audio and routes to appropriate analysis.
+
+Simplified pipeline:
+  1. Download + decode audio
+  2. Quality gate (basic validation)
+  3. Diarization (speaker segmentation)
+  4. Sound classification (speech/cry/laugh/silence/noise)
+  5. Adult/baby voice detection
+  6. Basic feature extraction (embedding for clustering + private language)
+  7. Route decision for downstream lambdas
 
 Trigger: Step Function first state (after S3 upload)
 Input:  { child_id, session_id, s3_audio_path, session_context? }
-Output: { status, session_id, feature_scores, rich_features, embedding_vector, deviation }
+Output: { status, session_id, sound_type, is_adult, features, routing }
 """
 import json
 import logging
@@ -16,28 +25,17 @@ from typing import Any, Dict, Optional
 
 import boto3
 import numpy as np
-from boto3.dynamodb.conditions import Key
 
-# Add shared utilities to path (for container image deployment)
+# Add shared utilities to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
 sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     ALPHA_VALUE,
     CHILD_PROFILE_TABLE,
-    MIN_SESSIONS_FOR_DEVIATION,
     S3_BUCKET_NAME,
     SESSION_TABLE,
 )
-from normalization import (
-    compute_deviation_level,
-    compute_readiness_score,
-    developmental_stage_from_age,
-    audio_stage_hint_from_bio,
-    update_feature_baselines,
-)
-
-# Audio utils imported lazily (requires librosa layer)
 from audio_utils import (
     audio_quality_gate,
     biological_validation,
@@ -46,85 +44,48 @@ from audio_utils import (
     load_audio_from_bytes,
     voice_activity_detection,
 )
-
-# Phase 2 imports
 from diarization import diarize, extract_baby_audio
-from speaker_identity import determine_routing, verify_enrolled_baby
+from age_classifier import classify_probabilistic
+from sound_classifier import classify_sound, classify_segments, aggregate_sound_types
 
-# Phase 3 imports
-from rich_features import extract_rich_features
-
-# Phase 4 imports — probabilistic age classifier
-from age_classifier import classify_probabilistic, age_class_to_stage_hint
-
-# Configure logging
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
 logger = logging.getLogger(__name__)
 
-# AWS clients
 dynamodb = boto3.resource("dynamodb")
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
 
 
 def _float_to_decimal(obj: Any) -> Any:
-    """Convert floats to Decimal for DynamoDB. Handles numpy floats and edge cases."""
     import math
-    
-    # Handle None
     if obj is None:
         return None
-    
-    # Handle Decimal (already converted)
     if isinstance(obj, Decimal):
         return obj
-    
-    # Handle numpy numeric types without requiring numpy import
     if hasattr(obj, 'item'):
         try:
             obj = obj.item()
         except (AttributeError, TypeError):
             pass
-    
-    # Handle Python int (safe to convert directly)
     if isinstance(obj, int) and not isinstance(obj, bool):
         return Decimal(obj)
-    
-    # Handle Python float
     if isinstance(obj, float):
-        # Check for NaN, inf, -inf which Decimal can't handle
-        if math.isnan(obj):
+        if math.isnan(obj) or math.isinf(obj):
             return Decimal("0")
-        if math.isinf(obj):
-            return Decimal("0") if obj < 0 else Decimal("1")
         return Decimal(str(obj))
-    
-    # Handle boolean
     if isinstance(obj, bool):
         return Decimal("1") if obj else Decimal("0")
-    
-    # Handle string - try to convert if it looks like a number
     if isinstance(obj, str):
-        try:
-            return Decimal(obj)
-        except:
-            return obj  # Return as-is if not a valid number string
-    
-    # Handle dict recursively
+        return obj
     if isinstance(obj, dict):
         return {k: _float_to_decimal(v) for k, v in obj.items()}
-    
-    # Handle list recursively
     if isinstance(obj, list):
         return [_float_to_decimal(i) for i in obj]
-    
-    # Return everything else as-is (strings, booleans, etc.)
     return obj
 
 
 def _decimal_to_float(obj: Any) -> Any:
-    """Convert Decimal back to float from DynamoDB."""
     if isinstance(obj, Decimal):
         return float(obj)
     if isinstance(obj, dict):
@@ -134,94 +95,7 @@ def _decimal_to_float(obj: Any) -> Any:
     return obj
 
 
-def get_or_create_child_profile(child_id: str) -> Dict:
-    """Fetch child profile or create a new one."""
-    response = child_profile_table.get_item(Key={"child_id": child_id})
-    
-    if "Item" in response:
-        return _decimal_to_float(response["Item"])
-    
-    # Create new profile
-    now = datetime.now(timezone.utc).isoformat()
-    new_profile = {
-        "child_id": child_id,
-        "baseline_features": {},
-        "readiness_score": 0.5,
-        "language_maturity_level": "pre-linguistic",
-        "session_count": 0,
-        "created_at": now,
-        "updated_at": now,
-    }
-    child_profile_table.put_item(Item=_float_to_decimal(new_profile))
-    logger.info(f"Created new child profile for {child_id}")
-    return new_profile
-
-
-def update_child_profile(
-    child_id: str,
-    new_baselines: Dict,
-    readiness_score: float,
-    session_count: int,
-    developmental_stage: str = "UNKNOWN",
-    developmental_mode: str = "PRE_LINGUISTIC",
-):
-    """Update child profile with new baselines, readiness, and current developmental stage."""
-    now = datetime.now(timezone.utc).isoformat()
-
-    child_profile_table.update_item(
-        Key={"child_id": child_id},
-        UpdateExpression=(
-            "SET baseline_features = :bf, "
-            "readiness_score = :rs, "
-            "session_count = :sc, "
-            "developmental_stage = :ds, "
-            "developmental_mode = :dm, "
-            "updated_at = :ua"
-        ),
-        ExpressionAttributeValues={
-            ":bf": _float_to_decimal(new_baselines),
-            ":rs": _float_to_decimal(readiness_score),
-            ":sc": _float_to_decimal(session_count),
-            ":ds": developmental_stage,
-            ":dm": developmental_mode,
-            ":ua": now,
-        },
-    )
-
-
-def load_historical_embeddings(
-    child_id: str,
-    current_session_id: str,
-    limit: int = 10,
-) -> list:
-    """
-    Load embedding vectors from the most recent sessions for this child.
-    Excludes the current session (which has no embedding yet when this runs).
-
-    Returns:
-        List of embedding vectors (each a List[float])
-    """
-    response = session_table.query(
-        IndexName="child_id-timestamp-index",
-        KeyConditionExpression=Key("child_id").eq(child_id),
-        ScanIndexForward=False,  # Most recent first
-        Limit=limit + 1,
-        ProjectionExpression="session_id, embedding_vector",
-    )
-
-    embeddings = []
-    for item in response.get("Items", []):
-        if item.get("session_id") == current_session_id:
-            continue  # Skip current session (shouldn't have embedding yet anyway)
-        raw = item.get("embedding_vector")
-        if raw:
-            embeddings.append([float(v) for v in raw])
-
-    return embeddings[:limit]
-
-
-def compute_age_days(birth_date_str: Optional[str]) -> Optional[int]:
-    """Compute age in days from birth_date ISO string to today (UTC)."""
+def _compute_age_days(birth_date_str: Optional[str]) -> Optional[int]:
     if not birth_date_str:
         return None
     try:
@@ -232,535 +106,327 @@ def compute_age_days(birth_date_str: Optional[str]) -> Optional[int]:
         return None
 
 
-def save_session(
-    session_id: str,
-    child_id: str,
-    s3_audio_path: str,
-    feature_scores: Dict,
-    embedding_vector: list,
-    deviation: Dict,
-    duration_seconds: float,
-    quality_gate: Optional[Dict] = None,
-    biological: Optional[Dict] = None,
-    age_days_at_recording: Optional[int] = None,
-    developmental_stage: str = "UNKNOWN",
-    developmental_mode: str = "PRE_LINGUISTIC",
-    diarization: Optional[Dict] = None,
-    enrollment: Optional[Dict] = None,
-    routing: Optional[Dict] = None,
-    rich_features: Optional[Dict] = None,
-    session_context: Optional[Dict] = None,
-    age_classification: Optional[Dict] = None,
-):
-    """Save session record to DynamoDB with Phase 1–4 metadata."""
-    now = datetime.now(timezone.utc).isoformat()
-
-    session_item = {
-        "session_id": session_id,
-        "child_id": child_id,
-        "s3_audio_path": s3_audio_path,
-        "feature_scores": feature_scores,
-        "embedding_vector": embedding_vector,
-        "deviation_flag": deviation.get("deviation_flag", False),
-        "deviation_level": deviation.get("deviation_level", "none"),
-        "deviation_score": deviation.get("deviation_score", 0.0),
-        "duration_seconds": duration_seconds,
-        "processed": True,
-        "timestamp": now,
-        # Phase 1
-        "quality_gate": quality_gate or {},
-        "biological": biological or {},
-        "age_days_at_recording": age_days_at_recording,
-        "developmental_stage": developmental_stage,
-        "developmental_mode": developmental_mode,
-        # Phase 2
-        "diarization": diarization or {},
-        "enrollment": enrollment or {},
-        "routing": routing or {},
-        # Phase 3
-        "rich_features": rich_features or {},
-        "session_context": session_context or {},
-        # Phase 4 — probabilistic age classification
-        "age_classification": age_classification or {},
-    }
-
-    session_table.put_item(Item=_float_to_decimal(session_item))
-    logger.info(f"Saved session {session_id}")
-
-
-def _reconcile_bio_with_age_class(bio_result: Dict, age_class: Dict) -> None:
-    """
-    Overwrite bio_result flags with the probabilistic classifier's verdict
-    when it is more confident.
-
-    The probabilistic classifier uses 7+ acoustic features (F0, VTL, jitter,
-    shimmer, HNR, spectral centroid, cry fraction, syllable rate) against
-    literature-based Gaussian priors.  The original biological_validation uses
-    a simpler score-based system and can be overridden when the richer model
-    disagrees with high confidence.
-
-    Rules:
-      • Classifier says ADULT (conf ≥ 0.55):
-          force is_infant=False, is_adult=True, mimicry_suspected=True,
-          update speaker_category and bio_confidence.
-
-      • Classifier says NON-ADULT (conf ≥ 0.60) but bio said ADULT:
-          flip is_adult=False, mimicry_suspected=False,
-          update speaker_category and bio_confidence.
-
-    Anything below these confidence thresholds: no change (trust bio_result).
-    """
-    cls  = age_class.get("final_class", "unknown")
-    conf = float(age_class.get("confidence", 0.0))
-
-    if cls == "unknown" or conf < 0.50:
-        return
-
-    is_adult = age_class.get("is_adult", False)
-    is_baby  = age_class.get("is_baby",  False)
-    is_child = age_class.get("is_child", False)
-
-    if is_adult and conf >= 0.70:
-        bio_result["is_infant"]        = False
-        bio_result["is_child"]         = False
-        bio_result["is_adult"]         = True
-        bio_result["mimicry_suspected"]= True
-        bio_result["speaker_category"] = cls
-        bio_result["speaker_type"]     = "adult"
-        bio_result["bio_confidence"]   = round(max(bio_result.get("bio_confidence", 0.0), conf), 3)
-        bio_result["classifier_source"]= "age_classifier_phase4"
-
-    elif (is_baby or is_child) and conf >= 0.68:
-        bio_was_adult = bio_result.get("is_adult", False)
-        if bio_was_adult:
-            bio_result["is_infant"]        = is_baby
-            bio_result["is_child"]         = is_child
-            bio_result["is_adult"]         = False
-            bio_result["mimicry_suspected"]= False
-            bio_result["speaker_category"] = cls
-            bio_result["speaker_type"]     = (
-                "infant" if is_baby else ("child" if is_child else "toddler")
-            )
-            bio_result["bio_confidence"]   = round(conf, 3)
-            bio_result["classifier_source"]= "age_classifier_phase4"
-
-
 def _enhance_baby_signal(y: np.ndarray) -> np.ndarray:
-    """
-    Lightweight denoise/enhancement for baby-segment audio.
-    Keeps Lambda fast while reducing low-energy background contamination.
-    """
+    """Lightweight denoise for baby-segment audio."""
     if y is None or len(y) == 0:
         return y
-
-    # Remove DC offset and normalize to stable amplitude range.
     y = y - float(np.mean(y))
     peak = float(np.max(np.abs(y))) if len(y) else 0.0
     if peak > 1e-8:
         y = y / peak
-
-    # Soft-noise suppression: attenuate very low-energy samples.
     mag = np.abs(y)
     noise_floor = float(np.percentile(mag, 20))
     if noise_floor > 0.0:
         y = np.where(mag < noise_floor, y * 0.35, y)
-
-    # Mild pre-emphasis helps F0/formant extraction in noisy home recordings.
     y_pre = np.empty_like(y)
     y_pre[0] = y[0]
     y_pre[1:] = y[1:] - 0.95 * y[:-1]
     return y_pre
 
 
-def _critical_quality_issues(quality_gate_result: Dict) -> list:
-    """
-    Return critical gate issues that warrant fast rejection.
-    """
-    if not isinstance(quality_gate_result, dict):
-        return []
-    critical_prefixes = ("no_signal", "no_vocal_activity_detected", "too_short:")
-    issues = quality_gate_result.get("issues", []) or []
-    return [
-        issue for issue in issues
-        if any(str(issue).startswith(prefix) for prefix in critical_prefixes)
-    ]
-
-
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
-    Feature Extraction Lambda handler — Phase 1–4.
+    Audio Classifier Lambda handler.
 
-    Pipeline (corrected order for accuracy + fast reject):
-      0.  Download audio from S3
-      1.  Decode once + VAD trim
-      2.  [Phase 1] Audio quality gate (SNR, clipping, silence, Lombard)
-      2b. Fast reject path for critical quality failures (skip expensive downstream layers)
-      3.  Extract acoustic features (embedding + 4 core scores)
-      4.  [Phase 2] Diarization on full audio — speaker-segment labels
-      5.  Extract baby-only audio from diarization segments
-      6.  [Phase 1] Biological validation on BABY audio (clean, not adult-contaminated)
-      7.  [Phase 3] Rich feature extraction (~65 features) on BABY audio
-      8.  [Phase 4] Probabilistic age classification (Gaussian + voice-type + adult gate)
-      9.  Reconcile bio_result flags with probabilistic classifier
-      10. [Phase 2] Load embeddings → enrolled baby identity verification
-      11. Get child profile → age + developmental stage selection
-      12. [Phase 2] Determine analysis routing
-      13. Update EMA baselines, deviation, readiness score
-      14. Update child profile
-      15. Save session
-
-    Key accuracy improvement: running bio validation and rich feature extraction on
-    baby-only audio (step 4) prevents adult voice contamination of acoustic features.
-
-    Args:
-        event: {
-            "child_id": str,
-            "session_id": str,
-            "s3_audio_path": str,
-            "session_context": dict  # optional
-        }
+    Simplified pipeline:
+      1. Download + decode audio
+      2. Quality gate
+      3. Diarization + baby extraction
+      4. Sound classification (speech/cry/laugh/silence/noise)
+      5. Adult/baby detection
+      6. Feature extraction (embedding)
+      7. Save session + return routing info
     """
-    logger.info(f"Feature extraction started: {json.dumps({k: v for k, v in event.items() if k != 'embedding_vector'})}")
+    logger.info(f"Audio classifier started: {json.dumps({k: v for k, v in event.items() if k != 'embedding_vector'})}")
 
-    child_id       = event["child_id"]
-    session_id     = event["session_id"]
-    s3_audio_path  = event["s3_audio_path"]
+    child_id = event["child_id"]
+    session_id = event["session_id"]
+    s3_audio_path = event["s3_audio_path"]
     session_context = event.get("session_context") or {}
 
-    # 0. Download audio from S3
+    # --- 1. Download and decode audio ---
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     audio_bytes = download_audio_from_s3(bucket, s3_audio_path)
-
-    # 1. Decode audio once (ffmpeg) and pre-trim silence.
     decoded_audio, sample_rate = load_audio_from_bytes(audio_bytes, target_sr=22050)
     duration_seconds = round(len(decoded_audio) / max(sample_rate, 1), 2)
+
+    # VAD trim
     audio_array = voice_activity_detection(decoded_audio, sample_rate)
     if len(audio_array) < sample_rate * 0.5:
-        logger.warning("Very short voiced audio after VAD; falling back to full decoded audio")
         audio_array = decoded_audio
 
-    # 2. [Phase 1] Audio quality gate
-    quality_gate_result = {}
-    if audio_array is not None:
-        try:
-            quality_gate_result = audio_quality_gate(audio_array, sample_rate, duration_seconds)
-            if not quality_gate_result["passed"]:
-                logger.warning(f"Quality gate FAILED session {session_id}: {quality_gate_result['issues']}")
-            else:
-                logger.info(f"Quality gate passed: SNR={quality_gate_result['snr_db']}dB silence={quality_gate_result['silence_ratio']:.0%}")
-        except Exception as e:
-            logger.warning(f"Quality gate error (non-blocking): {e}")
-
-    critical_issues = _critical_quality_issues(quality_gate_result)
-    if critical_issues and not quality_gate_result.get("passed", True):
-        logger.warning(
-            f"Fast reject path for {session_id}: critical quality issues={critical_issues}"
-        )
-        profile = get_or_create_child_profile(child_id)
-        age_days = compute_age_days(profile.get("birth_date"))
-        age_stage_info = developmental_stage_from_age(age_days)
-        developmental_stage = age_stage_info["stage"]
-        developmental_mode = age_stage_info["mode"]
-
-        feature_scores = {
-            "rhythm": 0.0,
-            "repetition": 0.0,
-            "emotional_intensity": 0.0,
-            "expressive_flow": 0.0,
-        }
-        routing_result = {
-            "mode": developmental_mode,
-            "stage": developmental_stage,
-            "analysis_type": "low_confidence",
-            "adult_evidence": [f"quality_gate_critical:{'|'.join(critical_issues)}"],
-        }
-        deviation = {
-            "deviation_flag": False,
-            "deviation_level": "none",
-            "deviation_score": 0.0,
-        }
-        save_session(
-            session_id=session_id,
-            child_id=child_id,
-            s3_audio_path=s3_audio_path,
-            feature_scores=feature_scores,
-            embedding_vector=[],
-            deviation=deviation,
-            duration_seconds=duration_seconds,
-            quality_gate=quality_gate_result,
-            biological={},
-            age_days_at_recording=age_days,
-            developmental_stage=developmental_stage,
-            developmental_mode=developmental_mode,
-            diarization={},
-            enrollment={},
-            routing=routing_result,
-            rich_features={},
-            session_context=session_context,
-            age_classification={},
-        )
-        return {
-            "status": "features_extracted",
-            "session_id": session_id,
-            "child_id": child_id,
-            "feature_scores": feature_scores,
-            "rich_features": {},
-            "embedding_vector": [],
-            "deviation": deviation,
-            "readiness_score": 0.0,
-            "duration_seconds": duration_seconds,
-            "quality_gate": quality_gate_result,
-            "biological": {},
-            "diarization": {},
-            "enrollment": {},
-            "routing": routing_result,
-            "developmental_stage": developmental_stage,
-            "developmental_mode": developmental_mode,
-            "session_context": session_context,
-            "age_classification": {},
-            "fast_reject": True,
-        }
-
-    # 3. Full-audio feature extraction on already-decoded array.
-    extraction_result = extract_all_features_from_array(audio_array, sample_rate, apply_vad=False)
-    feature_scores = extraction_result["feature_scores"]
-    embedding_vector = extraction_result["embedding_vector"]
-    duration_seconds = extraction_result["duration_seconds"]
-    audio_array = extraction_result.get("audio_array")
-    sample_rate = extraction_result.get("sample_rate", sample_rate)
-    logger.info(f"Extracted features: {feature_scores}")
-
-    # 3. [Phase 2] Diarization on FULL audio — segment and label by speaker type
-    # Running this FIRST allows us to isolate baby audio before bio/rich feature extraction.
-    diarization_result = {}
-    baby_audio = audio_array   # fallback: full audio
-    if audio_array is not None:
-        try:
-            diarization_result = diarize(audio_array, sample_rate)
-            logger.info(
-                f"Diarization: {diarization_result['total_segments']} segments, "
-                f"baby_fraction={diarization_result['baby_audio_fraction']:.0%}, "
-                f"adult_segments={diarization_result['adult_segments_detected']}"
-            )
-            # 4. Extract baby-labeled audio for clean downstream analysis
-            # "unknown" segments are included (conservative — might be quiet baby sounds)
-            baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result)
-            baby_audio = _enhance_baby_signal(baby_audio)
-            baby_secs  = len(baby_audio) / max(sample_rate, 1)
-            logger.info(f"Baby audio extracted: {baby_secs:.1f}s of {duration_seconds:.1f}s total")
-        except Exception as e:
-            logger.warning(f"Diarization error (non-blocking): {e}")
-            baby_audio = audio_array  # safe fallback
-
-    # 5. [Phase 1] Biological validation on BABY audio
-    # Running on clean baby audio prevents adult VTL/F0 from contaminating estimates.
-    bio_result = {}
-    if baby_audio is not None:
-        try:
-            bio_result = biological_validation(baby_audio, sample_rate)
-            if bio_result.get("mimicry_suspected"):
-                logger.warning(f"Adult mimicry suspected for session {session_id}: {bio_result['evidence']}")
-            else:
-                logger.info(f"Bio: is_infant={bio_result.get('is_infant')} VTL={bio_result.get('vtl_cm')}cm F0={bio_result.get('f0_hz')}Hz")
-        except Exception as e:
-            logger.warning(f"Biological validation error (non-blocking): {e}")
-
-    # 6. [Phase 3] Rich feature extraction (~65 features) on BABY audio
-    # Formants from bio validation reused to avoid a second LPC pass.
-    rich_features_result = {}
-    if baby_audio is not None:
-        try:
-            formants_for_rich = bio_result.get("formants") if bio_result else None
-            rich_features_result = extract_rich_features(
-                baby_audio, sample_rate, formants=formants_for_rich
-            )
-            logger.info(f"Rich features extracted: {len(rich_features_result)} features")
-        except Exception as e:
-            logger.warning(f"Rich feature extraction error (non-blocking): {e}")
-
-    # 7. [Phase 4] Probabilistic age classification
-    # Voice type layer + diagonal Gaussian scoring + conservative adult gate.
-    age_classification_result = {}
-    if rich_features_result:
-        try:
-            age_classification_result = classify_probabilistic(
-                rich_features_result, bio_result or {}
-            )
-            logger.info(
-                f"Age classifier: class={age_classification_result.get('final_class')} "
-                f"conf={age_classification_result.get('confidence', 0.0):.3f} "
-                f"voice_type={age_classification_result.get('voice_type')} "
-                f"probs={age_classification_result.get('probability_distribution')}"
-            )
-        except Exception as e:
-            logger.warning(f"Age classification error (non-blocking): {e}")
-
-    # 8. Reconcile bio_result with probabilistic classifier
-    # Overwrites is_infant, is_adult, mimicry_suspected, speaker_category
-    # when the richer multi-feature classifier disagrees with sufficient confidence.
-    if age_classification_result and bio_result:
-        try:
-            _reconcile_bio_with_age_class(bio_result, age_classification_result)
-        except Exception as e:
-            logger.warning(f"Bio reconciliation error (non-blocking): {e}")
-
-    # 9. [Phase 2] Load historical embeddings → enrolled baby identity verification
-    # Uses FULL-audio embedding (not baby-only) — intentional for identity consistency.
-    enrollment_result = {}
+    # --- 2. Quality gate ---
+    quality_gate = {}
     try:
-        historical_embeddings = load_historical_embeddings(child_id, session_id, limit=10)
-        session_count_for_enrollment = len(historical_embeddings) + 1
-        enrollment_result = verify_enrolled_baby(
-            new_embedding=embedding_vector,
-            historical_embeddings=historical_embeddings,
-            session_count=session_count_for_enrollment,
-        )
-        logger.info(
-            f"Enrollment: status={enrollment_result.get('enrollment_status')} "
-            f"similarity={enrollment_result.get('similarity_score')} "
-            f"sessions_used={enrollment_result.get('sessions_used')}"
-        )
+        quality_gate = audio_quality_gate(audio_array, sample_rate, duration_seconds)
+        if not quality_gate.get("passed", True):
+            logger.warning(f"Quality gate issues: {quality_gate.get('issues', [])}")
     except Exception as e:
-        logger.warning(f"Enrollment verification error (non-blocking): {e}")
+        logger.warning(f"Quality gate error: {e}")
 
-    # 10. Get child profile → age + developmental stage
-    profile = get_or_create_child_profile(child_id)
-    previous_baselines = profile.get("baseline_features", {})
-    session_count = profile.get("session_count", 0) + 1
+    # Check for critical failures (no signal, too short)
+    critical = _check_critical_issues(quality_gate)
+    if critical:
+        return _save_and_return_fast_reject(
+            child_id, session_id, s3_audio_path, duration_seconds,
+            quality_gate, session_context, critical,
+        )
 
-    birth_date_str = profile.get("birth_date")
-    age_days = compute_age_days(birth_date_str)
-    age_stage_info = developmental_stage_from_age(age_days)
+    # --- 3. Feature extraction (embedding for clustering + private language) ---
+    extraction = extract_all_features_from_array(audio_array, sample_rate, apply_vad=False)
+    feature_scores = extraction["feature_scores"]
+    embedding_vector = extraction["embedding_vector"]
 
-    # Stage source priority:
-    #   1. Bio hint (VTL + F0) — highest physical grounding, conf ≥ 0.55
-    #   2. Probabilistic hint (7 features) — conf ≥ 0.40
-    #   3. Birth-date estimate — fallback when both audio signals are weak
-    #
-    # Note: bio_result has already been reconciled with age_classification above,
-    # so audio_stage_hint_from_bio will return _NO_HINT if prob classifier
-    # detected adult (mimicry_suspected=True).
-    audio_hint = audio_stage_hint_from_bio(bio_result)
-    prob_hint  = age_class_to_stage_hint(age_classification_result) if age_classification_result else {}
+    # --- 4. Diarization ---
+    diarization_result = {}
+    baby_audio = audio_array
+    try:
+        diarization_result = diarize(audio_array, sample_rate)
+        baby_audio = extract_baby_audio(audio_array, sample_rate, diarization_result)
+        baby_audio = _enhance_baby_signal(baby_audio)
+        logger.info(f"Diarization: {diarization_result.get('total_segments', 0)} segments, "
+                     f"baby_fraction={diarization_result.get('baby_audio_fraction', 0):.0%}")
+    except Exception as e:
+        logger.warning(f"Diarization error: {e}")
+        baby_audio = audio_array
 
-    if audio_hint.get("stage") and audio_hint.get("confidence", 0.0) >= 0.55:
-        developmental_stage = audio_hint["stage"]
-        developmental_mode  = audio_hint["mode"]
-        if age_stage_info["stage"] != audio_hint["stage"]:
-            logger.info(
-                f"Stage: bio={audio_hint['stage']} (conf={audio_hint['confidence']}) "
-                f"overrides age-based={age_stage_info['stage']}"
+    # --- 5. Sound classification ---
+    sound_result = classify_sound(baby_audio, sample_rate, duration_s=duration_seconds)
+    sound_type = sound_result["primary_type"]
+    logger.info(f"Sound classification: type={sound_type} conf={sound_result['confidence']}")
+
+    # Per-segment classification
+    segment_classifications = []
+    if diarization_result.get("segments"):
+        try:
+            segment_classifications = classify_segments(
+                audio_array, sample_rate, diarization_result["segments"]
             )
-        else:
-            logger.info(f"Stage: bio={audio_hint['stage']} agrees with age-based estimate")
+        except Exception as e:
+            logger.warning(f"Segment classification error: {e}")
 
-    elif prob_hint.get("stage") and prob_hint.get("confidence", 0.0) >= 0.40:
-        developmental_stage = prob_hint["stage"]
-        developmental_mode  = prob_hint["mode"]
-        logger.info(
-            f"Stage: probabilistic hint — class={age_classification_result.get('final_class')} "
-            f"→ stage={developmental_stage} conf={prob_hint['confidence']}"
-        )
+    sound_summary = aggregate_sound_types(segment_classifications) if segment_classifications else {
+        "dominant_type": sound_type,
+        "has_speech": sound_type == "speech",
+        "has_cry": sound_type == "cry",
+        "has_laugh": sound_type == "laugh",
+    }
 
-    else:
-        developmental_stage = age_stage_info["stage"]
-        developmental_mode  = age_stage_info["mode"]
-        logger.info(
-            f"Stage: fallback to age-based={developmental_stage} "
-            f"(bio_conf={audio_hint.get('confidence', 0):.2f}, "
-            f"prob_conf={prob_hint.get('confidence', 0):.2f})"
-        )
+    # --- 6. Adult/baby detection ---
+    bio_result = {}
+    age_classification = {}
+    try:
+        bio_result = biological_validation(baby_audio, sample_rate)
+    except Exception as e:
+        logger.warning(f"Bio validation error: {e}")
 
-    # Hard guardrail: infants under 12 months must not be routed to linguistic mode
-    # from a single noisy audio-stage estimate.
-    if age_days is not None and age_days < 366 and developmental_mode == "LINGUISTIC":
-        developmental_stage = age_stage_info["stage"]
-        developmental_mode = age_stage_info["mode"]
-        logger.warning(
-            f"Stage guardrail applied for session {session_id}: "
-            f"age_days={age_days} forcing stage={developmental_stage} mode={developmental_mode}"
-        )
+    try:
+        from rich_features import extract_rich_features
+        rich_features = extract_rich_features(baby_audio, sample_rate,
+                                               formants=bio_result.get("formants"))
+        age_classification = classify_probabilistic(rich_features, bio_result or {})
+        logger.info(f"Age classifier: class={age_classification.get('final_class')} "
+                     f"conf={age_classification.get('confidence', 0):.3f}")
+    except Exception as e:
+        logger.warning(f"Age classification error: {e}")
+        rich_features = {}
 
-    logger.info(f"Child: age={age_days}d stage={developmental_stage} mode={developmental_mode}")
+    # Determine adult/baby
+    is_adult = _determine_is_adult(bio_result, age_classification)
 
-    # 11. [Phase 2] Determine analysis routing
-    # bio_result is already reconciled with age_classification — passes both signals.
-    routing_result = determine_routing(
-        developmental_stage=developmental_stage,
-        developmental_mode=developmental_mode,
-        bio_result=bio_result,
-        enrollment_result=enrollment_result,
-        age_classification=age_classification_result,
-    )
-    logger.info(f"Routing: {routing_result['analysis_type']}")
+    # --- 7. Get child profile for age info ---
+    profile = _get_child_profile(child_id)
+    age_days = _compute_age_days(profile.get("birth_date"))
 
-    # 8. Update EMA baselines
-    alpha = float(os.environ.get("ALPHA_VALUE", str(ALPHA_VALUE)))
-    new_baselines = update_feature_baselines(previous_baselines, feature_scores, alpha)
-
-    # 9. Compute deviation
-    deviation = compute_deviation_level(
-        feature_scores,
-        previous_baselines,
-        session_count,
-        MIN_SESSIONS_FOR_DEVIATION,
+    # Determine routing
+    routing = _build_routing(
+        sound_type=sound_type,
+        sound_summary=sound_summary,
+        is_adult=is_adult,
+        age_days=age_days,
     )
 
-    # 10. Compute readiness score
-    readiness_score = compute_readiness_score(feature_scores)
-
-    # 11. Update child profile with developmental stage
-    update_child_profile(
-        child_id=child_id,
-        new_baselines=new_baselines,
-        readiness_score=readiness_score,
-        session_count=session_count,
-        developmental_stage=developmental_stage,
-        developmental_mode=developmental_mode,
-    )
-
-    # 12. Save session with all Phase 1–4 metadata
-    save_session(
-        session_id=session_id,
-        child_id=child_id,
-        s3_audio_path=s3_audio_path,
-        feature_scores=feature_scores,
-        embedding_vector=embedding_vector,
-        deviation=deviation,
-        duration_seconds=duration_seconds,
-        quality_gate=quality_gate_result,
-        biological=bio_result,
-        age_days_at_recording=age_days,
-        developmental_stage=developmental_stage,
-        developmental_mode=developmental_mode,
-        diarization=diarization_result,
-        enrollment=enrollment_result,
-        routing=routing_result,
-        rich_features=rich_features_result,
-        session_context=session_context,
-        age_classification=age_classification_result,
-    )
-
-    logger.info(f"Feature extraction complete for session {session_id}")
-
-    return {
-        "status": "features_extracted",
+    # --- 8. Save session ---
+    now = datetime.now(timezone.utc).isoformat()
+    session_item = {
         "session_id": session_id,
         "child_id": child_id,
-        "feature_scores": feature_scores,
-        "rich_features": rich_features_result,
-        "embedding_vector": embedding_vector,
-        "deviation": deviation,
-        "readiness_score": readiness_score,
+        "s3_audio_path": s3_audio_path,
+        "timestamp": now,
         "duration_seconds": duration_seconds,
-        "quality_gate": quality_gate_result,
+        "processed": True,
+        # Sound classification
+        "sound_type": sound_type,
+        "sound_classification": sound_result,
+        "sound_summary": sound_summary,
+        "segment_classifications": segment_classifications[:10],
+        # Voice detection
+        "is_adult": is_adult,
         "biological": bio_result,
+        "age_classification": age_classification,
+        # Features
+        "feature_scores": feature_scores,
+        "embedding_vector": embedding_vector,
+        "sound_features": sound_result.get("features", {}),
+        # Metadata
+        "quality_gate": quality_gate,
         "diarization": diarization_result,
-        "enrollment": enrollment_result,
-        "routing": routing_result,
-        "developmental_stage": developmental_stage,
-        "developmental_mode": developmental_mode,
+        "age_days_at_recording": age_days,
         "session_context": session_context,
-        "age_classification": age_classification_result,
+        "routing": routing,
+    }
+    session_table.put_item(Item=_float_to_decimal(session_item))
+    logger.info(f"Session saved: {session_id} type={sound_type} adult={is_adult}")
+
+    return {
+        "status": "classified",
+        "session_id": session_id,
+        "child_id": child_id,
+        "sound_type": sound_type,
+        "is_adult": is_adult,
+        "sound_classification": sound_result,
+        "sound_summary": sound_summary,
+        "embedding_vector": embedding_vector,
+        "feature_scores": feature_scores,
+        "sound_features": sound_result.get("features", {}),
+        "biological": bio_result,
+        "age_classification": age_classification,
+        "age_days": age_days,
+        "duration_seconds": duration_seconds,
+        "quality_gate": quality_gate,
+        "routing": routing,
+        "session_context": session_context,
+        "s3_audio_path": s3_audio_path,
         "fast_reject": False,
+    }
+
+
+def _determine_is_adult(bio_result: Dict, age_classification: Dict) -> bool:
+    """Determine if the speaker is an adult."""
+    # Check age classifier first (more comprehensive)
+    if age_classification:
+        is_adult_cls = age_classification.get("is_adult", False)
+        conf = float(age_classification.get("confidence", 0))
+        if is_adult_cls and conf >= 0.60:
+            return True
+
+    # Check bio validation
+    if bio_result:
+        if bio_result.get("is_adult", False) and bio_result.get("bio_confidence", 0) >= 0.55:
+            return True
+        if bio_result.get("mimicry_suspected", False):
+            return True
+
+    return False
+
+
+def _build_routing(
+    sound_type: str,
+    sound_summary: Dict,
+    is_adult: bool,
+    age_days: Optional[int],
+) -> Dict[str, Any]:
+    """Build routing decision for downstream lambdas."""
+    # Determine which pipelines to run
+    run_transcription = False
+    run_cry_analysis = False
+    run_laugh_detection = False
+
+    if sound_summary.get("has_speech", False) or sound_type == "speech":
+        run_transcription = True
+    if sound_summary.get("has_cry", False) or sound_type == "cry":
+        run_cry_analysis = True
+    if sound_summary.get("has_laugh", False) or sound_type == "laugh":
+        run_laugh_detection = True
+
+    # Mixed sound: run all relevant pipelines
+    if sound_type == "mixed":
+        if sound_summary.get("has_speech"):
+            run_transcription = True
+        if sound_summary.get("has_cry"):
+            run_cry_analysis = True
+        if sound_summary.get("has_laugh"):
+            run_laugh_detection = True
+
+    return {
+        "sound_type": sound_type,
+        "is_adult": is_adult,
+        "run_transcription": run_transcription,
+        "run_cry_analysis": run_cry_analysis,
+        "run_laugh_detection": run_laugh_detection,
+        "age_days": age_days,
+    }
+
+
+def _check_critical_issues(quality_gate: Dict) -> list:
+    """Check for critical quality issues that warrant fast rejection."""
+    if not isinstance(quality_gate, dict):
+        return []
+    issues = quality_gate.get("issues", []) or []
+    critical = [i for i in issues if str(i).startswith(("no_signal", "too_short:"))]
+    return critical
+
+
+def _get_child_profile(child_id: str) -> Dict:
+    """Fetch child profile."""
+    try:
+        response = child_profile_table.get_item(Key={"child_id": child_id})
+        if "Item" in response:
+            return _decimal_to_float(response["Item"])
+    except Exception as e:
+        logger.warning(f"Failed to get child profile: {e}")
+
+    return {"child_id": child_id}
+
+
+def _save_and_return_fast_reject(
+    child_id, session_id, s3_audio_path, duration_seconds,
+    quality_gate, session_context, critical_issues,
+) -> Dict:
+    """Save and return a fast-reject result."""
+    profile = _get_child_profile(child_id)
+    age_days = _compute_age_days(profile.get("birth_date"))
+    now = datetime.now(timezone.utc).isoformat()
+
+    session_item = {
+        "session_id": session_id,
+        "child_id": child_id,
+        "s3_audio_path": s3_audio_path,
+        "timestamp": now,
+        "duration_seconds": duration_seconds,
+        "processed": True,
+        "sound_type": "silence",
+        "is_adult": False,
+        "quality_gate": quality_gate,
+        "age_days_at_recording": age_days,
+        "session_context": session_context,
+        "routing": {"sound_type": "silence", "is_adult": False,
+                     "run_transcription": False, "run_cry_analysis": False,
+                     "run_laugh_detection": False},
+        "fast_reject": True,
+        "fast_reject_reasons": critical_issues,
+    }
+    session_table.put_item(Item=_float_to_decimal(session_item))
+
+    return {
+        "status": "classified",
+        "session_id": session_id,
+        "child_id": child_id,
+        "sound_type": "silence",
+        "is_adult": False,
+        "fast_reject": True,
+        "fast_reject_reasons": critical_issues,
+        "routing": session_item["routing"],
+        "duration_seconds": duration_seconds,
+        "embedding_vector": [],
+        "feature_scores": {},
+        "sound_features": {},
+        "sound_classification": {},
+        "sound_summary": {},
+        "biological": {},
+        "age_classification": {},
+        "age_days": age_days,
+        "quality_gate": quality_gate,
+        "session_context": session_context,
+        "s3_audio_path": s3_audio_path,
     }

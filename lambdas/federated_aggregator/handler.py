@@ -49,6 +49,7 @@ from constants import (
     SESSION_TABLE,
 )
 from federated_learning import aggregate_stage, passes_quality_gate
+from intent_taxonomy import canonical_intent_keys, normalize_intent_distribution
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -61,7 +62,7 @@ child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
 
 # All intent keys — must match evidence_model.py
-_ALL_INTENTS = ["hunger", "discomfort", "connection", "fatigue", "overstimulation", "exploration"]
+_ALL_INTENTS = list(canonical_intent_keys(include_technical=False))
 
 # Developmental stages to aggregate separately
 _AGGREGATION_STAGES = [
@@ -143,10 +144,9 @@ def _get_session_intent_distribution(session_id: str) -> Optional[Dict[str, floa
         item = response.get("Item")
         if not item:
             return None
-        efp = _decimal_to_float(item.get("efp") or {})
-        # Validate it's a valid intent distribution
-        if efp and all(k in _ALL_INTENTS for k in efp.keys()):
-            return efp
+        efp_raw = _decimal_to_float(item.get("efp") or {})
+        if efp_raw and isinstance(efp_raw, dict):
+            return normalize_intent_distribution(efp_raw, include_technical=False, fill_missing=True)
     except Exception as e:
         logger.warning(f"Failed to get session {session_id} intent distribution: {e}")
     return None

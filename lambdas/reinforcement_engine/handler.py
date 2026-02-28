@@ -33,6 +33,7 @@ from constants import (
     SOUND_CLUSTER_TABLE,
 )
 from normalization import clamp, normalize_probability_distribution
+from intent_taxonomy import canonical_intent_key, normalize_intent_distribution
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -147,13 +148,11 @@ def update_probable_intents(
     If ineffective: decrease weight for the response_type intent.
     Then normalize distribution.
     """
-    if not response_type:
-        return probable_intents
-    
-    intents = dict(probable_intents)
-    
-    # Map response_type to intent key
-    intent_key = response_type.lower().replace(" ", "_")
+    intent_key = canonical_intent_key(response_type, allow_technical=False)
+    if not intent_key:
+        return normalize_intent_distribution(probable_intents, include_technical=False, fill_missing=True)
+
+    intents = normalize_intent_distribution(probable_intents, include_technical=False, fill_missing=True)
     
     if effectiveness == "helpful":
         current = intents.get(intent_key, 0.1)
@@ -164,12 +163,12 @@ def update_probable_intents(
     
     # Ensure all values are non-negative
     intents = {k: max(0.0, v) for k, v in intents.items()}
-    
+
     # Normalize distribution
     if sum(intents.values()) > 0:
         return normalize_probability_distribution(intents)
-    
-    return intents
+
+    return normalize_intent_distribution({}, include_technical=False, fill_missing=True)
 
 
 def update_cluster(cluster_id: str, new_weight: float, new_intents: Dict):

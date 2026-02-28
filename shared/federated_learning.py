@@ -19,11 +19,12 @@ import math
 import logging
 import random
 from typing import Dict, List, Optional, Tuple
+from intent_taxonomy import canonical_intent_keys, normalize_intent_distribution
 
 logger = logging.getLogger(__name__)
 
 # All intent keys — must match evidence_model.py
-_ALL_INTENTS = ["hunger", "discomfort", "connection", "fatigue", "overstimulation", "exploration"]
+_ALL_INTENTS = list(canonical_intent_keys(include_technical=False))
 
 
 # =============================================================================
@@ -144,6 +145,7 @@ def federated_average(
     # Sum across participants
     aggregate: Dict[str, float] = {intent: 0.0 for intent in _ALL_INTENTS}
     for dist in local_distributions:
+        dist = normalize_intent_distribution(dist, include_technical=False, fill_missing=True)
         for intent in _ALL_INTENTS:
             aggregate[intent] = aggregate[intent] + float(dist.get(intent, 0.0))
 

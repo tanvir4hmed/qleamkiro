@@ -67,6 +67,21 @@ variable "milestones_table" {
   type        = string
 }
 
+variable "population_model_table" {
+  description = "DynamoDB PopulationModel table name"
+  type        = string
+}
+
+variable "training_candidate_table" {
+  description = "DynamoDB TrainingCandidate table name"
+  type        = string
+}
+
+variable "model_registry_table" {
+  description = "DynamoDB ModelRegistry table name"
+  type        = string
+}
+
 variable "alpha_value" {
   description = "EMA alpha value for baseline aggregation"
   type        = number

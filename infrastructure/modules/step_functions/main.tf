@@ -8,21 +8,22 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
   role_arn = var.step_functions_role_arn
 
   definition = jsonencode({
-    Comment = "Qleam audio processing pipeline with fast-reject short-circuit for critical-quality sessions"
-    StartAt = "FeatureExtraction"
+    Comment = "Qleam audio processing pipeline — classify first, then route"
+    StartAt = "AudioClassifier"
 
     States = {
-      FeatureExtraction = {
+      # Step 1: Classify audio (sound type + adult/baby + features)
+      AudioClassifier = {
         Type     = "Task"
         Resource = var.feature_extraction_lambda_arn
-        Comment  = "Extract acoustic features from uploaded audio"
+        Comment  = "Classify audio: sound type, adult/baby, extract features"
         Parameters = {
           "child_id.$"        = "$.child_id"
           "session_id.$"      = "$.session_id"
           "s3_audio_path.$"   = "$.s3_audio_path"
           "session_context.$" = "$.session_context"
         }
-        ResultPath = "$.feature_result"
+        ResultPath = "$.classifier_result"
         Retry = [
           {
             ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
@@ -41,27 +42,24 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Next = "ShouldFastReject"
       }
 
+      # Step 2: Fast reject for critical quality failures
       ShouldFastReject = {
         Type = "Choice"
         Choices = [
           {
-            Variable      = "$.feature_result.fast_reject"
+            Variable      = "$.classifier_result.fast_reject"
             BooleanEquals = true
             Next          = "InsightGeneratorFastReject"
           }
         ]
-        Default = "ClusterEngine"
+        Default = "InsightGenerator"
       }
 
       InsightGeneratorFastReject = {
         Type     = "Task"
         Resource = var.insight_generator_lambda_arn
-        Comment  = "Generate immediate rejection insight and stop for critical-quality sessions"
-        Parameters = {
-          "child_id.$"   = "$.child_id"
-          "session_id.$" = "$.session_id"
-          "cluster_id"   = ""
-        }
+        Comment  = "Generate fast-reject insight (silence/quality failure)"
+        InputPath = "$.classifier_result"
         ResultPath = "$.insight_result"
         Retry = [
           {
@@ -81,43 +79,12 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Next = "ProcessingComplete"
       }
 
-      ClusterEngine = {
-        Type     = "Task"
-        Resource = var.cluster_engine_lambda_arn
-        Comment  = "Assign audio embedding to cluster or create new cluster"
-        Parameters = {
-          "child_id.$"         = "$.child_id"
-          "session_id.$"       = "$.session_id"
-          "embedding_vector.$" = "$.feature_result.embedding_vector"
-        }
-        ResultPath = "$.cluster_result"
-        Retry = [
-          {
-            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
-            IntervalSeconds = 2
-            MaxAttempts     = 3
-            BackoffRate     = 2
-          }
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
-            Next        = "ProcessingFailed"
-            ResultPath  = "$.error"
-          }
-        ]
-        Next = "InsightGenerator"
-      }
-
+      # Step 3: Generate insight (transcription, cry analysis, word detection, etc.)
       InsightGenerator = {
         Type     = "Task"
         Resource = var.insight_generator_lambda_arn
-        Comment  = "Generate structured insight from session state"
-        Parameters = {
-          "child_id.$"   = "$.child_id"
-          "session_id.$" = "$.session_id"
-          "cluster_id.$" = "$.cluster_result.cluster_id"
-        }
+        Comment  = "Route by sound type: transcribe words, analyze cry, detect laugh"
+        InputPath = "$.classifier_result"
         ResultPath = "$.insight_result"
         Retry = [
           {
@@ -134,64 +101,45 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
             ResultPath  = "$.error"
           }
         ]
+        Next = "ClusterEngine"
+      }
+
+      # Step 4: Cluster for private language pattern matching (optional, non-fatal)
+      ClusterEngine = {
+        Type     = "Task"
+        Resource = var.cluster_engine_lambda_arn
+        Comment  = "Cluster embedding for private language pattern detection"
+        Parameters = {
+          "child_id.$"         = "$.child_id"
+          "session_id.$"       = "$.session_id"
+          "embedding_vector.$" = "$.classifier_result.embedding_vector"
+        }
+        ResultPath = "$.cluster_result"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "DevelopmentalTracker"
+            ResultPath  = "$.cluster_error"
+          }
+        ]
         Next = "DevelopmentalTracker"
       }
 
+      # Step 5: Developmental tracking (non-fatal)
       DevelopmentalTracker = {
         Type     = "Task"
         Resource = var.developmental_tracker_lambda_arn
-        Comment  = "Track CBR trend, VTL growth, φ order parameter, and milestone logging"
+        Comment  = "Track developmental milestones and growth metrics"
         Parameters = {
           "child_id.$"   = "$.child_id"
           "session_id.$" = "$.session_id"
-          "cluster_id.$" = "$.cluster_result.cluster_id"
         }
         ResultPath = "$.developmental_result"
         Catch = [
           {
             ErrorEquals = ["States.ALL"]
-            Next        = "ConceptDecoder"
-            ResultPath  = "$.developmental_error"
-          }
-        ]
-        Next = "ConceptDecoder"
-      }
-
-      ConceptDecoder = {
-        Type     = "Task"
-        Resource = var.concept_decoder_lambda_arn
-        Comment  = "Decode concept graph for session and check proto-word crystallization"
-        Parameters = {
-          "child_id.$"   = "$.child_id"
-          "session_id.$" = "$.session_id"
-          "cluster_id.$" = "$.cluster_result.cluster_id"
-        }
-        ResultPath = "$.concept_decode_result"
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
-            Next        = "SpeechAnalyzer"
-            ResultPath  = "$.concept_decode_error"
-          }
-        ]
-        Next = "SpeechAnalyzer"
-      }
-
-      SpeechAnalyzer = {
-        Type     = "Task"
-        Resource = var.speech_analyzer_lambda_arn
-        Comment  = "Language development analysis for LINGUISTIC-mode sessions (non-fatal)"
-        Parameters = {
-          "child_id.$"   = "$.child_id"
-          "session_id.$" = "$.session_id"
-          "cluster_id.$" = "$.cluster_result.cluster_id"
-        }
-        ResultPath = "$.speech_analysis_result"
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
             Next        = "ProcessingComplete"
-            ResultPath  = "$.speech_analysis_error"
+            ResultPath  = "$.developmental_error"
           }
         ]
         Next = "ProcessingComplete"

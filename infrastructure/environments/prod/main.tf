@@ -181,14 +181,17 @@ module "lambda" {
   private_subnet_ids        = module.vpc.private_subnet_ids
   lambda_security_group_id  = module.vpc.lambda_security_group_id
 
-  s3_bucket_name        = local.audio_bucket_name
-  child_profile_table   = module.dynamodb.child_profile_table_name
-  session_table         = module.dynamodb.session_table_name
-  sound_cluster_table   = module.dynamodb.sound_cluster_table_name
-  semantic_bridge_table = module.dynamodb.semantic_bridge_table_name
-  feedback_table        = module.dynamodb.feedback_table_name
-  concept_graph_table   = module.dynamodb.concept_graph_table_name
-  milestones_table      = module.dynamodb.milestones_table_name
+  s3_bucket_name           = local.audio_bucket_name
+  child_profile_table      = module.dynamodb.child_profile_table_name
+  session_table            = module.dynamodb.session_table_name
+  sound_cluster_table      = module.dynamodb.sound_cluster_table_name
+  semantic_bridge_table    = module.dynamodb.semantic_bridge_table_name
+  feedback_table           = module.dynamodb.feedback_table_name
+  concept_graph_table      = module.dynamodb.concept_graph_table_name
+  milestones_table         = module.dynamodb.milestones_table_name
+  population_model_table   = module.dynamodb.population_model_table_name
+  training_candidate_table = module.dynamodb.training_candidate_table_name
+  model_registry_table     = module.dynamodb.model_registry_table_name
 
   alpha_value                    = var.alpha_value
   cluster_similarity_threshold   = var.cluster_similarity_threshold

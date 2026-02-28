@@ -68,15 +68,48 @@ output "milestones_table_arn" {
   value       = aws_dynamodb_table.milestones.arn
 }
 
+output "population_model_table_name" {
+  description = "PopulationModel DynamoDB table name"
+  value       = aws_dynamodb_table.population_model.name
+}
+
+output "population_model_table_arn" {
+  description = "PopulationModel DynamoDB table ARN"
+  value       = aws_dynamodb_table.population_model.arn
+}
+
+output "training_candidate_table_name" {
+  description = "TrainingCandidate DynamoDB table name"
+  value       = aws_dynamodb_table.training_candidate.name
+}
+
+output "training_candidate_table_arn" {
+  description = "TrainingCandidate DynamoDB table ARN"
+  value       = aws_dynamodb_table.training_candidate.arn
+}
+
+output "model_registry_table_name" {
+  description = "ModelRegistry DynamoDB table name"
+  value       = aws_dynamodb_table.model_registry.name
+}
+
+output "model_registry_table_arn" {
+  description = "ModelRegistry DynamoDB table ARN"
+  value       = aws_dynamodb_table.model_registry.arn
+}
+
 output "all_table_names" {
   description = "Map of all DynamoDB table names"
   value = {
-    child_profile   = aws_dynamodb_table.child_profile.name
-    session         = aws_dynamodb_table.session.name
-    sound_cluster   = aws_dynamodb_table.sound_cluster.name
-    semantic_bridge = aws_dynamodb_table.semantic_bridge.name
-    feedback        = aws_dynamodb_table.feedback.name
-    concept_graph   = aws_dynamodb_table.concept_graph.name
-    milestones      = aws_dynamodb_table.milestones.name
+    child_profile      = aws_dynamodb_table.child_profile.name
+    session            = aws_dynamodb_table.session.name
+    sound_cluster      = aws_dynamodb_table.sound_cluster.name
+    semantic_bridge    = aws_dynamodb_table.semantic_bridge.name
+    feedback           = aws_dynamodb_table.feedback.name
+    concept_graph      = aws_dynamodb_table.concept_graph.name
+    milestones         = aws_dynamodb_table.milestones.name
+    population_model   = aws_dynamodb_table.population_model.name
+    training_candidate = aws_dynamodb_table.training_candidate.name
+    model_registry     = aws_dynamodb_table.model_registry.name
   }
 }

@@ -1,5 +1,5 @@
-"""
-Qleam — Shared Constants
+﻿"""
+Qleam â€” Shared Constants
 Central configuration for all Lambda functions
 """
 import os
@@ -50,6 +50,8 @@ FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
 CONCEPT_GRAPH_TABLE: str = os.environ.get("CONCEPT_GRAPH_TABLE", "qleam-dev-ConceptGraph")
 MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones")
 POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
+TRAINING_CANDIDATE_TABLE: str = os.environ.get("TRAINING_CANDIDATE_TABLE", "qleam-dev-TrainingCandidate")
+MODEL_REGISTRY_TABLE: str = os.environ.get("MODEL_REGISTRY_TABLE", "qleam-dev-ModelRegistry")
 
 # =============================================================================
 # S3
@@ -88,25 +90,40 @@ LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "DEBUG")
 # Intent Labels
 # =============================================================================
 INTENT_LABELS = {
-    "hunger": "Hunger / Feeding Need",
-    "connection": "Connection Seeking",
-    "discomfort": "Physical Discomfort",
-    "overstimulation": "Overstimulation",
-    "fatigue": "Fatigue / Sleep Need",
-    "exploration": "Exploratory Vocalization",
-    "unknown": "Pattern Under Development",
+    # Canonical v2 taxonomy (9 baby classes + 1 technical class)
+    "hunger": "Hungry / Feeding Need",
+    "fatigue": "Sleepy / Fatigued",
+    "pain": "Pain",
+    "discomfort": "Discomfort (physical needs)",
+    "closeness": "Needs Closeness / Cuddle",
+    "frustration": "Frustrated / Angry",
+    "happy": "Happy / Content",
+    "exploration": "Neutral / Coos / Exploratory",
+    "distress_unknown": "Distress - Unknown",
+    "non_baby_spoof_noise": "Non-baby / Spoof / Noise",
+    # Backward compatibility aliases
+    "connection": "Needs Closeness / Cuddle",
+    "overstimulation": "Frustrated / Angry",
+    "unknown": "Distress - Unknown",
 }
 
 # =============================================================================
 # Suggested Responses (rule-based MVP)
 # =============================================================================
 SUGGESTED_RESPONSES = {
-    "hunger": "Offer feeding or check hunger cues. Look for rooting reflex or hand-to-mouth movement.",
-    "connection": "Provide calm eye contact and gentle verbal reassurance. Hold and respond warmly.",
-    "discomfort": "Check for physical discomfort — diaper, temperature, or position. Offer comfort.",
-    "overstimulation": "Reduce stimulation. Move to a quieter environment and offer calm, quiet comfort.",
-    "fatigue": "Create a calm sleep environment. Reduce light and noise. Offer soothing routine.",
-    "exploration": "Engage with gentle vocal mirroring. Respond to sounds with similar sounds.",
+    "hunger": "Offer feeding and check feeding cues (rooting, hand-to-mouth, searching behavior).",
+    "fatigue": "Start a sleep routine in a calm, dim environment and reduce stimulation.",
+    "pain": "Check immediate pain triggers and seek medical guidance if distress remains high.",
+    "discomfort": "Check diaper, temperature, clothing, gas, and body position; provide soothing comfort.",
+    "closeness": "Hold baby close, make gentle eye contact, and respond with soft voice.",
+    "frustration": "Reduce sensory load, slow transitions, and help baby re-regulate with calm soothing.",
+    "happy": "Keep engaging with smiles, mirroring, and gentle play to reinforce positive interaction.",
+    "exploration": "Respond to coos and babbles with turn-taking sound play.",
+    "distress_unknown": "Use a calm checklist: feeding, rest, comfort, environment, then re-observe.",
+    "non_baby_spoof_noise": "Record closer to the baby and reduce background/adult speech for analysis.",
+    # Backward compatibility aliases
+    "connection": "Hold baby close and respond warmly.",
+    "overstimulation": "Reduce stimulation and move to a quieter space.",
     "unknown": "Continue observing. More sessions will help build a clearer pattern.",
 }
 
@@ -135,15 +152,15 @@ DEVELOPMENTAL_STAGE_MAP = [
 ]
 
 # =============================================================================
-# Audio Quality Gate Thresholds (Phase 1 — Layer 0)
+# Audio Quality Gate Thresholds (Phase 1 â€” Layer 0)
 # Spec: TECHNICAL_PIPELINE.md Layer 0 / SCIENTIFIC_MATHEMATICS.md Section 1
 # =============================================================================
-QUALITY_MIN_DURATION_SECONDS: float = 3.0   # Was 2.0 — spec: Layer 0 gate
-QUALITY_MAX_DURATION_SECONDS: float = 600.0  # Was 60 — spec: Layer 0 gate max 600s
-QUALITY_MIN_SNR_DB: float = 10.0            # Was 5.0  — spec: Layer 0 gate
-QUALITY_MAX_SILENCE_RATIO: float = 0.80     # Was 0.85 — spec: Layer 0 gate
-QUALITY_MAX_CLIPPING_RATIO: float = 0.005   # Was 0.05 — spec: Layer 0 gate (0.5%)
-LOMBARD_NOISE_FLOOR_DB: float = -30.0       # Above this → Lombard effect warning
+QUALITY_MIN_DURATION_SECONDS: float = 3.0   # Was 2.0 â€” spec: Layer 0 gate
+QUALITY_MAX_DURATION_SECONDS: float = 600.0  # Was 60 â€” spec: Layer 0 gate max 600s
+QUALITY_MIN_SNR_DB: float = 10.0            # Was 5.0  â€” spec: Layer 0 gate
+QUALITY_MAX_SILENCE_RATIO: float = 0.80     # Was 0.85 â€” spec: Layer 0 gate
+QUALITY_MAX_CLIPPING_RATIO: float = 0.005   # Was 0.05 â€” spec: Layer 0 gate (0.5%)
+LOMBARD_NOISE_FLOOR_DB: float = -30.0       # Above this â†’ Lombard effect warning
 
 # =============================================================================
 # Milestone Types (Phase 6)
@@ -164,24 +181,77 @@ MILESTONE_TYPES = {
 PRAGMATIC_TYPES = ["declaration", "request", "question", "exclamation"]
 
 # =============================================================================
-# Biological Validation Thresholds (Phase 1 — Layer 1)
+# Biological Validation Thresholds (Phase 1 â€” Layer 1)
 # Spec: SCIENTIFIC_MATHEMATICS.md Theorem 3.1 / TECHNICAL_PIPELINE.md Layer 1
 # =============================================================================
-VTL_INFANT_MAX_CM: float = 13.0       # Was 12.0 — Bayesian-optimal per Theorem 3.1
-VTL_UNCERTAIN_MIN_CM: float = 12.5    # 12.5–13.0 → UNCERTAIN band
+VTL_INFANT_MAX_CM: float = 13.0       # Was 12.0 â€” Bayesian-optimal per Theorem 3.1
+VTL_UNCERTAIN_MIN_CM: float = 12.5    # 12.5â€“13.0 â†’ UNCERTAIN band
 VTL_SPEED_OF_SOUND_CM_S: float = 34300.0  # Deprecated: use temperature-corrected value
 VTL_AMBIENT_TEMP_C: float = 20.0      # Default ambient temperature for c(T) calc
-INFANT_F0_MIN_HZ: float = 250.0       # Was 200 — spec: adult threshold ≥ 250 Hz (Theorem 3.1)
-STRONG_INFANT_F0_HZ: float = 300.0    # Above this → strong infant signal
+INFANT_F0_MIN_HZ: float = 250.0       # Was 200 â€” spec: adult threshold â‰¥ 250 Hz (Theorem 3.1)
+STRONG_INFANT_F0_HZ: float = 300.0    # Above this â†’ strong infant signal
 
 # =============================================================================
-# Federated Learning (Phase 8 — FIVL)
+# Federated Learning (Phase 8 â€” FIVL)
 # Spec: SCIENTIFIC_MATHEMATICS.md Section 10, Theorem 10.1-10.2
 # =============================================================================
-FL_EPSILON: float = 1.0          # Differential privacy ε (privacy budget)
-FL_DELTA: float = 1e-5           # Differential privacy δ (failure probability)
+FL_EPSILON: float = 1.0          # Differential privacy Îµ (privacy budget)
+FL_DELTA: float = 1e-5           # Differential privacy Î´ (failure probability)
 FL_MIN_PARTICIPANTS: int = 10    # Minimum sessions per stage before aggregation
 FL_FRS_QUALITY_GATE: float = 0.60   # Minimum FRS for session to be included
 FL_DELTA_QUALITY_GATE: float = 0.65  # Minimum delta_score for session to be included
-FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor — never fully replaced by FL
+FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor â€” never fully replaced by FL
 FL_ROUND_INTERVAL_HOURS: int = 24    # How often aggregation runs (via EventBridge)
+
+# =============================================================================
+# Training Candidate Acceptance (Phase 1)
+# =============================================================================
+TRAINING_ACCEPT_DELTA_MIN: float = float(os.environ.get("TRAINING_ACCEPT_DELTA_MIN", "0.72"))
+TRAINING_ACCEPT_FRS_MIN: float = float(os.environ.get("TRAINING_ACCEPT_FRS_MIN", "0.70"))
+TRAINING_ACCEPT_ACOUSTIC_RELIABILITY_MIN: float = float(
+    os.environ.get("TRAINING_ACCEPT_ACOUSTIC_RELIABILITY_MIN", "0.62")
+)
+TRAINING_ACCEPT_TOP_MARGIN_MIN: float = float(os.environ.get("TRAINING_ACCEPT_TOP_MARGIN_MIN", "0.08"))
+TRAINING_ACCEPT_SCORE_MIN: float = float(os.environ.get("TRAINING_ACCEPT_SCORE_MIN", "0.76"))
+
+# Stage-level training dataset profile reliability and blend controls.
+TRAINING_DATASET_MIN_SAMPLES: int = int(os.environ.get("TRAINING_DATASET_MIN_SAMPLES", "120"))
+TRAINING_DATASET_BLEND_MAX_ALPHA: float = float(
+    os.environ.get("TRAINING_DATASET_BLEND_MAX_ALPHA", "0.18")
+)
+TRAINING_DATASET_BLEND_SATURATION_SAMPLES: int = int(
+    os.environ.get("TRAINING_DATASET_BLEND_SATURATION_SAMPLES", "2000")
+)
+
+# =============================================================================
+# Online Supervised Acoustic Training (Phase 3)
+# =============================================================================
+TRAINING_MODEL_MIN_TRAIN_SAMPLES: int = int(os.environ.get("TRAINING_MODEL_MIN_TRAIN_SAMPLES", "120"))
+TRAINING_MODEL_MIN_VAL_SAMPLES: int = int(os.environ.get("TRAINING_MODEL_MIN_VAL_SAMPLES", "24"))
+TRAINING_MODEL_MIN_LABEL_SUPPORT: int = int(os.environ.get("TRAINING_MODEL_MIN_LABEL_SUPPORT", "8"))
+TRAINING_MODEL_MIN_ACCURACY: float = float(os.environ.get("TRAINING_MODEL_MIN_ACCURACY", "0.55"))
+TRAINING_MODEL_PROMOTION_MARGIN: float = float(os.environ.get("TRAINING_MODEL_PROMOTION_MARGIN", "0.02"))
+TRAINING_MODEL_RETRAIN_EVERY_N: int = int(os.environ.get("TRAINING_MODEL_RETRAIN_EVERY_N", "25"))
+TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE: int = int(
+    os.environ.get("TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE", "4000")
+)
+
+# =============================================================================
+# Sound Classification (New Pipeline)
+# =============================================================================
+# Sound types: speech, cry, laugh, silence, noise, mixed
+SOUND_CLASSIFICATION_CONFIDENCE_MIN: float = 0.25  # Below this = noise/unknown
+
+# Transcription (AWS Transcribe — always enabled in new pipeline)
+ENABLE_TRANSCRIPTION: bool = os.environ.get("ENABLE_TRANSCRIPTION", "true").lower() == "true"
+TRANSCRIBE_LANGUAGE_CODE: str = os.environ.get("TRANSCRIBE_LANGUAGE_CODE", "en-US")
+ENABLE_TRANSCRIBE_LANGUAGE_ID: bool = os.environ.get("ENABLE_TRANSCRIBE_LANGUAGE_ID", "true").lower() == "true"
+
+# Cry Emotion Training Model
+CRY_MODEL_RETRAIN_THRESHOLD: int = int(os.environ.get("CRY_MODEL_RETRAIN_THRESHOLD", "20"))
+CRY_MODEL_MIN_SAMPLES_PER_EMOTION: int = int(os.environ.get("CRY_MODEL_MIN_SAMPLES_PER_EMOTION", "5"))
+CRY_MODEL_MIN_TOTAL_SAMPLES: int = int(os.environ.get("CRY_MODEL_MIN_TOTAL_SAMPLES", "15"))
+
+# Private Baby Language Model
+PRIVATE_LANG_MATCH_THRESHOLD: float = float(os.environ.get("PRIVATE_LANG_MATCH_THRESHOLD", "0.75"))
+PRIVATE_LANG_MIN_OBSERVATIONS: int = int(os.environ.get("PRIVATE_LANG_MIN_OBSERVATIONS", "2"))

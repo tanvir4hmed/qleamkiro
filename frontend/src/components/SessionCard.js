@@ -1,11 +1,30 @@
 import React from 'react';
 
-const DEVIATION_COLORS = { none: '#4ECDC4', low: '#88D8B0', moderate: '#FFE66D', high: '#FF6B6B' };
+const TYPE_COLORS = {
+  cry: '#FF6B6B',
+  speech: '#4ECDC4',
+  laugh: '#7CCB7C',
+  silence: '#C7C7C7',
+  noise: '#8A8A8A',
+  mixed: '#FFE66D',
+};
 
 function SessionCard({ session, onClick }) {
   const ts = session.timestamp ? new Date(session.timestamp) : null;
-  const devColor = DEVIATION_COLORS[session.deviation_level] || DEVIATION_COLORS.none;
-  const intent = session.insight_summary?.probable_intent;
+  const summary = session.insight_summary;
+
+  // New format fields
+  const displayType = summary?.display_type;
+  const headline = summary?.headline;
+  const icon = summary?.headline_icon;
+  const isAdult = summary?.is_adult;
+
+  // Old format fallback
+  const oldIntent = summary?.probable_intent;
+
+  const dotColor = displayType
+    ? (TYPE_COLORS[displayType] || TYPE_COLORS.mixed)
+    : '#C7C7C7';
 
   return (
     <div className="session-card" onClick={onClick} role="button" tabIndex={0}
@@ -13,25 +32,28 @@ function SessionCard({ session, onClick }) {
       <div className="session-card-header">
         <span className="session-date">{ts ? ts.toLocaleDateString() : '—'}</span>
         <span className="session-time-small">{ts ? ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
-        <span className="deviation-dot" style={{ backgroundColor: devColor }} title={`Deviation: ${session.deviation_level}`} />
+        <span className="deviation-dot" style={{ backgroundColor: dotColor }} title={displayType || 'unknown'} />
       </div>
-      {intent && (
-        <div className="session-intent">
-          <span className="intent-label">{intent.label}</span>
-          <span className="intent-confidence">{Math.round((intent.confidence || 0) * 100)}%</span>
+
+      {/* New format: headline from insight */}
+      {headline ? (
+        <div className="session-card-summary">
+          {icon && <span className="session-card-icon">{icon}</span>}
+          <span className="session-card-headline">{headline}</span>
         </div>
-      )}
-      {session.feature_scores && (
-        <div className="feature-mini-bars">
-          {Object.entries(session.feature_scores).map(([key, val]) => (
-            <div key={key} className="mini-bar-row">
-              <span className="mini-bar-label">{key.replace('_', ' ')}</span>
-              <div className="mini-bar-track">
-                <div className="mini-bar-fill" style={{ width: `${Math.round(val * 100)}%` }} />
-              </div>
-            </div>
-          ))}
+      ) : oldIntent?.label ? (
+        /* Old format fallback */
+        <div className="session-card-summary">
+          <span className="session-card-headline">{oldIntent.label}</span>
         </div>
+      ) : summary === null ? (
+        <div className="session-card-summary">
+          <span className="session-card-headline session-card-processing">Processing...</span>
+        </div>
+      ) : null}
+
+      {isAdult && (
+        <span className="session-card-adult-tag">Adult voice</span>
       )}
     </div>
   );
