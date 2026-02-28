@@ -235,3 +235,23 @@ TRAINING_MODEL_RETRAIN_EVERY_N: int = int(os.environ.get("TRAINING_MODEL_RETRAIN
 TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE: int = int(
     os.environ.get("TRAINING_MODEL_MAX_CANDIDATES_PER_STAGE", "4000")
 )
+
+# =============================================================================
+# Sound Classification (New Pipeline)
+# =============================================================================
+# Sound types: speech, cry, laugh, silence, noise, mixed
+SOUND_CLASSIFICATION_CONFIDENCE_MIN: float = 0.25  # Below this = noise/unknown
+
+# Transcription (AWS Transcribe — always enabled in new pipeline)
+ENABLE_TRANSCRIPTION: bool = os.environ.get("ENABLE_TRANSCRIPTION", "true").lower() == "true"
+TRANSCRIBE_LANGUAGE_CODE: str = os.environ.get("TRANSCRIBE_LANGUAGE_CODE", "en-US")
+ENABLE_TRANSCRIBE_LANGUAGE_ID: bool = os.environ.get("ENABLE_TRANSCRIBE_LANGUAGE_ID", "true").lower() == "true"
+
+# Cry Emotion Training Model
+CRY_MODEL_RETRAIN_THRESHOLD: int = int(os.environ.get("CRY_MODEL_RETRAIN_THRESHOLD", "20"))
+CRY_MODEL_MIN_SAMPLES_PER_EMOTION: int = int(os.environ.get("CRY_MODEL_MIN_SAMPLES_PER_EMOTION", "5"))
+CRY_MODEL_MIN_TOTAL_SAMPLES: int = int(os.environ.get("CRY_MODEL_MIN_TOTAL_SAMPLES", "15"))
+
+# Private Baby Language Model
+PRIVATE_LANG_MATCH_THRESHOLD: float = float(os.environ.get("PRIVATE_LANG_MATCH_THRESHOLD", "0.75"))
+PRIVATE_LANG_MIN_OBSERVATIONS: int = int(os.environ.get("PRIVATE_LANG_MIN_OBSERVATIONS", "2"))
