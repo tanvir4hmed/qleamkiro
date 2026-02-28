@@ -495,11 +495,15 @@ def _get_child_profile(child_id: str) -> Dict:
 
 
 def _save_insight(session_id: str, insight: Dict):
-    """Save insight to session record."""
+    """Save insight to session record.
+
+    The API handler (get_insight) reads ``session.get("insight")`` to determine
+    whether processing is complete, so we must store under the key ``insight``.
+    """
     try:
         session_table.update_item(
             Key={"session_id": session_id},
-            UpdateExpression="SET insight_summary = :ins, insight_generated_at = :ts",
+            UpdateExpression="SET insight = :ins, insight_generated_at = :ts",
             ExpressionAttributeValues={
                 ":ins": _float_to_decimal(insight),
                 ":ts": datetime.now(timezone.utc).isoformat(),
