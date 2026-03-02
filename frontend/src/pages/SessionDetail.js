@@ -3,15 +3,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { API_BASE_URL } from '../aws-config';
 import InsightPanel from '../components/InsightPanel';
+import FeatureChart from '../components/FeatureChart';
 import FeedbackForm from '../components/FeedbackForm';
 
 /**
- * SessionDetail — Clean, simple session analysis page.
+ * SessionDetail — Session analysis page.
  *
- * Shows only what's available:
- * 1. Insight (dynamic based on sound type)
- * 2. Feedback form (cry emotion + baby language, age-appropriate)
- * 3. Disclaimer
+ * Optimized: single fetch for completed sessions (no polling).
+ * Polls only when session is still processing (just recorded).
  */
 
 function SessionDetail() {
@@ -59,7 +58,7 @@ function SessionDetail() {
   useEffect(() => {
     let pollTimeout;
     let pollCount = 0;
-    const MAX_POLLS = 20;
+    const MAX_POLLS = 15;
     let cancelled = false;
 
     const fetchInsight = async () => {
@@ -74,8 +73,8 @@ function SessionDetail() {
             setLoading(false);
             return;
           }
-          // Progressive backoff: 2s, 2s, 3s, 3s, 4s, 5s...
-          const delay = pollCount <= 2 ? 2000 : pollCount <= 4 ? 3000 : Math.min(pollCount * 1000, 5000);
+          // Faster initial polls, then back off: 1.5s, 2s, 2.5s, 3s, 4s, 5s
+          const delay = Math.min(1500 + pollCount * 500, 5000);
           pollTimeout = setTimeout(fetchInsight, delay);
         } else {
           setSession(data);
@@ -112,7 +111,7 @@ function SessionDetail() {
     }
   };
 
-  const childName = session?.child_name || getChildName(session?.child_id || '');
+  const childName = getChildName(session?.child_id || '');
   const ageDays = getChildAgeDays(session?.child_id || '');
 
   if (loading) {
@@ -138,10 +137,17 @@ function SessionDetail() {
   const displayType = insight?.display_type || 'unknown';
   const hasInsight = insight && (insight.headline || insight.display_type);
 
+  // Feature scores for radar chart — check both insight and session level
+  const featureScores = insight?.feature_scores || session?.feature_scores || {};
+  const hasFeatures = featureScores && (
+    featureScores.rhythm > 0 || featureScores.repetition > 0 ||
+    featureScores.emotional_intensity > 0 || featureScores.expressive_flow > 0
+  );
+
   return (
     <div className="session-detail">
       <button className="back-btn" onClick={() => navigate('/')}>
-        ← Back
+        &larr; Back
       </button>
 
       <h1>{childName ? `${childName}'s Session` : 'Session Analysis'}</h1>
@@ -155,6 +161,13 @@ function SessionDetail() {
           <section className="insight-section">
             <InsightPanel insight={insight} />
           </section>
+
+          {/* Audio Feature Radar Chart */}
+          {hasFeatures && (
+            <section className="feature-chart-section">
+              <FeatureChart features={featureScores} />
+            </section>
+          )}
 
           {/* Feedback */}
           {!feedbackSubmitted ? (
@@ -172,7 +185,7 @@ function SessionDetail() {
             </section>
           ) : (
             <div className="feedback-thanks">
-              ✓ Thank you — your feedback helps Qleam learn!
+              &#10003; Thank you — your feedback helps Qleam learn!
             </div>
           )}
 

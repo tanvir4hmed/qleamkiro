@@ -189,9 +189,15 @@ def _parse_transcription_result(
         job_data = status.get("TranscriptionJob", {})
         language = job_data.get("LanguageCode", "")
         if not language:
-            lang_codes = job_data.get("IdentifiedLanguageScore")
-            if isinstance(lang_codes, dict) and lang_codes:
-                language = max(lang_codes, key=lang_codes.get)
+            # IdentifyMultipleLanguages returns LanguageIdentification list
+            lang_id = job_data.get("LanguageIdentification", [])
+            if isinstance(lang_id, list) and lang_id:
+                language = max(lang_id, key=lambda x: x.get("Score", 0)).get("LanguageCode", "")
+            else:
+                # Fallback: IdentifyLanguage returns IdentifiedLanguageScore dict
+                lang_codes = job_data.get("IdentifiedLanguageScore")
+                if isinstance(lang_codes, dict) and lang_codes:
+                    language = max(lang_codes, key=lang_codes.get)
 
         # Split into sentences
         sentences = _split_sentences(full_text)

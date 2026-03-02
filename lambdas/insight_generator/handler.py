@@ -141,6 +141,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "disclaimer": DISCLAIMER,
         "classification_scores": classification_scores,
         "classification_confidence": classification_confidence,
+        "feature_scores": feature_scores,
     }
 
     # --- Fast reject path ---
@@ -182,15 +183,25 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         except Exception as e:
             logger.warning(f"Private language matching failed: {e}")
 
-    # --- Route by sound type ---
-    if sound_type == "silence":
+    # --- Adult gate: single unified path when is_adult=True ---
+    # Also check word analysis for adult speaker detection
+    word_speaker = (word_age_analysis or {}).get("speaker_assessment", "uncertain")
+    effective_adult = is_adult or word_speaker == "adult"
+
+    if effective_adult and sound_type not in ("silence", "noise"):
+        insight = _build_adult_insight(
+            insight, sound_type, word_analysis, word_age_analysis,
+        )
+
+    # --- Route by sound type (baby paths only) ---
+    elif sound_type == "silence":
         insight = _build_silence_insight(insight)
 
     elif sound_type == "noise":
         insight = _build_noise_insight(insight)
 
     elif sound_type == "laugh":
-        insight = _build_laugh_insight(insight, is_adult, age_days,
+        insight = _build_laugh_insight(insight, age_days,
                                        word_analysis, word_age_analysis, private_lang_match)
 
     elif sound_type == "cry":
@@ -203,23 +214,19 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             logger.warning(f"Cry model prediction failed: {e}")
 
         insight = _build_cry_insight(
-            insight, sound_features, age_days, is_adult,
+            insight, sound_features, age_days,
             trained_cry, word_analysis, word_age_analysis, private_lang_match,
         )
 
         # --- 4-Source Evidence Model (v3) for intent determination ---
-        if not is_adult and feature_scores:
+        if feature_scores:
             try:
-                # Get developmental stage from profile
                 dev_stage = profile.get("developmental_stage", "UNKNOWN")
                 session_count = int(profile.get("session_count", 0) or 0)
                 parent_trust = float(profile.get("parent_trust_score", 0.5) or 0.5)
                 ctx_reliability = float(profile.get("context_reliability", 0.8) or 0.8)
 
-                # Get cluster for this session (if available)
                 cluster = _get_sound_cluster(child_id, embedding_vector)
-
-                # Get FL population prior (if available)
                 pop_prior = _get_population_prior(dev_stage)
 
                 evidence_result = determine_probable_intent_v3(
@@ -236,7 +243,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     cry_model_result=trained_cry,
                 )
 
-                # Attach evidence model results to insight
                 insight["probable_intent"] = evidence_result.get("key")
                 insight["intent_label"] = evidence_result.get("label")
                 insight["intent_confidence"] = evidence_result.get("confidence")
@@ -244,22 +250,20 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 insight["evidence"] = evidence_result.get("evidence", {})
                 insight["model_version"] = evidence_result.get("model_version", "v3_4source")
 
-                # Store EFP for feedback comparison
                 _store_evidence_fingerprint(session_id, evidence_result.get("evidence_fingerprint", {}))
             except Exception as e:
                 logger.warning(f"Evidence model v3 failed (non-fatal): {e}")
 
     elif sound_type == "speech":
         insight = _build_speech_insight(
-            insight, word_analysis, word_age_analysis, is_adult,
+            insight, word_analysis, word_age_analysis,
             age_days, private_lang_match, sound_features,
         )
 
     else:  # mixed
-        # For mixed: check which components are present
         insight = _build_mixed_insight(
             insight, sound_classification, sound_features,
-            word_analysis, word_age_analysis, is_adult, age_days,
+            word_analysis, word_age_analysis, age_days,
             private_lang_match,
         )
 
@@ -305,6 +309,37 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 # Insight builders per sound type
 # ---------------------------------------------------------------------------
 
+def _build_adult_insight(
+    insight: Dict,
+    sound_type: str,
+    word_analysis: Optional[Dict],
+    word_age_analysis: Optional[Dict],
+) -> Dict:
+    """Unified path for all non-baby speakers.
+
+    Shows:
+      - "Another person detected — not your baby"
+      - Transcript (if words found)
+      - Sound analysis graph (classification_scores already in insight)
+      - Nothing else (no cry emotion, no age mismatch, no Dunstan)
+    """
+    insight["display_type"] = "adult"
+    insight["headline"] = "Another person detected — not your baby"
+    insight["headline_icon"] = "🔊"
+    insight["adult_detected"] = True
+
+    sound_label = {"cry": "Crying", "laugh": "Laughter", "speech": "Speech", "mixed": "Mixed sounds"}
+    detected = sound_label.get(sound_type, "Sound")
+    insight["description"] = (
+        f"{detected} was detected but it appears to be from another person, not your baby."
+    )
+
+    # Always attach transcript if words were found
+    _attach_word_info(insight, word_analysis, word_age_analysis)
+
+    return insight
+
+
 def _build_silence_insight(insight: Dict) -> Dict:
     insight["display_type"] = "silence"
     insight["headline"] = "No sound detected"
@@ -323,30 +358,21 @@ def _build_noise_insight(insight: Dict) -> Dict:
 
 def _build_laugh_insight(
     insight: Dict,
-    is_adult: bool,
     age_days: Optional[int],
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
     private_lang_match: Optional[Dict],
 ) -> Dict:
+    """Baby laugh path only — adult case handled by _build_adult_insight."""
     insight["display_type"] = "laugh"
     is_toddler = age_days is not None and age_days >= 730
     child_label = "child" if is_toddler else "baby"
 
-    if is_adult:
-        insight["headline"] = "Laughing detected — Not your baby"
-        insight["headline_icon"] = "😄"
-        insight["description"] = "Laughter was detected but it appears to be from another person, not your baby."
-        insight["adult_detected"] = True
-    else:
-        insight["headline"] = f"Your {child_label} is laughing!"
-        insight["headline_icon"] = "😄"
-        insight["description"] = f"Happy, joyful laughter detected. Your {child_label} sounds content and delighted!"
+    insight["headline"] = f"Your {child_label} is laughing!"
+    insight["headline_icon"] = "😄"
+    insight["description"] = f"Happy, joyful laughter detected. Your {child_label} sounds content and delighted!"
 
-    # Add words if found (always show)
     _attach_word_info(insight, word_analysis, word_age_analysis)
-
-    # Add private language if matched
     _attach_private_language(insight, private_lang_match)
 
     return insight
@@ -356,23 +382,13 @@ def _build_cry_insight(
     insight: Dict,
     sound_features: Dict,
     age_days: Optional[int],
-    is_adult: bool,
     trained_cry: Optional[Dict],
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
     private_lang_match: Optional[Dict],
 ) -> Dict:
+    """Baby cry path only — adult case handled by _build_adult_insight."""
     insight["display_type"] = "cry"
-
-    # Adult check — also trust word_age_analysis if feature extraction missed it
-    word_speaker = (word_age_analysis or {}).get("speaker_assessment", "uncertain")
-    if is_adult or word_speaker == "adult":
-        insight["headline"] = "Crying detected — Adult voice"
-        insight["headline_icon"] = "🔊"
-        insight["description"] = "Crying or distress sounds were detected but they appear to be from an adult speaker."
-        insight["adult_detected"] = True
-        _attach_word_info(insight, word_analysis, word_age_analysis)
-        return insight
 
     # Cry emotion analysis
     cry_result = analyze_cry(
@@ -430,65 +446,46 @@ def _build_speech_insight(
     insight: Dict,
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
-    is_adult: bool,
     age_days: Optional[int],
     private_lang_match: Optional[Dict],
     sound_features: Dict,
 ) -> Dict:
+    """Baby speech path only — adult case handled by _build_adult_insight."""
     insight["display_type"] = "speech"
 
-    # Use "child" for 24m+, "baby" for younger
-    is_toddler = age_days is not None and age_days >= 730  # ~24 months
+    is_toddler = age_days is not None and age_days >= 730
     child_label = "child" if is_toddler else "baby"
 
     if not word_analysis or not word_analysis.get("has_words"):
-        # Speech-like sounds but no clear words
-        if is_adult:
-            insight["headline"] = "Adult speech detected"
-            insight["headline_icon"] = "🔊"
-            insight["description"] = "Speech sounds were detected from an adult speaker but no clear words could be transcribed."
-            insight["adult_detected"] = True
+        insight["headline"] = f"Your {child_label} is vocalizing"
+        insight["headline_icon"] = "🗣️"
+        if is_toddler:
+            insight["description"] = "Your child is making speech sounds! Vocal expression and practice are key to language growth."
         else:
-            insight["headline"] = f"Your {child_label} is vocalizing"
-            insight["headline_icon"] = "🗣️"
-            if is_toddler:
-                insight["description"] = "Your child is making speech sounds! Vocal expression and practice are key to language growth."
-            else:
-                insight["description"] = "Your baby is making speech-like sounds! Babbling and vocal play are important steps in language development."
-            # Check private language
-            _attach_private_language(insight, private_lang_match)
+            insight["description"] = "Your baby is making speech-like sounds! Babbling and vocal play are important steps in language development."
+        _attach_private_language(insight, private_lang_match)
         return insight
 
     # Words found
     words = word_analysis
     age_info = word_age_analysis or {}
-    speaker = age_info.get("speaker_assessment", "uncertain")
 
-    if is_adult or speaker == "adult":
-        insight["headline"] = "Adult speech detected"
-        insight["headline_icon"] = "🔊"
-        insight["description"] = f"Speech detected with {words['word_count']} word(s). The voice characteristics suggest an adult speaker."
-        insight["adult_detected"] = True
-    else:
-        if words.get("has_sentences"):
-            if is_toddler:
-                insight["headline"] = "Your child is speaking in sentences!"
-            else:
-                insight["headline"] = "Your baby is forming sentences!"
-            insight["headline_icon"] = "🗣️"
-        elif words["word_count"] > 1:
-            insight["headline"] = f"Your {child_label} said {words['word_count']} words!"
-            insight["headline_icon"] = "🗣️"
+    if words.get("has_sentences"):
+        if is_toddler:
+            insight["headline"] = "Your child is speaking in sentences!"
         else:
-            insight["headline"] = "Word detected!"
-            insight["headline_icon"] = "🗣️"
+            insight["headline"] = "Your baby is forming sentences!"
+        insight["headline_icon"] = "🗣️"
+    elif words["word_count"] > 1:
+        insight["headline"] = f"Your {child_label} said {words['word_count']} words!"
+        insight["headline_icon"] = "🗣️"
+    else:
+        insight["headline"] = "Word detected!"
+        insight["headline_icon"] = "🗣️"
 
-        insight["description"] = age_info.get("display_summary", f"{words['word_count']} word(s) detected")
+    insight["description"] = age_info.get("display_summary", f"{words['word_count']} word(s) detected")
 
-    # Always attach word details
     _attach_word_info(insight, word_analysis, word_age_analysis)
-
-    # Private language
     _attach_private_language(insight, private_lang_match)
 
     return insight
@@ -500,11 +497,14 @@ def _build_mixed_insight(
     sound_features: Dict,
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
-    is_adult: bool,
     age_days: Optional[int],
     private_lang_match: Optional[Dict],
 ) -> Dict:
-    """Handle mixed sound types — prioritize what to show."""
+    """Handle mixed sound types — baby path only (adult handled upstream).
+
+    Key change: when BOTH speech and cry are present, show both sections
+    instead of suppressing one.
+    """
     insight["display_type"] = "mixed"
 
     scores = sound_classification.get("scores", {})
@@ -512,32 +512,79 @@ def _build_mixed_insight(
     cry_score = scores.get("cry", 0)
     laugh_score = scores.get("laugh", 0)
 
-    # Priority 1: words detected — always show speech path
-    if word_analysis and word_analysis.get("has_words"):
+    has_words = word_analysis and word_analysis.get("has_words")
+    has_cry = cry_score > 0.3
+    has_laugh = laugh_score > 0.3
+
+    # Both speech/words AND cry — show BOTH sections
+    if has_words and has_cry:
+        # Run cry analysis for the cry component
+        age_bracket = get_age_bracket(age_days)
+        trained_cry = None
+        try:
+            trained_cry = predict_cry_emotion(sound_features, age_bracket, model_registry_table)
+        except Exception as e:
+            logger.warning(f"Mixed cry model prediction failed: {e}")
+
+        cry_result = analyze_cry(
+            features=sound_features,
+            age_days=age_days,
+            trained_model_result=trained_cry,
+        )
+
+        # Build as speech primary with cry section attached
+        insight = _build_speech_insight(
+            insight, word_analysis, word_age_analysis,
+            age_days, private_lang_match, sound_features,
+        )
+        insight["display_type"] = "mixed"
+
+        # Attach cry analysis as secondary section
+        insight["cry_detected"] = True
+        insight["cry_section"] = {
+            "emotion": cry_result["primary_emotion"],
+            "emotion_label": cry_result["emotion_label"],
+            "emotion_icon": cry_result["emotion_icon"],
+            "confidence": cry_result["confidence"],
+            "what_i_hear": cry_result["what_hearing"],
+            "what_it_means": cry_result["what_means"],
+            "what_to_try": cry_result["what_try"],
+        }
+        if cry_result.get("dunstan_sound"):
+            insight["cry_section"]["dunstan_sound"] = cry_result["dunstan_sound"]
+        return insight
+
+    # Words found but no cry — speech path
+    if has_words:
         return _build_speech_insight(
-            insight, word_analysis, word_age_analysis, is_adult,
+            insight, word_analysis, word_age_analysis,
             age_days, private_lang_match, sound_features,
         )
 
-    # Priority 2: speech score dominates over cry by a clear margin (>=0.15)
-    # Handles case where transcription found no words (e.g. mixed-language speech)
-    # but speech signal is clearly stronger than cry
+    # Speech score dominates over cry — speech path
     if speech_score >= cry_score + 0.15:
         return _build_speech_insight(
-            insight, word_analysis, word_age_analysis, is_adult,
+            insight, word_analysis, word_age_analysis,
             age_days, private_lang_match, sound_features,
         )
 
-    # Priority 3: cry component present
-    if cry_score > 0.3:
+    # Cry component present — run cry with trained model
+    if has_cry:
+        age_bracket = get_age_bracket(age_days)
+        trained_cry = None
+        try:
+            trained_cry = predict_cry_emotion(sound_features, age_bracket, model_registry_table)
+        except Exception as e:
+            logger.warning(f"Mixed cry model prediction failed: {e}")
+
         return _build_cry_insight(
-            insight, sound_features, age_days, is_adult,
-            None, word_analysis, word_age_analysis, private_lang_match,
+            insight, sound_features, age_days,
+            trained_cry, word_analysis, word_age_analysis, private_lang_match,
         )
 
-    if laugh_score > 0.3:
+    if has_laugh:
         return _build_laugh_insight(
-            insight, is_adult, age_days, word_analysis, word_age_analysis, private_lang_match,
+            insight, age_days, word_analysis, word_age_analysis, private_lang_match,
         )
 
     # Fallback

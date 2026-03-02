@@ -14,6 +14,7 @@ const DISPLAY_COLORS = {
   silence: '#C7C7C7',
   noise: '#8A8A8A',
   mixed: '#FFE66D',
+  adult: '#B0B0B0',
 };
 
 const SCORE_LABELS = {
@@ -113,6 +114,8 @@ function InsightPanel({ insight }) {
     private_language,
     classification_scores,
     sound_type,
+    cry_section,
+    cry_detected,
   } = insight;
 
   // Backward compat for old sessions
@@ -139,10 +142,11 @@ function InsightPanel({ insight }) {
         <p className="insight-description">{description}</p>
       )}
 
-      {/* Adult warning */}
-      {adult_detected && (
+      {/* Adult notice — only show extra alert if display_type is NOT 'adult'
+           (when it IS 'adult', the headline already says it) */}
+      {adult_detected && display_type !== 'adult' && (
         <div className="insight-alert insight-alert--adult">
-          🔊 Adult voice detected in this recording
+          Another person detected in this recording
         </div>
       )}
 
@@ -289,6 +293,57 @@ function InsightPanel({ insight }) {
               <span className="meta-chip">{Math.round(private_language.confidence * 100)}% match</span>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Cry section for mixed sounds (speech + cry detected together) */}
+      {cry_detected && cry_section && (
+        <div className="insight-cry-section">
+          <div className="insight-section-header">
+            <span className="section-icon">{cry_section.emotion_icon || '😢'}</span>
+            <h3>Cry Also Detected</h3>
+          </div>
+          <p className="cry-section-label">{cry_section.emotion_label}</p>
+          {cry_section.confidence > 0 && (
+            <ConfidenceBar confidence={cry_section.confidence} />
+          )}
+          {cry_section.what_i_hear && (
+            <div className="insight-block insight-block--hear">
+              <div className="insight-block-header">
+                <span className="insight-block-icon">👂</span>
+                <h4>What I'm hearing</h4>
+              </div>
+              <p>{cry_section.what_i_hear}</p>
+            </div>
+          )}
+          {cry_section.what_it_means && (
+            <div className="insight-block insight-block--means">
+              <div className="insight-block-header">
+                <span className="insight-block-icon">💭</span>
+                <h4>What it might mean</h4>
+              </div>
+              <p>{cry_section.what_it_means}</p>
+            </div>
+          )}
+          {cry_section.what_to_try && cry_section.what_to_try.length > 0 && (
+            <div className="insight-block insight-block--try">
+              <div className="insight-block-header">
+                <span className="insight-block-icon">✋</span>
+                <h4>What you can try</h4>
+              </div>
+              <ol className="try-list">
+                {cry_section.what_to_try.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {cry_section.dunstan_sound && (
+            <div className="insight-dunstan">
+              <span className="dunstan-label">Dunstan sound:</span>
+              <span className="dunstan-value">{cry_section.dunstan_sound}</span>
+            </div>
+          )}
         </div>
       )}
 

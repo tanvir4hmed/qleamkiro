@@ -702,35 +702,18 @@ def get_insight(event: Dict) -> Dict:
             "confidence": session.get("confidence"),
         }
 
-    # Fetch child name for personalization
     child_id = session.get("child_id", "")
-    child_name = ""
-    if child_id:
-        try:
-            profile_resp = child_profile_table.get_item(
-                Key={"child_id": child_id},
-                ProjectionExpression="#n",
-                ExpressionAttributeNames={"#n": "name"},
-            )
-            child_name = profile_resp.get("Item", {}).get("name", "")
-        except Exception:
-            pass
 
     return response(200, {
         "session_id": session_id,
         "child_id": child_id,
-        "child_name": child_name,
         "insight": insight,
         "timestamp": session.get("timestamp"),
-        # Phase 3: Session context (feeding time, health state, environment)
+        "feature_scores": session.get("feature_scores", {}),
         "session_context": session.get("session_context"),
-        # Phase 6: Developmental tracking output
         "developmental_view": session.get("developmental_view"),
-        # Phase 6: Concept graph decode output
         "concept_decode": session.get("concept_decode"),
-        # Phase 7: Speech analysis output (LINGUISTIC mode only)
         "speech_analysis": session.get("speech_analysis"),
-        # Phase 1: Biological validation summary
         "biological": {
             k: v for k, v in (session.get("biological") or {}).items()
             if k in ("vtl_cm", "f0_hz", "is_infant", "vtl_zone", "bio_confidence")
