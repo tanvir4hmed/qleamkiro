@@ -116,7 +116,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # Core classification from feature extraction
     sound_type = event.get("sound_type", "noise")
     is_adult = event.get("is_adult", False)
-    routing = event.get("routing", {})
     sound_features = event.get("sound_features", {})
     sound_classification = event.get("sound_classification", {})
     embedding_vector = event.get("embedding_vector", [])
@@ -153,12 +152,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         _save_insight(session_id, insight)
         return {"status": "insight_generated", "session_id": session_id, "insight": insight}
 
-    # --- ALWAYS: Check for words via transcription ---
+    # --- ALWAYS: Transcribe audio to detect words ---
+    # Runs for ALL sound types — the classifier can misclassify speech as cry,
+    # and words/adult detection depends on transcription output.
     transcript_result = None
     word_analysis = None
     word_age_analysis = None
 
-    if routing.get("run_transcription", False) or sound_type in ("speech", "mixed"):
+    if sound_type not in ("silence",):
         try:
             transcript_result = transcribe_audio(
                 s3_audio_path,
