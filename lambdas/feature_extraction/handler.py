@@ -302,7 +302,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
 
 def _determine_is_adult(bio_result: Dict, age_classification: Dict, age_days: Optional[int] = None) -> bool:
-    """Determine if the speaker is an adult.
+    """Determine if the speaker is NOT the registered baby.
+
+    Returns True when the voice is an adult OR an older child that is clearly
+    not the registered baby (e.g. a 6-year-old recorded in a 3-month-old's session).
 
     When age_days indicates a registered baby < 36 months, require higher
     confidence to classify as adult (0.75 / 0.70 instead of 0.60 / 0.55).
@@ -311,11 +314,23 @@ def _determine_is_adult(bio_result: Dict, age_classification: Dict, age_days: Op
     cls_threshold = 0.75 if is_registered_baby else 0.60
     bio_threshold = 0.70 if is_registered_baby else 0.55
 
+    final_class = ""
+    cls_conf = 0.0
+
     # Check age classifier first (more comprehensive)
     if age_classification:
         is_adult_cls = age_classification.get("is_adult", False)
-        conf = float(age_classification.get("confidence", 0))
-        if is_adult_cls and conf >= cls_threshold:
+        final_class = age_classification.get("final_class", "")
+        cls_conf = float(age_classification.get("confidence", 0))
+        if is_adult_cls and cls_conf >= cls_threshold:
+            return True
+
+    # For very young registered babies (< 12 months), a "child" or "toddler"
+    # classification also means it's not the registered baby.
+    # A 6-year-old has F0/VTL between baby and adult — classifier returns "child"
+    # not "adult", but they're clearly not a 3-month infant.
+    if is_registered_baby and age_days is not None and age_days < 365:
+        if final_class in ("child", "toddler") and cls_conf >= 0.55:
             return True
 
     # Check bio validation

@@ -334,9 +334,9 @@ def _build_laugh_insight(
     child_label = "child" if is_toddler else "baby"
 
     if is_adult:
-        insight["headline"] = "Laughing detected — Adult voice"
+        insight["headline"] = "Laughing detected — Not your baby"
         insight["headline_icon"] = "😄"
-        insight["description"] = "Laughter was detected but it appears to be from an adult speaker."
+        insight["description"] = "Laughter was detected but it appears to be from another person, not your baby."
         insight["adult_detected"] = True
     else:
         insight["headline"] = f"Your {child_label} is laughing!"
@@ -364,8 +364,9 @@ def _build_cry_insight(
 ) -> Dict:
     insight["display_type"] = "cry"
 
-    # Adult check
-    if is_adult:
+    # Adult check — also trust word_age_analysis if feature extraction missed it
+    word_speaker = (word_age_analysis or {}).get("speaker_assessment", "uncertain")
+    if is_adult or word_speaker == "adult":
         insight["headline"] = "Crying detected — Adult voice"
         insight["headline_icon"] = "🔊"
         insight["description"] = "Crying or distress sounds were detected but they appear to be from an adult speaker."
@@ -397,14 +398,16 @@ def _build_cry_insight(
     if cry_result.get("dunstan_sound"):
         insight["dunstan_sound"] = cry_result["dunstan_sound"]
 
-    # Age cry match
+    # Age cry match — only show when brackets are actually different
     age_cry_match = cry_result.get("age_cry_match", {})
-    if age_cry_match.get("mismatch"):
+    probable_bracket = age_cry_match.get("probable_age_bracket", "")
+    registered_bracket = age_cry_match.get("registered_age_bracket", "")
+    if age_cry_match.get("mismatch") and probable_bracket and registered_bracket and probable_bracket != registered_bracket:
         insight["age_mismatch"] = {
             "type": "cry_frequency",
             "message": (
-                f"Cry pattern suggests {age_cry_match.get('probable_age_bracket', 'unknown')} "
-                f"but child is registered as {age_cry_match.get('registered_age_bracket', 'unknown')}"
+                f"Cry pattern suggests {probable_bracket} "
+                f"but child is registered as {registered_bracket}"
             ),
             "details": age_cry_match,
         }
@@ -504,22 +507,35 @@ def _build_mixed_insight(
     """Handle mixed sound types — prioritize what to show."""
     insight["display_type"] = "mixed"
 
-    # Priority: words > cry > laugh > noise
+    scores = sound_classification.get("scores", {})
+    speech_score = scores.get("speech", 0)
+    cry_score = scores.get("cry", 0)
+    laugh_score = scores.get("laugh", 0)
+
+    # Priority 1: words detected — always show speech path
     if word_analysis and word_analysis.get("has_words"):
         return _build_speech_insight(
             insight, word_analysis, word_age_analysis, is_adult,
             age_days, private_lang_match, sound_features,
         )
 
-    # Check for cry component
-    scores = sound_classification.get("scores", {})
-    if scores.get("cry", 0) > 0.3:
+    # Priority 2: speech score dominates over cry by a clear margin (>=0.15)
+    # Handles case where transcription found no words (e.g. mixed-language speech)
+    # but speech signal is clearly stronger than cry
+    if speech_score >= cry_score + 0.15:
+        return _build_speech_insight(
+            insight, word_analysis, word_age_analysis, is_adult,
+            age_days, private_lang_match, sound_features,
+        )
+
+    # Priority 3: cry component present
+    if cry_score > 0.3:
         return _build_cry_insight(
             insight, sound_features, age_days, is_adult,
             None, word_analysis, word_age_analysis, private_lang_match,
         )
 
-    if scores.get("laugh", 0) > 0.3:
+    if laugh_score > 0.3:
         return _build_laugh_insight(
             insight, is_adult, age_days, word_analysis, word_age_analysis, private_lang_match,
         )

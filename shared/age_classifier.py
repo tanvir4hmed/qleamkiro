@@ -357,6 +357,22 @@ def apply_conservative_adult_gate(
             (vtl_cm > 14.5) if vtl_cm > 0.0 else False
         ) and (hnr > 18.0) and (jitter < 1.8) and (shimmer_db < 1.6)
 
+    # Strong adult signal bypass: F0 and VTL are physically robust — background
+    # noise (fan, wind) affects HNR and jitter but NOT vocal tract length or F0.
+    # If both are clearly in adult territory, skip noise-sensitive conditions.
+    strong_adult_signal = (
+        f0_mean > 0.0 and f0_mean < 160.0      # Clearly adult F0, not overlap zone
+        and vtl_cm > 15.5                        # Clearly adult VTL (male ~17cm, female ~15.5cm+)
+        and cry < 0.02                           # Not crying
+        and voice_type in ("structured_speech", "sustained_tone")
+    )
+    if strong_adult_signal:
+        logger.debug(
+            f"Strong adult signal bypass: f0={f0_mean:.0f}Hz vtl={vtl_cm:.1f}cm "
+            f"— HNR/jitter skipped (background noise tolerant)"
+        )
+        return probs  # Adult confirmed via strong F0+VTL signal
+
     gate: list = [
         (f0_mean < 180.0) or overlap_adult,
         (vtl_cm > vtl_threshold) if vtl_cm > 0.0 else True,   # Pass when VTL unavailable
