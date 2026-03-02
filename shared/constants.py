@@ -255,3 +255,50 @@ CRY_MODEL_MIN_TOTAL_SAMPLES: int = int(os.environ.get("CRY_MODEL_MIN_TOTAL_SAMPL
 # Private Baby Language Model
 PRIVATE_LANG_MATCH_THRESHOLD: float = float(os.environ.get("PRIVATE_LANG_MATCH_THRESHOLD", "0.75"))
 PRIVATE_LANG_MIN_OBSERVATIONS: int = int(os.environ.get("PRIVATE_LANG_MIN_OBSERVATIONS", "2"))
+
+# =============================================================================
+# 4-Source Evidence Model (Phase 11)
+# Sources: acoustic, self_learning, research, context
+# Weights are stage-specific — as baby grows, self-learning increases
+# and research decreases (less literature needed, more data available).
+# =============================================================================
+EVIDENCE_4SOURCE_STAGE_WEIGHTS = {
+    "NEWBORN":           {"acoustic": 0.40, "self_learning": 0.10, "research": 0.35, "context": 0.15},
+    "EARLY_VOCAL":       {"acoustic": 0.45, "self_learning": 0.15, "research": 0.25, "context": 0.15},
+    "CANONICAL_BABBLE":  {"acoustic": 0.48, "self_learning": 0.22, "research": 0.18, "context": 0.12},
+    "PROTO_WORDS":       {"acoustic": 0.50, "self_learning": 0.25, "research": 0.15, "context": 0.10},
+    "FIRST_WORDS":       {"acoustic": 0.50, "self_learning": 0.28, "research": 0.12, "context": 0.10},
+    "WORD_COMBINATIONS": {"acoustic": 0.50, "self_learning": 0.30, "research": 0.10, "context": 0.10},
+    "EARLY_SENTENCES":   {"acoustic": 0.48, "self_learning": 0.35, "research": 0.07, "context": 0.10},
+    "UNKNOWN":           {"acoustic": 0.50, "self_learning": 0.20, "research": 0.20, "context": 0.10},
+}
+
+# Self-learning redistribution bias — when self_learning source is missing,
+# its weight redistributes to other sources with a slight preference for
+# self_learning's closest proxy (acoustic).
+SELF_LEARNING_REDISTRIBUTION_BIAS: float = 0.05
+
+# FRS (Parent Trust Score) constants
+FRS_ALPHA_INCREASE: float = 0.12   # Alpha when trust grows (agreement)
+FRS_ALPHA_DECREASE: float = 0.04   # Alpha when trust shrinks (contradiction)
+FRS_FLOOR: float = 0.05            # Never fully distrust
+FRS_CEILING: float = 0.95          # Never fully trust
+FRS_INITIAL: float = 0.50          # Starting trust for new parents
+
+# CRS (Context Reliability Score) constants
+CRS_ALPHA_NORMAL: float = 0.10
+CRS_ALPHA_ADVERSARIAL: float = 0.40
+CRS_FLOOR: float = 0.20
+CRS_CEILING: float = 1.00
+CRS_INITIAL: float = 0.80
+
+# Delta Score weights
+DELTA_SCORE_RMS_WEIGHT: float = 0.60
+DELTA_SCORE_EPS_WEIGHT: float = 0.40
+
+# Fraud signal thresholds
+FRAUD_MISCLICK_SECONDS: float = 3.0     # < 3s after insight = misclick
+FRAUD_UNIFORM_RATIO: float = 0.80       # >= 80% same in last 10 = uniform pattern
+FRAUD_UNIFORM_WINDOW: int = 10          # Window size for uniform pattern detection
+FRAUD_ADVERSARIAL_FRS: float = 0.20     # FRS below this = adversarial
+FRAUD_ADVERSARIAL_ALPHA: float = 0.25   # Fast re-assessment alpha

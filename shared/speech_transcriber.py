@@ -35,6 +35,7 @@ def transcribe_audio(
     bucket: Optional[str] = None,
     language_code: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
+    preferred_language: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Transcribe audio from S3 using AWS Transcribe.
@@ -44,6 +45,9 @@ def transcribe_audio(
         bucket: S3 bucket (defaults to env var)
         language_code: Language code (defaults to auto-detect)
         timeout_seconds: Max wait time
+        preferred_language: Expected language (e.g. "en-US"). When set and
+            auto-detection finds a different language, the result will include
+            ``language_mismatch: True`` and ``detected_language``.
 
     Returns:
         {
@@ -55,6 +59,9 @@ def transcribe_audio(
             "sentences": [str],         # Detected sentences
             "sentence_count": int,
             "language_code": str,
+            "detected_language": str,   # Raw detected language code
+            "preferred_language": str,  # Requested language
+            "language_mismatch": bool,  # True when detected != preferred
             "overall_confidence": float,
             "transcribe_attempted": True,
             "success": bool,
@@ -62,6 +69,7 @@ def transcribe_audio(
     """
     bucket = bucket or S3_BUCKET_NAME
     timeout = timeout_seconds or TRANSCRIBE_TIMEOUT_SECONDS
+    preferred_lang = preferred_language or TRANSCRIBE_LANGUAGE_CODE
 
     try:
         transcribe_client = boto3.client("transcribe")
@@ -113,7 +121,7 @@ def transcribe_audio(
             job_status = status["TranscriptionJob"]["TranscriptionJobStatus"]
 
             if job_status == "COMPLETED":
-                result = _parse_transcription_result(status, bucket, job_name)
+                result = _parse_transcription_result(status, bucket, job_name, preferred_lang)
                 _cleanup_transcription_job(transcribe_client, job_name)
                 return result
             elif job_status == "FAILED":
@@ -138,6 +146,7 @@ def _parse_transcription_result(
     status: Dict,
     bucket: str,
     job_name: str,
+    preferred_language: str = "en-US",
 ) -> Dict[str, Any]:
     """Parse the transcription result from S3."""
     try:
@@ -193,6 +202,11 @@ def _parse_transcription_result(
         else:
             overall_conf = 0.0
 
+        # Detect language mismatch (e.g. Japanese detected when English expected)
+        lang_prefix = language.split("-")[0].lower() if language else ""
+        pref_prefix = preferred_language.split("-")[0].lower() if preferred_language else ""
+        language_mismatch = bool(lang_prefix and pref_prefix and lang_prefix != pref_prefix)
+
         return {
             "text": full_text,
             "words": words,
@@ -200,6 +214,9 @@ def _parse_transcription_result(
             "sentences": sentences,
             "sentence_count": len(sentences),
             "language_code": language,
+            "detected_language": language,
+            "preferred_language": preferred_language,
+            "language_mismatch": language_mismatch,
             "overall_confidence": round(overall_conf, 3),
             "transcribe_attempted": True,
             "success": len(full_text) > 0,
@@ -240,6 +257,9 @@ def _empty_result(reason: str = "") -> Dict[str, Any]:
         "sentences": [],
         "sentence_count": 0,
         "language_code": "",
+        "detected_language": "",
+        "preferred_language": "",
+        "language_mismatch": False,
         "overall_confidence": 0.0,
         "transcribe_attempted": True,
         "success": False,

@@ -678,7 +678,17 @@ def get_insight(event: Dict) -> Dict:
 
     insight = session.get("insight")
     if not insight:
-        return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
+        # Old sessions that are processed but have no insight (pre-analysis system)
+        # Return a legacy placeholder instead of perpetual "processing" state
+        insight = {
+            "display_type": "legacy",
+            "headline": "Session completed",
+            "headline_icon": "📋",
+            "description": "This session was processed before the current analysis system. Re-record for full analysis.",
+            "legacy": True,
+            "probable_intent": session.get("probable_intent"),
+            "confidence": session.get("confidence"),
+        }
 
     # Fetch child name for personalization
     child_id = session.get("child_id", "")

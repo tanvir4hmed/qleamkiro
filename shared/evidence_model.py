@@ -878,3 +878,501 @@ def determine_probable_intent_v2(
             "hunger_discomfort_adjustment": hunger_discomfort_meta,
         },
     }
+
+
+# ===========================================================================
+# Phase 11 — Four-Source Evidence Model (v3)
+# Sources: Acoustic (50%), Self-Learning (25%), Research (15%), Context (10%)
+# ===========================================================================
+
+def _get_4source_weights(developmental_stage: str) -> Dict[str, float]:
+    """Get stage-specific 4-source weights."""
+    try:
+        from constants import EVIDENCE_4SOURCE_STAGE_WEIGHTS
+        stage = (developmental_stage or "UNKNOWN").upper().strip()
+        return dict(EVIDENCE_4SOURCE_STAGE_WEIGHTS.get(stage, EVIDENCE_4SOURCE_STAGE_WEIGHTS["UNKNOWN"]))
+    except ImportError:
+        return {"acoustic": 0.50, "self_learning": 0.20, "research": 0.20, "context": 0.10}
+
+
+def compute_context_scores(
+    session_context: Optional[Dict],
+    context_reliability: float = 0.8,
+    developmental_stage: str = "UNKNOWN",
+) -> Optional[Dict[str, float]]:
+    """
+    Compute intent probability distribution from session context alone.
+
+    Context signals: feeding_minutes_ago, health_state, environment.
+    Extracted from compute_research_priors() — now a standalone source.
+
+    Returns None if no context is available (triggers weight redistribution).
+    """
+    if not session_context:
+        return None
+
+    cr = max(0.2, min(1.0, float(context_reliability)))
+    stage = (developmental_stage or "UNKNOWN").upper().strip()
+
+    # Start from uniform distribution
+    base_priors = normalize_intent_distribution(
+        _STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]),
+        include_technical=False, fill_missing=True,
+    )
+    # Use research prior as baseline, then shift based on context
+    scores = dict(base_priors)
+
+    has_signal = False
+
+    # --- Feeding time signal ---
+    feeding_ago = session_context.get("feeding_minutes_ago")
+    if isinstance(feeding_ago, (int, float)) and feeding_ago >= 0:
+        has_signal = True
+        if feeding_ago >= 180:
+            scores["hunger"] += 0.25 * cr
+        elif feeding_ago >= 120:
+            scores["hunger"] += 0.18 * cr
+        elif feeding_ago >= 90:
+            scores["hunger"] += 0.10 * cr
+        elif feeding_ago <= 30:
+            scores["hunger"] = max(0.0, scores["hunger"] - 0.15 * cr)
+        elif feeding_ago <= 45:
+            scores["hunger"] = max(0.0, scores["hunger"] - 0.10 * cr)
+
+    # --- Health state signal ---
+    health = str(session_context.get("health_state", "") or "").lower().strip()
+    if health in ("sick", "teething", "fussy"):
+        has_signal = True
+        if health == "sick":
+            scores["discomfort"] += 0.15 * cr
+            scores["pain"] += 0.10 * cr
+            scores["distress_unknown"] += 0.05 * cr
+        elif health == "teething":
+            scores["pain"] += 0.15 * cr
+            scores["discomfort"] += 0.12 * cr
+        elif health == "fussy":
+            scores["frustration"] += 0.10 * cr
+            scores["discomfort"] += 0.08 * cr
+
+    # --- Environment signal ---
+    environment = str(session_context.get("environment", "") or "").lower().strip()
+    if environment in ("noisy", "new_place", "car"):
+        has_signal = True
+        if environment == "noisy":
+            scores["discomfort"] += 0.06 * cr
+        elif environment == "new_place":
+            scores["closeness"] += 0.08 * cr
+            scores["exploration"] += 0.05 * cr
+
+    if not has_signal:
+        return None
+
+    scores = {k: max(0.0, v) for k, v in scores.items()}
+    return normalize_intent_distribution(scores, include_technical=False, fill_missing=True)
+
+
+def compute_self_learning_scores(
+    cry_model_result: Optional[Dict] = None,
+    training_model_result: Optional[Dict] = None,
+) -> Optional[Dict[str, float]]:
+    """
+    Blend cry emotion model + training model predictions into a single
+    self-learning evidence source.
+
+    Args:
+        cry_model_result: Output from predict_cry_emotion() — has 'scores' dict
+            and 'confidence' float.
+        training_model_result: Output from stage-level training model predictions —
+            has 'predictions' dict and 'reliability' float.
+
+    Returns None if neither model is available (triggers weight redistribution).
+    """
+    cry_scores = None
+    cry_conf = 0.0
+    if cry_model_result and isinstance(cry_model_result, dict):
+        cry_scores = cry_model_result.get("scores") or cry_model_result.get("predictions")
+        cry_conf = float(cry_model_result.get("confidence", 0) or 0)
+        if cry_scores and cry_conf < 0.15:
+            cry_scores = None  # Too low confidence to use
+
+    training_scores = None
+    training_conf = 0.0
+    if training_model_result and isinstance(training_model_result, dict):
+        training_scores = training_model_result.get("predictions") or training_model_result.get("scores")
+        training_conf = float(training_model_result.get("reliability", 0) or training_model_result.get("confidence", 0) or 0)
+        if training_scores and training_conf < 0.15:
+            training_scores = None
+
+    if not cry_scores and not training_scores:
+        return None
+
+    # Weight by relative confidence
+    total_conf = max(1e-6, cry_conf + training_conf)
+
+    if cry_scores and training_scores:
+        cry_w = cry_conf / total_conf
+        train_w = training_conf / total_conf
+        all_keys = set(cry_scores.keys()) | set(training_scores.keys())
+        blended = {}
+        for k in all_keys:
+            blended[k] = cry_w * float(cry_scores.get(k, 0)) + train_w * float(training_scores.get(k, 0))
+    elif cry_scores:
+        blended = {k: float(v) for k, v in cry_scores.items()}
+    else:
+        blended = {k: float(v) for k, v in training_scores.items()}
+
+    return normalize_intent_distribution(blended, include_technical=False, fill_missing=True)
+
+
+def compute_research_priors_pure(
+    developmental_stage: str,
+    population_prior: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """
+    Return developmental research priors WITHOUT context adjustments.
+
+    Context is now its own source (compute_context_scores), so research
+    priors are pure literature / FL population data.
+    """
+    stage = (developmental_stage or "UNKNOWN").upper().strip()
+
+    if population_prior and len(population_prior) >= 3:
+        priors = normalize_intent_distribution(
+            population_prior, include_technical=False, fill_missing=True,
+        )
+        logger.debug(f"Using FL population prior for stage={stage}")
+    else:
+        priors = normalize_intent_distribution(
+            _STAGE_PRIORS.get(stage, _STAGE_PRIORS["UNKNOWN"]),
+            include_technical=False, fill_missing=True,
+        )
+
+    return priors
+
+
+def redistribute_missing_sources(
+    weights: Dict[str, float],
+    available: Dict[str, bool],
+) -> Dict[str, float]:
+    """
+    Redistribute weight from missing sources to available ones.
+
+    When source S_i is missing (weight w_i):
+        For each remaining source S_j:
+            bonus = w_i × (w_j / sum_remaining) × (1.0 + bias_j)
+        where bias_j = 0.05 for self_learning, 0.0 for others
+        Normalize to total = 1.0
+
+    Args:
+        weights: {source_name: weight} — must sum to ~1.0
+        available: {source_name: True/False}
+
+    Returns:
+        Adjusted weights dict (only available sources, sums to 1.0)
+    """
+    try:
+        from constants import SELF_LEARNING_REDISTRIBUTION_BIAS
+        sl_bias = float(SELF_LEARNING_REDISTRIBUTION_BIAS)
+    except ImportError:
+        sl_bias = 0.05
+
+    missing_total = sum(
+        w for src, w in weights.items()
+        if not available.get(src, False)
+    )
+
+    if missing_total <= 0:
+        return dict(weights)
+
+    remaining = {
+        src: w for src, w in weights.items()
+        if available.get(src, False)
+    }
+    remaining_sum = sum(remaining.values())
+
+    if remaining_sum <= 0:
+        # All sources missing — equal distribution among all
+        n = len(weights)
+        return {src: 1.0 / n for src in weights}
+
+    adjusted = {}
+    for src, w in remaining.items():
+        bias = sl_bias if src == "self_learning" else 0.0
+        bonus = missing_total * (w / remaining_sum) * (1.0 + bias)
+        adjusted[src] = w + bonus
+
+    # Normalize to 1.0
+    total = sum(adjusted.values())
+    if total > 0:
+        adjusted = {k: v / total for k, v in adjusted.items()}
+
+    return adjusted
+
+
+def blend_four_sources(
+    acoustic_scores: Dict[str, float],
+    self_learning_scores: Optional[Dict[str, float]],
+    research_priors: Dict[str, float],
+    context_scores: Optional[Dict[str, float]],
+    weights: Dict[str, float],
+) -> Dict[str, float]:
+    """
+    Blend four evidence sources with the given weights.
+
+    Sources: acoustic, self_learning, research, context.
+    Missing sources (None) have their weight redistributed.
+    """
+    available = {
+        "acoustic": True,  # Always available
+        "self_learning": self_learning_scores is not None,
+        "research": True,  # Always available (literature priors)
+        "context": context_scores is not None,
+    }
+
+    effective_weights = redistribute_missing_sources(weights, available)
+
+    source_map = {
+        "acoustic": acoustic_scores,
+        "self_learning": self_learning_scores or {},
+        "research": research_priors,
+        "context": context_scores or {},
+    }
+
+    all_keys = set()
+    for scores in source_map.values():
+        all_keys.update(scores.keys())
+
+    blended: Dict[str, float] = {}
+    for key in all_keys:
+        value = 0.0
+        for src_name, src_scores in source_map.items():
+            w = effective_weights.get(src_name, 0.0)
+            if w > 0:
+                value += w * float(src_scores.get(key, 0.0))
+        blended[key] = value
+
+    return normalize_probability_distribution(blended)
+
+
+def determine_probable_intent_v3(
+    cluster: Dict,
+    feature_scores: Dict[str, float],
+    rich_features: Optional[Dict[str, float]] = None,
+    external_acoustic_scores: Optional[Dict[str, float]] = None,
+    external_acoustic_meta: Optional[Dict] = None,
+    developmental_stage: str = "UNKNOWN",
+    session_context: Optional[Dict] = None,
+    session_count: int = 0,
+    parent_trust_score: float = 0.5,
+    context_reliability: float = 0.8,
+    acoustic_reliability: float = 1.0,
+    population_prior: Optional[Dict[str, float]] = None,
+    cry_model_result: Optional[Dict] = None,
+    training_model_result: Optional[Dict] = None,
+) -> Dict:
+    """
+    Four-Source Evidence Model intent determination (Phase 11).
+
+    Sources:
+      1. Acoustic (40-50%) — real-time audio features
+      2. Self-Learning (10-35%) — cry emotion model + training model
+      3. Research (7-35%) — developmental literature + FL population prior
+      4. Context (10-15%) — feeding time, health state, environment
+
+    Feedback is NOT a direct source — it drives FRS (parent trust) which
+    gates training candidate acceptance and FL quality.
+
+    Args:
+        cluster:              SoundCluster DynamoDB item
+        feature_scores:       4-score dict from feature_extraction
+        rich_features:        65-feature dict from Phase 3
+        external_acoustic_scores: Optional managed endpoint acoustic distribution
+        external_acoustic_meta: Reliability metadata for managed acoustic
+        developmental_stage:  Baby's current developmental stage
+        session_context:      Phase 3 context dict
+        session_count:        Total sessions for this child
+        parent_trust_score:   Parent FRS (used for quality gating, not weighting)
+        context_reliability:  CRS (0.2-1.0)
+        acoustic_reliability: Signal quality confidence
+        population_prior:     Phase 8 FL population model prior
+        cry_model_result:     Output from predict_cry_emotion()
+        training_model_result: Output from stage-level training model
+
+    Returns:
+        Same structure as v2 + model_version + 4-source evidence breakdown + EFP
+    """
+    try:
+        from constants import INTENT_LABELS as LABELS
+    except ImportError:
+        LABELS = {}
+
+    stage = (developmental_stage or "UNKNOWN").upper().strip()
+
+    # --- Source 1: Acoustic ---
+    base_acoustic_scores = compute_acoustic_intent_scores(feature_scores, rich_features)
+    acoustic_scores = dict(base_acoustic_scores)
+    managed_acoustic_alpha = 0.0
+
+    if external_acoustic_scores:
+        managed_scores = normalize_intent_distribution(
+            external_acoustic_scores, include_technical=False, fill_missing=True,
+        )
+        managed_reliability = 0.0
+        managed_training_samples = 0
+        if isinstance(external_acoustic_meta, dict):
+            try:
+                managed_reliability = max(0.0, min(1.0, float(external_acoustic_meta.get("reliability", 0.0) or 0.0)))
+            except Exception:
+                managed_reliability = 0.0
+            try:
+                managed_training_samples = int(external_acoustic_meta.get("training_samples", 0) or 0)
+            except Exception:
+                managed_training_samples = 0
+
+        try:
+            from constants import TRAINING_DATASET_MIN_SAMPLES, TRAINING_DATASET_BLEND_MAX_ALPHA
+            managed_min_samples = int(TRAINING_DATASET_MIN_SAMPLES)
+            managed_max_alpha = float(TRAINING_DATASET_BLEND_MAX_ALPHA)
+        except Exception:
+            managed_min_samples = 120
+            managed_max_alpha = 0.18
+
+        if managed_training_samples >= managed_min_samples and managed_reliability >= 0.70:
+            rel_scale = max(0.0, min(1.0, (managed_reliability - 0.70) / 0.30))
+            managed_acoustic_alpha = round(max(0.0, min(managed_max_alpha, managed_max_alpha * rel_scale)), 4)
+            acoustic_scores = normalize_probability_distribution({
+                k: (1.0 - managed_acoustic_alpha) * base_acoustic_scores.get(k, 0.0)
+                + managed_acoustic_alpha * managed_scores.get(k, 0.0)
+                for k in set(base_acoustic_scores.keys()) | set(managed_scores.keys())
+            })
+
+    # --- Source 2: Self-Learning (cry model + training model) ---
+    self_learning_scores = compute_self_learning_scores(cry_model_result, training_model_result)
+
+    # --- Source 3: Research priors (pure — no context mixing) ---
+    research_priors = compute_research_priors_pure(developmental_stage, population_prior)
+
+    # --- Source 4: Context ---
+    context_scores = compute_context_scores(session_context, context_reliability, developmental_stage)
+
+    # --- 4-Source weights + redistribution ---
+    base_weights = _get_4source_weights(developmental_stage)
+    blended = blend_four_sources(
+        acoustic_scores, self_learning_scores, research_priors, context_scores,
+        base_weights,
+    )
+
+    # Acoustic reliability rebalancing (same logic as v2, adapted for 4-source)
+    rel = max(0.4, min(1.0, float(acoustic_reliability)))
+
+    # Pairwise resolver for hunger vs discomfort
+    blended, hunger_discomfort_meta = _resolve_hunger_discomfort_pair(
+        blended=blended,
+        acoustic_scores=acoustic_scores,
+        research_priors=research_priors,
+        feature_scores=feature_scores,
+        rich_features=rich_features,
+        session_context=session_context,
+        context_reliability=context_reliability,
+        acoustic_reliability=acoustic_reliability,
+    )
+
+    # --- Winner ---
+    best_key = max(blended, key=blended.get)
+    label = LABELS.get(best_key, best_key.replace("_", " ").title())
+
+    # --- Confidence (adapted for 4-source agreement) ---
+    confidence = compute_intent_confidence(
+        blended, cluster, acoustic_scores, research_priors, session_count=session_count,
+    )
+
+    # 4-source agreement bonus: if 3+ sources agree, boost confidence
+    source_tops = [
+        max(acoustic_scores, key=acoustic_scores.get) if acoustic_scores else None,
+        max(self_learning_scores, key=self_learning_scores.get) if self_learning_scores else None,
+        max(research_priors, key=research_priors.get) if research_priors else None,
+        max(context_scores, key=context_scores.get) if context_scores else None,
+    ]
+    agreement_count = sum(1 for t in source_tops if t == best_key)
+    if agreement_count >= 3:
+        confidence = min(confidence * 1.08, 0.92)
+
+    # Confidence calibration
+    top_vals = sorted(blended.values(), reverse=True)
+    margin = (top_vals[0] - top_vals[1]) if len(top_vals) > 1 else top_vals[0]
+    if stage in _INFANT_STAGE_SET and margin < 0.08:
+        confidence *= 0.86
+    confidence *= (0.78 + 0.22 * rel)
+    confidence = round(min(max(confidence, 0.10), 0.92), 3)
+
+    # --- Cross-source agreement ---
+    acoustic_best = max(acoustic_scores, key=acoustic_scores.get) if acoustic_scores else best_key
+    research_best = max(research_priors, key=research_priors.get) if research_priors else best_key
+    agreement = acoustic_best == best_key and research_best == best_key
+
+    # --- Top-3 intents ---
+    top_intents = sorted(blended.items(), key=lambda x: -x[1])[:3]
+
+    # --- Evidence Fingerprint (EFP) ---
+    efp = {
+        "acoustic_top": acoustic_best,
+        "acoustic_confidence": round(max(acoustic_scores.values()) if acoustic_scores else 0.0, 4),
+        "research_top": research_best,
+        "blended_top": best_key,
+        "blended_confidence": round(blended.get(best_key, 0.0), 4),
+        "model_version": "v3_4source",
+        "sources_available": {
+            "acoustic": True,
+            "self_learning": self_learning_scores is not None,
+            "research": True,
+            "context": context_scores is not None,
+        },
+    }
+
+    # Effective weights (after redistribution)
+    available = {
+        "acoustic": True,
+        "self_learning": self_learning_scores is not None,
+        "research": True,
+        "context": context_scores is not None,
+    }
+    effective_weights = redistribute_missing_sources(base_weights, available)
+
+    logger.info(
+        f"Evidence model v3: intent={best_key} confidence={confidence:.3f} "
+        f"stage={developmental_stage} agreement={agreement} "
+        f"session_count={session_count} sources={agreement_count}/4"
+    )
+
+    return {
+        "label": label,
+        "key": best_key,
+        "confidence": confidence,
+        "model_version": "v3_4source",
+        "top_intents": [
+            {
+                "key": k,
+                "label": LABELS.get(k, k.replace("_", " ").title()),
+                "weight": round(v, 3),
+            }
+            for k, v in top_intents
+        ],
+        "evidence": {
+            "acoustic": {k: round(v, 3) for k, v in acoustic_scores.items()},
+            "self_learning": {k: round(v, 3) for k, v in (self_learning_scores or {}).items()},
+            "research": {k: round(v, 3) for k, v in research_priors.items()},
+            "context": {k: round(v, 3) for k, v in (context_scores or {}).items()},
+            "blended": {k: round(v, 3) for k, v in blended.items()},
+            "weights": {
+                "base": {k: round(v, 4) for k, v in base_weights.items()},
+                "effective": {k: round(v, 4) for k, v in effective_weights.items()},
+            },
+            "acoustic_reliability": round(rel, 3),
+            "top_margin": round(max(margin, 0.0), 4),
+            "agreement": agreement,
+            "agreement_count": agreement_count,
+            "managed_acoustic_alpha": round(managed_acoustic_alpha, 4),
+            "hunger_discomfort_adjustment": hunger_discomfort_meta,
+        },
+        "evidence_fingerprint": efp,
+    }

@@ -212,7 +212,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "has_laugh": sound_type == "laugh",
     }
 
-    # --- 6. Adult/baby detection ---
+    # --- 6. Get child profile for age info (needed by adult gate) ---
+    profile = _get_child_profile(child_id)
+    age_days = _compute_age_days(profile.get("birth_date"))
+
+    # --- 7. Adult/baby detection ---
     bio_result = {}
     age_classification = {}
     try:
@@ -224,19 +228,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         from rich_features import extract_rich_features
         rich_features = extract_rich_features(baby_audio, sample_rate,
                                                formants=bio_result.get("formants"))
-        age_classification = classify_probabilistic(rich_features, bio_result or {})
+        age_classification = classify_probabilistic(rich_features, bio_result or {}, child_age_days=age_days)
         logger.info(f"Age classifier: class={age_classification.get('final_class')} "
                      f"conf={age_classification.get('confidence', 0):.3f}")
     except Exception as e:
         logger.warning(f"Age classification error: {e}")
         rich_features = {}
 
-    # Determine adult/baby
-    is_adult = _determine_is_adult(bio_result, age_classification)
-
-    # --- 7. Get child profile for age info ---
-    profile = _get_child_profile(child_id)
-    age_days = _compute_age_days(profile.get("birth_date"))
+    # Determine adult/baby (stricter when registered baby < 36m)
+    is_adult = _determine_is_adult(bio_result, age_classification, age_days)
 
     # Determine routing
     routing = _build_routing(
@@ -301,18 +301,26 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     }
 
 
-def _determine_is_adult(bio_result: Dict, age_classification: Dict) -> bool:
-    """Determine if the speaker is an adult."""
+def _determine_is_adult(bio_result: Dict, age_classification: Dict, age_days: Optional[int] = None) -> bool:
+    """Determine if the speaker is an adult.
+
+    When age_days indicates a registered baby < 36 months, require higher
+    confidence to classify as adult (0.75 / 0.70 instead of 0.60 / 0.55).
+    """
+    is_registered_baby = age_days is not None and 0 <= age_days < 1095
+    cls_threshold = 0.75 if is_registered_baby else 0.60
+    bio_threshold = 0.70 if is_registered_baby else 0.55
+
     # Check age classifier first (more comprehensive)
     if age_classification:
         is_adult_cls = age_classification.get("is_adult", False)
         conf = float(age_classification.get("confidence", 0))
-        if is_adult_cls and conf >= 0.60:
+        if is_adult_cls and conf >= cls_threshold:
             return True
 
     # Check bio validation
     if bio_result:
-        if bio_result.get("is_adult", False) and bio_result.get("bio_confidence", 0) >= 0.55:
+        if bio_result.get("is_adult", False) and bio_result.get("bio_confidence", 0) >= bio_threshold:
             return True
         if bio_result.get("mimicry_suspected", False):
             return True

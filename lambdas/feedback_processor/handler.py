@@ -43,6 +43,13 @@ from constants import (
 from cry_analyzer import get_age_bracket
 from private_language_model import store_language_feedback, match_private_language
 from cry_training_model import store_cry_training_sample, train_cry_model
+from trust_scoring import (
+    compute_agreement_signal,
+    detect_fraud_signal,
+    update_frs,
+    update_crs,
+    compute_delta_score,
+)
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -176,6 +183,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             result.update(
                 _process_general_feedback(body, feedback_record)
             )
+
+        # --- Trust Scoring (Phase 11) ---
+        trust_result = _process_trust_scoring(
+            session=session,
+            profile=profile,
+            child_id=child_id,
+            feedback_record=feedback_record,
+            body=body,
+        )
+        if trust_result:
+            feedback_record["trust_scoring"] = trust_result
+            result["trust_updated"] = True
 
         # Save feedback record
         feedback_table.put_item(Item=_float_to_decimal(feedback_record))
@@ -332,6 +351,123 @@ def _check_and_retrain(age_bracket: str):
             train_cry_model(age_bracket, training_candidate_table, model_registry_table)
     except Exception as e:
         logger.warning(f"Retrain check failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Trust Scoring (Phase 11)
+# ---------------------------------------------------------------------------
+
+def _process_trust_scoring(
+    session: Dict,
+    profile: Dict,
+    child_id: str,
+    feedback_record: Dict,
+    body: Dict,
+) -> Optional[Dict]:
+    """
+    Process trust scoring for this feedback event.
+
+    Flow:
+      1. Read evidence fingerprint (EFP) from session
+      2. Read FRS/CRS from child profile
+      3. Compute agreement signal (feedback vs EFP)
+      4. Detect fraud signals (timing, patterns)
+      5. Update FRS (asymmetric EMA)
+      6. Update CRS (context validation)
+      7. Compute delta score (training gate)
+      8. Store updated FRS/CRS on child profile
+      9. Return metadata for feedback record
+    """
+    try:
+        # 1. Read EFP from session
+        efp = session.get("evidence_fingerprint")
+        if not efp:
+            logger.debug("No EFP on session — skipping trust scoring")
+            return None
+
+        # 2. Read current trust scores from profile
+        current_frs = float(profile.get("parent_trust_score", 0.5) or 0.5)
+        current_crs = float(profile.get("context_reliability", 0.8) or 0.8)
+        recent_responses = profile.get("recent_response_types", [])
+        if not isinstance(recent_responses, list):
+            recent_responses = []
+
+        # Determine feedback intent from the body
+        feedback_intent = (
+            body.get("confirmed_emotion")
+            or body.get("response_type")
+            or ""
+        ).strip()
+
+        if not feedback_intent:
+            return None
+
+        # 3. Compute agreement signal
+        agreement_level, agreement_score = compute_agreement_signal(
+            feedback_intent=feedback_intent,
+            acoustic_top=efp.get("acoustic_top", ""),
+            research_top=efp.get("research_top", ""),
+            blended_top=efp.get("blended_top", ""),
+            confidences={
+                "acoustic": float(efp.get("acoustic_confidence", 0.5) or 0.5),
+                "blended": float(efp.get("blended_confidence", 0.5) or 0.5),
+            },
+        )
+
+        # 4. Detect fraud signals
+        fraud = detect_fraud_signal(
+            feedback_timestamp=feedback_record.get("created_at"),
+            insight_generated_at=session.get("insight_generated_at"),
+            recent_responses=recent_responses,
+            current_frs=current_frs,
+        )
+
+        # 5. Update FRS
+        new_frs, frs_meta = update_frs(current_frs, agreement_score, fraud)
+
+        # 6. Update CRS
+        # Context is "matched" if feedback agrees with blended top
+        context_matched = feedback_intent.lower() == efp.get("blended_top", "").lower()
+        new_crs, crs_meta = update_crs(current_crs, context_matched, fraud)
+
+        # 7. Compute delta score
+        acoustic_scores = session.get("insight", {}).get("evidence", {}).get("acoustic", {})
+        delta_score = compute_delta_score(acoustic_scores, feedback_intent)
+
+        # 8. Update sliding window of recent responses
+        recent_responses.append(feedback_intent)
+        recent_responses = recent_responses[-10:]  # Keep last 10
+
+        # 9. Store updated scores on child profile
+        try:
+            child_profile_table.update_item(
+                Key={"child_id": child_id},
+                UpdateExpression=(
+                    "SET parent_trust_score = :frs, "
+                    "context_reliability = :crs, "
+                    "recent_response_types = :rrt"
+                ),
+                ExpressionAttributeValues={
+                    ":frs": _float_to_decimal(new_frs),
+                    ":crs": _float_to_decimal(new_crs),
+                    ":rrt": recent_responses,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update trust scores on profile: {e}")
+
+        return {
+            "agreement_level": agreement_level,
+            "agreement_score": round(agreement_score, 4),
+            "fraud_signal": fraud.get("signal", "NONE"),
+            "frs": frs_meta,
+            "crs": crs_meta,
+            "delta_score": round(delta_score, 4),
+        }
+
+    except Exception as e:
+        logger.warning(f"Trust scoring failed (non-fatal): {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------

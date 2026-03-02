@@ -308,6 +308,7 @@ def apply_conservative_adult_gate(
     rich_features: Dict[str, float],
     vtl_cm: float,
     voice_type: str,
+    child_age_days: Optional[int] = None,
 ) -> Dict[str, float]:
     """
     Only confirm ADULT classification if ALL gate conditions hold.
@@ -315,11 +316,18 @@ def apply_conservative_adult_gate(
     If the gate fails but Gaussian scored adult highest → redistribute adult
     probability into child (70 %) and toddler (30 %) — conservative fallback.
 
+    When child_age_days is provided and < 36 months (1095 days), STRICTER
+    thresholds are used: if a parent registered a baby, we should be very
+    reluctant to classify the audio as adult.
+
     Gate conditions (ALL required):
       1. f0_mean       < 180 Hz  OR  (overlap-zone adult cues)
       2. vtl_cm        > 13.0 cm      — adult vocal tract (when VTL available)
+         (stricter: > 14.5 cm when registered baby < 36m)
       3. hnr_db        > 14 dB        — clear harmonic structure
+         (stricter: > 16 dB when registered baby < 36m)
       4. jitter_percent < 2.5 %       — stable pitch
+         (stricter: < 2.0 % when registered baby < 36m)
       5. cry_fraction  < 0.02         — not crying
       6. voice_type ∈ {structured_speech, sustained_tone}
       Overlap-zone adult cues (180–260 Hz):
@@ -335,6 +343,14 @@ def apply_conservative_adult_gate(
     hnr           = rich_features.get("hnr_db",         0.0)
     cry           = rich_features.get("cry_fraction",   0.0)
 
+    # Use stricter thresholds when a baby < 36 months is registered
+    is_registered_baby = (
+        child_age_days is not None and 0 <= child_age_days < 1095
+    )
+    vtl_threshold = 14.5 if is_registered_baby else 13.0
+    hnr_threshold = 16.0 if is_registered_baby else 14.0
+    jitter_threshold = 2.0 if is_registered_baby else 2.5
+
     overlap_adult = False
     if 180.0 <= f0_mean <= 260.0:
         overlap_adult = (
@@ -343,9 +359,9 @@ def apply_conservative_adult_gate(
 
     gate: list = [
         (f0_mean < 180.0) or overlap_adult,
-        (vtl_cm > 13.0) if vtl_cm > 0.0 else True,   # Pass when VTL unavailable
-        hnr > 14.0,
-        jitter < 2.5,
+        (vtl_cm > vtl_threshold) if vtl_cm > 0.0 else True,   # Pass when VTL unavailable
+        hnr > hnr_threshold,
+        jitter < jitter_threshold,
         cry < 0.02,
         voice_type in ("structured_speech", "sustained_tone"),
     ]
@@ -429,6 +445,7 @@ def _determine_final_class(
 def classify_probabilistic(
     rich_features: Dict[str, float],
     bio_result: Optional[Dict] = None,
+    child_age_days: Optional[int] = None,
 ) -> Dict:
     """
     Full probabilistic speaker / age classification.
@@ -446,6 +463,8 @@ def classify_probabilistic(
     Args:
         rich_features:  Output of extract_rich_features()  (~65 keys)
         bio_result:     Output of biological_validation()  — used for vtl_cm
+        child_age_days: Child's age in days (when registered baby < 36m,
+                        stricter adult thresholds are applied)
 
     Returns:
         {
@@ -480,8 +499,8 @@ def classify_probabilistic(
     # Step 3 — Softmax
     probs = _softmax(log_likes)
 
-    # Step 4 — Conservative adult gate
-    probs = apply_conservative_adult_gate(probs, rich_features, vtl_cm, voice_type)
+    # Step 4 — Conservative adult gate (stricter when registered baby < 36m)
+    probs = apply_conservative_adult_gate(probs, rich_features, vtl_cm, voice_type, child_age_days)
 
     # Step 5 — Final class
     final_class, confidence, is_unknown = _determine_final_class(

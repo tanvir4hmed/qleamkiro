@@ -173,6 +173,11 @@ def analyze_words_by_age(
         # Adult words should never be compared to baby age expectations.
         probable_bracket = _estimate_age_from_words(unique_words, has_sentences, display_text)
 
+        # Trust registered age when it's 24-36m and estimate is close (18-24m)
+        # with reasonable word count — the estimator can undercount older toddlers
+        if age_bracket == "24_36m" and probable_bracket == "18_24m" and unique_words >= 15:
+            probable_bracket = "24_36m"
+
         if probable_bracket != age_bracket:
             age_match = False
             mismatch_warning = (
@@ -193,14 +198,17 @@ def analyze_words_by_age(
         word_assessment = f"{unique_words} word(s) — above typical range for {bracket_labels[age_bracket]}"
 
     # --- Build display summary ---
+    # Use "child" for 24m+, "baby" for younger
+    child_label = "child" if age_bracket == "24_36m" else "baby"
+
     if speaker == "adult":
         summary = (
             f"Adult speech detected with {word_count} word(s). "
-            f"Your child ({bracket_labels[age_bracket]}) was not the speaker."
+            f"Your {child_label} ({bracket_labels[age_bracket]}) was not the speaker."
         )
     elif speaker == "baby" and word_count > 0:
         if age_match:
-            summary = f"Your baby said {word_count} word(s) — consistent with {bracket_labels[age_bracket]}"
+            summary = f"Your {child_label} said {word_count} word(s) — consistent with {bracket_labels[age_bracket]}"
         else:
             summary = f"Words detected but pattern suggests {bracket_labels.get(probable_bracket, 'different age')}"
     elif speaker == "uncertain":
@@ -234,6 +242,8 @@ def _estimate_age_from_words(
         return "24_36m"
     elif has_sentences and words_in_text > 5:
         return "18_24m"
+    elif unique_words > 50:
+        return "24_36m"
     elif unique_words > 20:
         return "18_24m"
     elif unique_words > 5:

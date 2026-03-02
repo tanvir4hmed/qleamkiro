@@ -36,15 +36,18 @@ from constants import (
     CONCEPT_GRAPH_TABLE,
     DISCLAIMER,
     MODEL_REGISTRY_TABLE,
+    POPULATION_MODEL_TABLE,
     S3_BUCKET_NAME,
     SESSION_TABLE,
+    SOUND_CLUSTER_TABLE,
     TRAINING_CANDIDATE_TABLE,
 )
 from cry_analyzer import analyze_cry, get_age_bracket
 from speech_transcriber import transcribe_audio, analyze_words_for_display
 from word_analyzer import analyze_words_by_age
 from private_language_model import match_private_language
-from cry_training_model import predict_cry_emotion
+from cry_training_model import predict_cry_emotion, store_vocalization_training_sample
+from evidence_model import determine_probable_intent_v3
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -56,6 +59,8 @@ child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
+sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
+population_model_table = dynamodb.Table(POPULATION_MODEL_TABLE)
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -115,6 +120,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     sound_features = event.get("sound_features", {})
     sound_classification = event.get("sound_classification", {})
     embedding_vector = event.get("embedding_vector", [])
+    feature_scores = event.get("feature_scores", {})
+    session_context = event.get("session_context")
     age_days = event.get("age_days")
     s3_audio_path = event.get("s3_audio_path", "")
     fast_reject = event.get("fast_reject", False)
@@ -152,7 +159,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     if routing.get("run_transcription", False) or sound_type in ("speech", "mixed"):
         try:
-            transcript_result = transcribe_audio(s3_audio_path, os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME))
+            transcript_result = transcribe_audio(
+                s3_audio_path,
+                os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME),
+                preferred_language="en-US",
+            )
             word_analysis = analyze_words_for_display(transcript_result)
             if word_analysis.get("has_words"):
                 word_age_analysis = analyze_words_by_age(word_analysis, age_days, is_adult)
@@ -196,6 +207,48 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             trained_cry, word_analysis, word_age_analysis, private_lang_match,
         )
 
+        # --- 4-Source Evidence Model (v3) for intent determination ---
+        if not is_adult and feature_scores:
+            try:
+                # Get developmental stage from profile
+                dev_stage = profile.get("developmental_stage", "UNKNOWN")
+                session_count = int(profile.get("session_count", 0) or 0)
+                parent_trust = float(profile.get("parent_trust_score", 0.5) or 0.5)
+                ctx_reliability = float(profile.get("context_reliability", 0.8) or 0.8)
+
+                # Get cluster for this session (if available)
+                cluster = _get_sound_cluster(child_id, embedding_vector)
+
+                # Get FL population prior (if available)
+                pop_prior = _get_population_prior(dev_stage)
+
+                evidence_result = determine_probable_intent_v3(
+                    cluster=cluster,
+                    feature_scores=feature_scores,
+                    rich_features=sound_features,
+                    developmental_stage=dev_stage,
+                    session_context=session_context,
+                    session_count=session_count,
+                    parent_trust_score=parent_trust,
+                    context_reliability=ctx_reliability,
+                    acoustic_reliability=float(event.get("quality_gate", {}).get("acoustic_reliability", 1.0) or 1.0),
+                    population_prior=pop_prior,
+                    cry_model_result=trained_cry,
+                )
+
+                # Attach evidence model results to insight
+                insight["probable_intent"] = evidence_result.get("key")
+                insight["intent_label"] = evidence_result.get("label")
+                insight["intent_confidence"] = evidence_result.get("confidence")
+                insight["top_intents"] = evidence_result.get("top_intents", [])
+                insight["evidence"] = evidence_result.get("evidence", {})
+                insight["model_version"] = evidence_result.get("model_version", "v3_4source")
+
+                # Store EFP for feedback comparison
+                _store_evidence_fingerprint(session_id, evidence_result.get("evidence_fingerprint", {}))
+            except Exception as e:
+                logger.warning(f"Evidence model v3 failed (non-fatal): {e}")
+
     elif sound_type == "speech":
         insight = _build_speech_insight(
             insight, word_analysis, word_age_analysis, is_adult,
@@ -209,6 +262,37 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             word_analysis, word_age_analysis, is_adult, age_days,
             private_lang_match,
         )
+
+    # Attach language mismatch notice if applicable
+    if transcript_result and transcript_result.get("language_mismatch"):
+        detected_lang = transcript_result.get("detected_language", "unknown")
+        insight["language_mismatch"] = True
+        insight["detected_language"] = detected_lang
+        insight["language_notice"] = f"Audio detected in {detected_lang}. Transcription may differ from expected language."
+
+    # --- Unified Model A Feeding (Phase 11) ---
+    # Feed vocalization emotion training model if emotion detected with confidence
+    if not is_adult and sound_type in ("cry", "speech", "mixed", "laugh"):
+        detected_emotion = insight.get("emotion")
+        emotion_conf = float(insight.get("emotion_confidence", 0) or 0)
+        parent_frs = float(profile.get("parent_trust_score", 0.5) or 0.5)
+
+        if detected_emotion and emotion_conf >= 0.45:
+            try:
+                age_bracket = get_age_bracket(age_days)
+                store_vocalization_training_sample(
+                    features=sound_features,
+                    confirmed_emotion=detected_emotion,
+                    age_bracket=age_bracket,
+                    sound_type=sound_type,
+                    child_id=child_id,
+                    session_id=session_id,
+                    training_candidate_table=training_candidate_table,
+                    frs=parent_frs,
+                    emotion_confidence=emotion_conf,
+                )
+            except Exception as e:
+                logger.debug(f"Model A feeding failed (non-fatal): {e}")
 
     # Save insight
     _save_insight(session_id, insight)
@@ -225,7 +309,7 @@ def _build_silence_insight(insight: Dict) -> Dict:
     insight["display_type"] = "silence"
     insight["headline"] = "No sound detected"
     insight["headline_icon"] = "🔇"
-    insight["description"] = "No baby sounds were detected in this recording. Try recording when your baby is making sounds."
+    insight["description"] = "No sounds were detected in this recording. Try recording when your child is making sounds."
     return insight
 
 
@@ -233,7 +317,7 @@ def _build_noise_insight(insight: Dict) -> Dict:
     insight["display_type"] = "noise"
     insight["headline"] = "Unrecognized sound"
     insight["headline_icon"] = "🔊"
-    insight["description"] = "Background noise or unrecognized sounds were detected. Try recording in a quieter environment, closer to your baby."
+    insight["description"] = "Background noise or unrecognized sounds were detected. Try recording in a quieter environment, closer to your child."
     return insight
 
 
@@ -246,6 +330,8 @@ def _build_laugh_insight(
     private_lang_match: Optional[Dict],
 ) -> Dict:
     insight["display_type"] = "laugh"
+    is_toddler = age_days is not None and age_days >= 730
+    child_label = "child" if is_toddler else "baby"
 
     if is_adult:
         insight["headline"] = "Laughing detected — Adult voice"
@@ -253,9 +339,9 @@ def _build_laugh_insight(
         insight["description"] = "Laughter was detected but it appears to be from an adult speaker."
         insight["adult_detected"] = True
     else:
-        insight["headline"] = "Your baby is laughing!"
+        insight["headline"] = f"Your {child_label} is laughing!"
         insight["headline_icon"] = "😄"
-        insight["description"] = "Happy, joyful laughter detected. Your baby sounds content and delighted!"
+        insight["description"] = f"Happy, joyful laughter detected. Your {child_label} sounds content and delighted!"
 
     # Add words if found (always show)
     _attach_word_info(insight, word_analysis, word_age_analysis)
@@ -348,6 +434,10 @@ def _build_speech_insight(
 ) -> Dict:
     insight["display_type"] = "speech"
 
+    # Use "child" for 24m+, "baby" for younger
+    is_toddler = age_days is not None and age_days >= 730  # ~24 months
+    child_label = "child" if is_toddler else "baby"
+
     if not word_analysis or not word_analysis.get("has_words"):
         # Speech-like sounds but no clear words
         if is_adult:
@@ -356,9 +446,12 @@ def _build_speech_insight(
             insight["description"] = "Speech sounds were detected from an adult speaker but no clear words could be transcribed."
             insight["adult_detected"] = True
         else:
-            insight["headline"] = "Baby vocalizing"
+            insight["headline"] = f"Your {child_label} is vocalizing"
             insight["headline_icon"] = "🗣️"
-            insight["description"] = "Your baby is making speech-like sounds! Babbling and vocal play are important steps in language development."
+            if is_toddler:
+                insight["description"] = "Your child is making speech sounds! Vocal expression and practice are key to language growth."
+            else:
+                insight["description"] = "Your baby is making speech-like sounds! Babbling and vocal play are important steps in language development."
             # Check private language
             _attach_private_language(insight, private_lang_match)
         return insight
@@ -375,10 +468,13 @@ def _build_speech_insight(
         insight["adult_detected"] = True
     else:
         if words.get("has_sentences"):
-            insight["headline"] = "Your baby is forming sentences!"
+            if is_toddler:
+                insight["headline"] = "Your child is speaking in sentences!"
+            else:
+                insight["headline"] = "Your baby is forming sentences!"
             insight["headline_icon"] = "🗣️"
         elif words["word_count"] > 1:
-            insight["headline"] = f"Your baby said {words['word_count']} words!"
+            insight["headline"] = f"Your {child_label} said {words['word_count']} words!"
             insight["headline_icon"] = "🗣️"
         else:
             insight["headline"] = "Word detected!"
@@ -519,3 +615,55 @@ def _save_insight(session_id: str, insight: Dict):
         logger.info(f"Insight saved for session {session_id}")
     except Exception as e:
         logger.error(f"Failed to save insight: {e}")
+
+
+def _get_sound_cluster(child_id: str, embedding_vector: list) -> Dict:
+    """Get the most relevant sound cluster for this child.
+
+    Falls back to an empty cluster dict if none found (evidence model
+    handles missing cluster gracefully).
+    """
+    if not child_id:
+        return {}
+    try:
+        resp = sound_cluster_table.query(
+            KeyConditionExpression="child_id = :cid",
+            ExpressionAttributeValues={":cid": child_id},
+            Limit=1,
+            ScanIndexForward=False,
+        )
+        items = resp.get("Items", [])
+        if items:
+            return _decimal_to_float(items[0])
+    except Exception as e:
+        logger.warning(f"Failed to get sound cluster: {e}")
+    return {}
+
+
+def _get_population_prior(developmental_stage: str) -> Optional[Dict[str, float]]:
+    """Get FL population prior from PopulationModel table for the given stage."""
+    stage = (developmental_stage or "UNKNOWN").upper().strip()
+    try:
+        resp = population_model_table.get_item(Key={"stage": stage})
+        item = resp.get("Item")
+        if item:
+            prior = _decimal_to_float(item.get("intent_distribution", {}))
+            if prior and len(prior) >= 3:
+                return prior
+    except Exception as e:
+        logger.debug(f"No population prior for stage={stage}: {e}")
+    return None
+
+
+def _store_evidence_fingerprint(session_id: str, efp: Dict):
+    """Store evidence fingerprint on the session record for feedback comparison."""
+    if not efp:
+        return
+    try:
+        session_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression="SET evidence_fingerprint = :efp",
+            ExpressionAttributeValues={":efp": _float_to_decimal(efp)},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to store EFP: {e}")
