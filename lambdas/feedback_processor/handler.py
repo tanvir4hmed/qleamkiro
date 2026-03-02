@@ -178,6 +178,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                     body, session, child_id, session_id, age_days, feedback_record
                 )
             )
+        elif feedback_type == "speaker_verification":
+            result.update(
+                _process_speaker_verification_feedback(body, feedback_record)
+            )
         else:
             # General feedback (backward compatibility)
             result.update(
@@ -285,7 +289,11 @@ def _process_cry_emotion_feedback(
     Process cry emotion feedback.
     Parent confirms or corrects the detected emotion.
     """
-    confirmed_emotion = body.get("confirmed_emotion", "").strip()
+    # Accept both confirmed_emotion (string) and confirmed_emotions (array from FeedbackForm)
+    confirmed_emotion = str(body.get("confirmed_emotion", "") or "").strip()
+    if not confirmed_emotion:
+        emotions_list = body.get("confirmed_emotions") or []
+        confirmed_emotion = emotions_list[0] if emotions_list else ""
     was_correct = body.get("was_correct", True)
 
     if not confirmed_emotion:
@@ -322,6 +330,17 @@ def _process_cry_emotion_feedback(
     except Exception as e:
         logger.error(f"Cry emotion feedback storage failed: {e}")
         return {"warning": f"Cry feedback storage failed: {e}"}
+
+
+def _process_speaker_verification_feedback(body: Dict, feedback_record: Dict) -> Dict:
+    """Process speaker verification feedback (adult/baby/both/older-child)."""
+    speaker_answer = str(body.get("speaker_answer", "") or "").strip()
+    if not speaker_answer:
+        return {"warning": "No speaker answer provided"}
+    feedback_record["speaker_answer"] = speaker_answer
+    if body.get("notes"):
+        feedback_record["notes"] = str(body["notes"])[:500]
+    return {"speaker_verification": speaker_answer}
 
 
 def _process_general_feedback(body: Dict, feedback_record: Dict) -> Dict:

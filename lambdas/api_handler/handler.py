@@ -678,8 +678,20 @@ def get_insight(event: Dict) -> Dict:
 
     insight = session.get("insight")
     if not insight:
-        # Old sessions that are processed but have no insight (pre-analysis system)
-        # Return a legacy placeholder instead of perpetual "processing" state
+        # Feature extraction sets processed=True before insight_generator runs.
+        # If the session is recent (< 5 min), insight_generator is still in progress.
+        session_age_seconds = 0
+        if session.get("timestamp"):
+            try:
+                created = datetime.fromisoformat(session["timestamp"].replace("Z", "+00:00"))
+                session_age_seconds = (datetime.now(timezone.utc) - created).total_seconds()
+            except Exception:
+                pass
+
+        if session_age_seconds < 300:
+            return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
+
+        # Old session with no insight — return legacy placeholder
         insight = {
             "display_type": "legacy",
             "headline": "Session completed",
@@ -735,22 +747,30 @@ def submit_feedback(event: Dict) -> Dict:
     session_id = event["pathParameters"]["session_id"]
     body = json.loads(event.get("body") or "{}")
 
-    # Blank submission guard — at least one substantive field must be present
+    # Blank submission guard — accept new schema (feedback_type) or legacy fields
+    feedback_type = str(body.get("feedback_type", "") or "").strip()
     response_type = str(body.get("response_type", "") or "").strip()
     word_token = str(body.get("word_token", "") or "").strip()
     notes = str(body.get("notes", "") or "").strip()[:500]
-    if not response_type and not word_token and not notes:
-        return response(400, {"error": "Feedback must include at least response_type, word_token, or notes"}, event)
+    if not feedback_type and not response_type and not word_token and not notes:
+        return response(400, {"error": "Feedback must include at least feedback_type, response_type, word_token, or notes"}, event)
 
-    # Full feedback payload — includes Phase 4 (FRS/DS) and Phase 5 (NLP/stage) fields
+    # Full feedback payload — pass through all new and legacy fields
     feedback_payload = {
         "session_id": session_id,
+        # New schema fields
+        "feedback_type": feedback_type or "general",
+        "baby_sound": str(body.get("baby_sound", "") or "").strip()[:500],
+        "parent_meaning": str(body.get("parent_meaning", "") or "").strip()[:500],
+        "confirmed_emotion": str(body.get("confirmed_emotion", "") or "").strip(),
+        "confirmed_emotions": body.get("confirmed_emotions") or [],
+        "was_correct": body.get("was_correct", True),
+        "speaker_answer": str(body.get("speaker_answer", "") or "").strip(),
+        # Legacy fields (backward compat)
         "response_type": response_type,
         "effectiveness": body.get("effectiveness", "neutral"),
         "word_token": word_token,
-        # Phase 5: free-text notes (fed to NLP processor for concept extraction)
         "notes": notes,
-        # Phase 5: stage-aware schema tracking
         "developmental_stage": body.get("developmental_stage", ""),
         "stage_version": int(body.get("stage_version", 0) or 0),
     }

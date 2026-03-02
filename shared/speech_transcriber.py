@@ -104,7 +104,7 @@ def transcribe_audio(
 
         # Language identification or fixed language
         if ENABLE_LANGUAGE_ID and not language_code:
-            job_params["IdentifyLanguage"] = True
+            job_params["IdentifyMultipleLanguages"] = True
             job_params["LanguageOptions"] = AUTO_DETECT_LANGUAGES
         else:
             job_params["LanguageCode"] = language_code or TRANSCRIBE_LANGUAGE_CODE
