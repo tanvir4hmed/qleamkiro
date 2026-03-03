@@ -293,6 +293,8 @@ def _score_dunstan_sounds(features: Dict) -> Dict[str, float]:
     f0_std = features.get("f0_std", 0)
     f0_instability = features.get("f0_instability", 0)
     spectral_centroid = features.get("spectral_centroid", 0)
+    spectral_flatness = features.get("spectral_flatness", 0)
+    syllable_rate = features.get("syllable_rate", 0)
     zcr = features.get("zcr", 0)
     energy_var = features.get("energy_variability", 0)
     rms_mean = features.get("rms_mean", 0)
@@ -300,6 +302,8 @@ def _score_dunstan_sounds(features: Dict) -> Dict[str, float]:
     scores = {}
 
     # Neh (hungry): Rhythmic, nasal, moderate pitch, repetitive
+    # "neh" has tongue-to-palate nasal quality → peaked spectrum (low flatness),
+    # regular syllable repetition, and stable pitch.
     neh_score = 0.0
     if 300 < f0 < 550:
         neh_score += 0.30
@@ -309,6 +313,10 @@ def _score_dunstan_sounds(features: Dict) -> Dict[str, float]:
         neh_score += 0.25  # Nasal resonance range
     if energy_var > 0.2:
         neh_score += 0.20  # Rhythmic on/off
+    if spectral_flatness < 0.35:
+        neh_score += 0.10  # Nasal = peaked spectrum (not breathy/flat)
+    if syllable_rate > 1.5:
+        neh_score += 0.10  # Rhythmic "neh neh neh" repetition
     scores["hungry"] = min(1.0, neh_score)
 
     # Owh (tired): Breathy, drawn out, lower intensity
@@ -323,16 +331,20 @@ def _score_dunstan_sounds(features: Dict) -> Dict[str, float]:
         owh_score += 0.25  # Less harsh
     scores["tired"] = min(1.0, owh_score)
 
-    # Heh (discomfort): Breathy, short, intermittent
+    # Heh (discomfort): Breathy exhale, short random bursts, airy quality.
+    # "heh" is an exhale reflex — flat/noisy spectrum (high spectral_flatness),
+    # distinctly breathy zcr, irregular energy, and unstable pitch.
     heh_score = 0.0
-    if zcr > 0.03:
-        heh_score += 0.30  # Breathy quality
-    if energy_var > 0.3:
-        heh_score += 0.30  # Intermittent
-    if rms_mean < 0.10:
-        heh_score += 0.20  # Moderate intensity
-    if f0_instability > 0.08:
-        heh_score += 0.20
+    if zcr > 0.05:
+        heh_score += 0.25  # Distinctly breathy/airy (raised from 0.03)
+    if energy_var > 0.35:
+        heh_score += 0.25  # More intermittent than hungry (raised from 0.3)
+    if rms_mean < 0.08:
+        heh_score += 0.15  # Softer than average cry (tightened from 0.10)
+    if f0_instability > 0.12:
+        heh_score += 0.15  # Less stable than hungry (raised from 0.08)
+    if spectral_flatness > 0.3:
+        heh_score += 0.20  # Breathy exhale = flat/noisy spectrum (new)
     scores["discomfort"] = min(1.0, heh_score)
 
     # Eairh (gas): Intense, straining, grunting, lower
@@ -371,14 +383,14 @@ def _score_dunstan_sounds(features: Dict) -> Dict[str, float]:
         pain_score += 0.20  # Sustained (not rhythmic)
     scores["pain"] = min(1.0, pain_score)
 
-    # Closeness: Lower intensity, whimpering
+    # Closeness: Lower intensity, genuine whimpering
     close_score = 0.0
     if f0 < 400:
         close_score += 0.30  # Lower pitch
-    if rms_mean < 0.05:
-        close_score += 0.30  # Low intensity (whimpering)
-    if energy_var > 0.3:
-        close_score += 0.20  # Intermittent (fussy, not sustained)
+    if rms_mean < 0.04:
+        close_score += 0.30  # Very low intensity (tightened from 0.05)
+    if energy_var > 0.35:
+        close_score += 0.20  # Intermittent fussing (raised from 0.3)
     if f0_instability < 0.10:
         close_score += 0.20
     scores["closeness"] = min(1.0, close_score)
