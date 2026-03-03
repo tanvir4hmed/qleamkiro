@@ -181,6 +181,32 @@ def _encode_behavioral_flag(raw) -> int:
     return BEHAVIORAL_FLAG_UNKNOWN
 
 
+def _encode_sleep(sleep_status_raw) -> int:
+    """Convert sleep_status (int or None) to sleep_status code."""
+    if sleep_status_raw is None:
+        return SLEEP_STATUS_UNKNOWN
+    try:
+        v = int(sleep_status_raw)
+        if 0 <= v <= 3:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return SLEEP_STATUS_UNKNOWN
+
+
+def _encode_trigger(raw) -> int:
+    """Convert trigger_code (int or None) to trigger code."""
+    if raw is None:
+        return TRIGGER_UNKNOWN
+    try:
+        v = int(raw)
+        if 0 <= v <= 8:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return TRIGGER_UNKNOWN
+
+
 def _build_prediction_features(sound_features: Dict, session_context: Dict) -> Dict:
     """
     Merge acoustic sound_features with numerically-encoded context/behavioral
@@ -192,10 +218,7 @@ def _build_prediction_features(sound_features: Dict, session_context: Dict) -> D
     env = session_context.get("environment", "unknown")
     context = {
         "feeding_status":     _encode_feeding(session_context.get("feeding_minutes_ago")),
-        "sleep_status":       int(session_context["sleep_status"])
-                              if isinstance(session_context.get("sleep_status"), (int, float))
-                              and 0 <= int(session_context.get("sleep_status", -1)) <= 3
-                              else SLEEP_STATUS_UNKNOWN,
+        "sleep_status":       _encode_sleep(session_context.get("sleep_status")),
         "health_flag":        HEALTH_STATE_ENCODING.get(
                                   session_context.get("health_state", "unknown"), -1),
         "rooting_flag":       _encode_behavioral_flag(session_context.get("rooting_flag")),
@@ -204,10 +227,7 @@ def _build_prediction_features(sound_features: Dict, session_context: Dict) -> D
         "tantrum_body_flag":  _encode_behavioral_flag(session_context.get("tantrum_body_flag")),
         "location_code":      ENVIRONMENT_TO_LOCATION.get(env, -1),
         "noise_level":        ENVIRONMENT_TO_NOISE.get(env, -1),
-        "trigger_code":       int(session_context["trigger_code"])
-                              if isinstance(session_context.get("trigger_code"), (int, float))
-                              and 0 <= int(session_context.get("trigger_code", -1)) <= 8
-                              else TRIGGER_UNKNOWN,
+        "trigger_code":       _encode_trigger(session_context.get("trigger_code")),
     }
     return {**sound_features, **context}
 

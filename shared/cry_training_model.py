@@ -107,9 +107,19 @@ def _float_to_decimal(obj):
 
 
 def _features_to_vector(features: Dict, version: str = "v2") -> List[float]:
-    """Convert feature dict to ordered vector for the given feature version."""
+    """Convert feature dict to ordered vector for the given feature version.
+
+    Acoustic features (first 12) default to 0.0 when missing.
+    Context/behavioral features (indices 12-21, v2 only) default to -1
+    (unknown) so that missing context doesn't bias centroids.
+    """
     keys = FEATURE_KEYS_V1 if version == "v1" else FEATURE_KEYS_V2
-    return [float(features.get(k, 0.0)) for k in keys]
+    acoustic_count = len(FEATURE_KEYS_V1)
+    result = []
+    for i, k in enumerate(keys):
+        default = 0.0 if i < acoustic_count else -1.0
+        result.append(float(features.get(k, default)))
+    return result
 
 
 def _normalize_vector(vec: List[float]) -> List[float]:
