@@ -488,6 +488,333 @@ def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, fl
     return scores
 
 
+# ---------------------------------------------------------------------------
+# Enhanced scoring layers (formant, voice quality, temporal)
+# These use rich_features extracted in feature_extraction but previously
+# discarded before reaching cry analysis.
+# ---------------------------------------------------------------------------
+
+def _score_formant_dunstan(features: Dict) -> Dict[str, float]:
+    """
+    Layer 1: Formant-based Dunstan sound matcher.
+
+    Each Dunstan reflex sound corresponds to a specific mouth shape which
+    produces a characteristic vowel-space position (F1 = jaw openness,
+    F2 = tongue front/back).  Returns empty dict if formant data is missing
+    so the layer's weight can be redistributed.
+    """
+    f1 = features.get("formant_f1", 0)
+    f2 = features.get("formant_f2", 0)
+    jitter = features.get("jitter_percent", 0)
+
+    # If formant data missing, skip this layer entirely
+    if f1 < 50 or f2 < 50:
+        return {}
+
+    scores = {}
+
+    # Neh (hungry): tongue forward/up → high F2, nasal resonance
+    # Vowel space: F1 600-1000, F2 1800-2800
+    neh = 0.0
+    if 600 <= f1 <= 1000:
+        neh += 0.50
+    elif 450 <= f1 <= 1100:
+        neh += 0.25
+    if 1800 <= f2 <= 2800:
+        neh += 0.50
+    elif 1500 <= f2 <= 3000:
+        neh += 0.25
+    scores["hungry"] = min(1.0, neh)
+
+    # Owh (tired): round mouth → low F1, low F2 (back vowel)
+    # Vowel space: F1 300-600, F2 700-1400
+    owh = 0.0
+    if 300 <= f1 <= 600:
+        owh += 0.50
+    elif 200 <= f1 <= 750:
+        owh += 0.25
+    if 700 <= f2 <= 1400:
+        owh += 0.50
+    elif 500 <= f2 <= 1600:
+        owh += 0.25
+    scores["tired"] = min(1.0, owh)
+
+    # Heh (discomfort): open exhale → high F1, neutral F2
+    # Vowel space: F1 600-1000, F2 1300-1900
+    heh = 0.0
+    if 600 <= f1 <= 1000:
+        heh += 0.50
+    elif 500 <= f1 <= 1100:
+        heh += 0.25
+    if 1300 <= f2 <= 1900:
+        heh += 0.50
+    elif 1100 <= f2 <= 2100:
+        heh += 0.25
+    scores["discomfort"] = min(1.0, heh)
+
+    # Eairh (gas): tense abdominal → mid range, high jitter
+    # Vowel space: F1 500-900, F2 1400-2200
+    eairh = 0.0
+    if 500 <= f1 <= 900:
+        eairh += 0.35
+    if 1400 <= f2 <= 2200:
+        eairh += 0.35
+    if jitter > 3.0:
+        eairh += 0.30  # Strain marker
+    scores["gas"] = min(1.0, eairh)
+
+    # Eh (burp): short push → mid F1, neutral F2
+    # Vowel space: F1 400-700, F2 1400-1900
+    eh = 0.0
+    if 400 <= f1 <= 700:
+        eh += 0.50
+    if 1400 <= f2 <= 1900:
+        eh += 0.50
+    scores["burp"] = min(1.0, eh)
+
+    # Pain: high tension → high F1, spread F2
+    pain = 0.0
+    if f1 > 800:
+        pain += 0.40
+    if f2 > 2200:
+        pain += 0.30
+    if jitter > 4.0:
+        pain += 0.30
+    scores["pain"] = min(1.0, pain)
+
+    # Closeness: relaxed whimper → low-mid F1, mid F2
+    close = 0.0
+    if 300 <= f1 <= 600:
+        close += 0.50
+    if 1200 <= f2 <= 1800:
+        close += 0.50
+    scores["closeness"] = min(1.0, close)
+
+    return scores
+
+
+def _score_voice_quality(features: Dict) -> Dict[str, float]:
+    """
+    Layer 2: Voice quality discriminator using HNR, jitter, shimmer.
+
+    Tonal/melodic cries (high HNR, low jitter) → hungry, tired, closeness.
+    Strained/rough cries (low HNR, high jitter) → gas, pain, tantrum.
+    Returns empty dict if all voice quality features are zero/missing.
+    """
+    hnr = features.get("hnr_db", 0)
+    jitter = features.get("jitter_percent", 0)
+    shimmer = features.get("shimmer_db", 0)
+
+    # Skip if no voice quality data available
+    if hnr == 0 and jitter == 0 and shimmer == 0:
+        return {}
+
+    scores = {}
+
+    # Tonal/melodic: HNR > 10, jitter < 2.0, shimmer < 0.5
+    tonal = 0.0
+    if hnr > 10:
+        tonal += 0.40
+    elif hnr > 6:
+        tonal += 0.20
+    if jitter < 2.0:
+        tonal += 0.30
+    if shimmer < 0.5:
+        tonal += 0.30
+
+    # Breathy/airy: HNR < 8, jitter 1-3, shimmer 0.3-0.8
+    breathy = 0.0
+    if hnr < 8:
+        breathy += 0.35
+    if 1.0 <= jitter <= 3.0:
+        breathy += 0.35
+    if 0.3 <= shimmer <= 0.8:
+        breathy += 0.30
+
+    # Strained/rough: HNR < 6, jitter > 3.0, shimmer > 0.8
+    strained = 0.0
+    if hnr < 6:
+        strained += 0.35
+    if jitter > 3.0:
+        strained += 0.35
+    if shimmer > 0.8:
+        strained += 0.30
+
+    # Calling/urgent: HNR > 8, jitter 2-4, shimmer 0.5-1.0
+    calling = 0.0
+    if hnr > 8:
+        calling += 0.30
+    if 2.0 <= jitter <= 4.0:
+        calling += 0.40
+    if 0.5 <= shimmer <= 1.0:
+        calling += 0.30
+
+    # Map voice patterns to emotions
+    scores["hungry"] = min(1.0, tonal * 0.7 + calling * 0.3)
+    scores["tired"] = min(1.0, tonal * 0.6 + breathy * 0.4)
+    scores["discomfort"] = min(1.0, breathy * 0.7 + strained * 0.3)
+    scores["gas"] = min(1.0, strained * 0.8 + breathy * 0.2)
+    scores["burp"] = min(1.0, strained * 0.5 + breathy * 0.5)
+    scores["pain"] = min(1.0, strained * 0.9 + calling * 0.1)
+    scores["closeness"] = min(1.0, tonal * 0.5 + breathy * 0.5)
+
+    # Older baby emotions (present even for 0-6m in case scores blend)
+    scores["frustration"] = min(1.0, strained * 0.6 + calling * 0.4)
+    scores["separation_anxiety"] = min(1.0, calling * 0.7 + tonal * 0.3)
+    scores["boredom"] = min(1.0, breathy * 0.6 + tonal * 0.4)
+    scores["fear"] = min(1.0, strained * 0.5 + calling * 0.5)
+    scores["tantrum"] = min(1.0, strained * 0.8 + calling * 0.2)
+
+    return scores
+
+
+def _score_temporal_pattern(features: Dict) -> Dict[str, float]:
+    """
+    Layer 3: Temporal pattern scorer using cry rhythm and duration.
+
+    Uses cry_fraction, pause_ratio, syllable_rate from rich_features.
+    Returns empty dict if temporal data is not available.
+    """
+    cry_frac = features.get("cry_fraction", 0)
+    pause_ratio = features.get("pause_ratio", 0)
+    syl_rate = features.get("syllable_rate", 0)
+
+    # Skip if no temporal data
+    if cry_frac == 0 and pause_ratio == 0:
+        return {}
+
+    scores = {}
+
+    # Hungry: rhythmic repetition — moderate cry, moderate pauses, high syllable rate
+    hungry = 0.0
+    if 0.4 <= cry_frac <= 0.7:
+        hungry += 0.35
+    elif 0.3 <= cry_frac <= 0.8:
+        hungry += 0.15
+    if 0.2 <= pause_ratio <= 0.5:
+        hungry += 0.35
+    if syl_rate > 1.5:
+        hungry += 0.30
+    scores["hungry"] = min(1.0, hungry)
+
+    # Tired: drawn-out sustained — high cry fraction, few pauses, low syllable rate
+    tired = 0.0
+    if 0.6 <= cry_frac <= 0.9:
+        tired += 0.35
+    elif cry_frac > 0.5:
+        tired += 0.15
+    if pause_ratio < 0.2:
+        tired += 0.35
+    if syl_rate < 1.0:
+        tired += 0.30
+    scores["tired"] = min(1.0, tired)
+
+    # Discomfort: short intermittent — low-mid cry, high pauses
+    discomfort = 0.0
+    if 0.2 <= cry_frac <= 0.5:
+        discomfort += 0.35
+    if 0.4 <= pause_ratio <= 0.7:
+        discomfort += 0.35
+    if syl_rate > 2.0:
+        discomfort += 0.30
+    scores["discomfort"] = min(1.0, discomfort)
+
+    # Gas: intense straining — high cry, very few pauses
+    gas = 0.0
+    if cry_frac > 0.6:
+        gas += 0.35
+    if pause_ratio < 0.15:
+        gas += 0.35
+    if 1.0 <= syl_rate <= 2.0:
+        gas += 0.30
+    scores["gas"] = min(1.0, gas)
+
+    # Burp: short repetitive — low-mid cry, moderate pauses
+    burp = 0.0
+    if 0.2 <= cry_frac <= 0.5:
+        burp += 0.40
+    if 0.3 <= pause_ratio <= 0.6:
+        burp += 0.30
+    if syl_rate > 2.0:
+        burp += 0.30
+    scores["burp"] = min(1.0, burp)
+
+    # Pain: intense sustained — very high cry, minimal pauses
+    pain = 0.0
+    if cry_frac > 0.7:
+        pain += 0.40
+    if pause_ratio < 0.15:
+        pain += 0.35
+    if syl_rate < 1.5:
+        pain += 0.25
+    scores["pain"] = min(1.0, pain)
+
+    # Closeness: fussy on-off — low cry, high pauses
+    closeness = 0.0
+    if 0.1 <= cry_frac <= 0.3:
+        closeness += 0.40
+    if 0.5 <= pause_ratio <= 0.8:
+        closeness += 0.35
+    scores["closeness"] = min(1.0, closeness)
+
+    # Older baby emotions
+    scores["frustration"] = min(1.0, max(0, cry_frac * 0.6 + (1.0 - pause_ratio) * 0.4))
+    scores["separation_anxiety"] = min(1.0, max(0, cry_frac * 0.5 + pause_ratio * 0.3 + (syl_rate / 4.0) * 0.2))
+    scores["boredom"] = min(1.0, max(0, (1.0 - cry_frac) * 0.5 + pause_ratio * 0.5))
+    scores["fear"] = min(1.0, max(0, cry_frac * 0.7 + (1.0 - pause_ratio) * 0.3))
+    scores["tantrum"] = min(1.0, max(0, cry_frac * 0.8 + (1.0 - pause_ratio) * 0.2))
+
+    return scores
+
+
+def _blend_layers(
+    acoustic_scores: Dict[str, float],
+    formant_scores: Dict[str, float],
+    voice_scores: Dict[str, float],
+    temporal_scores: Dict[str, float],
+    age_bracket: str,
+) -> Dict[str, float]:
+    """
+    Blend the 4 scoring layers with age-dependent weights.
+    If a layer returned empty (features unavailable), its weight is
+    redistributed proportionally to the remaining layers.
+    """
+    # Age-dependent base weights: [acoustic, formant, voice_quality, temporal]
+    if age_bracket == "0_6m":
+        weights = [0.30, 0.35, 0.20, 0.15]
+    elif age_bracket == "6_12m":
+        weights = [0.40, 0.20, 0.20, 0.20]
+    else:  # 12m+
+        weights = [0.45, 0.10, 0.25, 0.20]
+
+    layers = [acoustic_scores, formant_scores, voice_scores, temporal_scores]
+
+    # Identify available layers (non-empty)
+    available = [(w, layer) for w, layer in zip(weights, layers) if layer]
+    if not available:
+        return acoustic_scores  # Fallback to acoustic only
+
+    # Redistribute weights for missing layers
+    total_available = sum(w for w, _ in available)
+    if total_available <= 0:
+        return acoustic_scores
+
+    # Collect all emotion keys across available layers
+    all_keys = set()
+    for _, layer in available:
+        all_keys.update(layer.keys())
+
+    blended = {}
+    for key in all_keys:
+        score = 0.0
+        for w, layer in available:
+            normalized_w = w / total_available
+            score += normalized_w * layer.get(key, 0.0)
+        blended[key] = min(1.0, score)
+
+    return blended
+
+
 def analyze_cry(
     features: Dict,
     age_days: Optional[int] = None,
@@ -524,11 +851,27 @@ def analyze_cry(
     age_bracket = get_age_bracket(age_days)
     emotions_map = get_emotions_for_age(age_days)
 
-    # Score emotions based on age
+    # --- 4-layer scoring ---
+    # Layer 0: Acoustic heuristic (existing scorers)
     if age_bracket == "0_6m":
-        emotion_scores = _score_dunstan_sounds(features)
+        acoustic_scores = _score_dunstan_sounds(features)
     else:
-        emotion_scores = _score_older_baby_emotions(features, age_bracket)
+        acoustic_scores = _score_older_baby_emotions(features, age_bracket)
+
+    # Layer 1: Formant-based Dunstan matcher (F1 + F2 vowel space)
+    formant_scores = _score_formant_dunstan(features)
+
+    # Layer 2: Voice quality (HNR + jitter + shimmer)
+    voice_scores = _score_voice_quality(features)
+
+    # Layer 3: Temporal pattern (cry_fraction + pause_ratio + syllable_rate)
+    temporal_scores = _score_temporal_pattern(features)
+
+    # Blend layers with age-dependent weights
+    emotion_scores = _blend_layers(
+        acoustic_scores, formant_scores, voice_scores, temporal_scores,
+        age_bracket,
+    )
 
     # Blend with trained model if available.
     # weight scales from 0.40 (low confidence) to 0.80 (high confidence):

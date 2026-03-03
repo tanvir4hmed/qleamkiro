@@ -268,6 +268,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "feature_scores": feature_scores,
         "embedding_vector": embedding_vector,
         "sound_features": sound_result.get("features", {}),
+        "rich_features": rich_features,
         # Metadata
         "quality_gate": quality_gate,
         "diarization": diarization_result,
@@ -289,6 +290,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "embedding_vector": embedding_vector,
         "feature_scores": feature_scores,
         "sound_features": sound_result.get("features", {}),
+        "rich_features": rich_features,
         "biological": bio_result,
         "age_classification": age_classification,
         "age_days": age_days,

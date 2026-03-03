@@ -287,6 +287,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     is_adult = event.get("is_adult", False)
     routing = event.get("routing", {})
     sound_features = event.get("sound_features", {})
+    rich_features = event.get("rich_features", {})
     sound_classification = event.get("sound_classification", {})
     embedding_vector = event.get("embedding_vector", [])
     age_days = event.get("age_days")
@@ -364,8 +365,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         except Exception as e:
             logger.warning(f"Cry model prediction failed: {e}")
 
+        # Merge rich features (formants, HNR, jitter, shimmer, temporal)
+        # with sound classification features for enhanced cry analysis
+        cry_features = {**sound_features, **rich_features}
         insight = _build_cry_insight(
-            insight, sound_features, age_days, is_adult,
+            insight, cry_features, age_days, is_adult,
             trained_cry, word_analysis, word_age_analysis, private_lang_match,
         )
 
@@ -377,8 +381,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     else:  # mixed
         # For mixed: check which components are present
+        cry_features_mixed = {**sound_features, **rich_features}
         insight = _build_mixed_insight(
-            insight, sound_classification, sound_features,
+            insight, sound_classification, cry_features_mixed,
             word_analysis, word_age_analysis, is_adult, age_days,
             private_lang_match,
         )
