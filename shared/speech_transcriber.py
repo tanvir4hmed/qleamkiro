@@ -29,6 +29,11 @@ ENABLE_LANGUAGE_ID = os.environ.get("ENABLE_TRANSCRIBE_LANGUAGE_ID", "true").low
 # Supported languages for auto-detection
 AUTO_DETECT_LANGUAGES = ["en-US", "es-US", "fr-FR", "de-DE", "it-IT", "pt-BR", "ja-JP", "ko-KR", "zh-CN", "ar-SA", "hi-IN", "bn-IN"]
 
+# Languages accepted for display — non-English transcripts are often baby sounds
+# misinterpreted as foreign language (e.g. breathing → Japanese "はあ").
+# Only show transcription results for these languages.
+ACCEPTED_DISPLAY_LANGUAGES = {"en-US", "en-GB", "en-AU", "en-IN", "en"}
+
 
 def transcribe_audio(
     s3_audio_path: str,
@@ -192,6 +197,26 @@ def _parse_transcription_result(
             overall_conf = sum(w["confidence"] for w in words) / len(words)
         else:
             overall_conf = 0.0
+
+        # Filter out non-English transcriptions — baby sounds (breathing, cooing,
+        # soft cries) are frequently misinterpreted as Japanese, Korean, or Arabic
+        # by Transcribe's language ID.  We keep the detected language for logging
+        # but discard the text so it doesn't appear as "words detected".
+        detected_language = language or ""
+        language_accepted = (
+            not detected_language
+            or detected_language.split("-")[0] == "en"
+            or detected_language in ACCEPTED_DISPLAY_LANGUAGES
+        )
+        if not language_accepted:
+            logger.info(
+                f"Non-English transcription filtered: language={detected_language} "
+                f"text='{full_text[:80]}'"
+            )
+            result = _empty_result(f"Non-English detected: {detected_language}")
+            result["language_code"] = detected_language
+            result["language_filtered"] = True
+            return result
 
         return {
             "text": full_text,

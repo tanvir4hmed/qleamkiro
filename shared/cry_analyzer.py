@@ -402,6 +402,10 @@ def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, fl
     """
     Score emotions for older babies (6m+) using acoustic patterns.
     Extends Dunstan-based scores with frustration, separation anxiety, etc.
+
+    Thresholds are set to be discriminating — each emotion must have a
+    distinctive acoustic fingerprint to score high.  Generic moderate cries
+    should not accidentally dominate over Dunstan-based base scores.
     """
     # Start with Dunstan-like base scores
     scores = _score_dunstan_sounds(features)
@@ -411,37 +415,44 @@ def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, fl
     energy_var = features.get("energy_variability", 0)
     rms_mean = features.get("rms_mean", 0)
     spectral_centroid = features.get("spectral_centroid", 0)
+    spectral_flatness = features.get("spectral_flatness", 0)
 
-    # Frustration: Building, escalating, loud
+    # Frustration: Building, escalating, LOUD, high-energy.
+    # Key distinction: frustration is LOUD (rms>0.10) and high centroid.
+    # A soft cry should not score here.
     frustration_score = 0.0
-    if rms_mean > 0.08:
-        frustration_score += 0.30
-    if f0_instability > 0.12:
-        frustration_score += 0.25
+    if rms_mean > 0.10:
+        frustration_score += 0.30  # Must be loud (raised from 0.08)
+    if f0_instability > 0.15:
+        frustration_score += 0.25  # Pitch escalates (raised from 0.12)
     if energy_var > 0.30:
         frustration_score += 0.25
-    if spectral_centroid > 1800:
-        frustration_score += 0.20
+    if spectral_centroid > 2000:
+        frustration_score += 0.20  # Harsh quality (raised from 1800)
     scores["frustration"] = min(1.0, frustration_score)
 
-    # Separation anxiety: Sudden onset, clingy quality
+    # Separation anxiety: Sudden onset, clingy, INTENSE, higher-pitched.
+    # Key distinction: separation cry is louder and more urgent than tired/hungry.
+    # Must have clear intensity + pitch instability (calling out).
     sep_score = 0.0
-    if 350 < f0 < 550:
-        sep_score += 0.30
-    if rms_mean > 0.06:
-        sep_score += 0.25
-    if f0_instability > 0.10:
-        sep_score += 0.25
-    if energy_var > 0.25:
-        sep_score += 0.20
+    if 400 < f0 < 600:
+        sep_score += 0.25  # Higher pitch range (narrowed from 350-550)
+    if rms_mean > 0.08:
+        sep_score += 0.25  # Must be clearly audible (raised from 0.06)
+    if f0_instability > 0.14:
+        sep_score += 0.25  # Pitch jumps — calling out (raised from 0.10)
+    if energy_var > 0.30:
+        sep_score += 0.15  # Intermittent but less than discomfort (raised from 0.25)
+    if spectral_flatness < 0.35:
+        sep_score += 0.10  # Voiced/resonant, not breathy
     scores["separation_anxiety"] = min(1.0, sep_score)
 
-    # Boredom: Low intensity, on-off
+    # Boredom: Low intensity, on-off, LOW pitch
     bore_score = 0.0
-    if rms_mean < 0.05:
-        bore_score += 0.35
-    if energy_var > 0.35:
-        bore_score += 0.30
+    if rms_mean < 0.04:
+        bore_score += 0.35  # Very quiet (tightened from 0.05)
+    if energy_var > 0.40:
+        bore_score += 0.30  # Very intermittent (raised from 0.35)
     if f0 < 350:
         bore_score += 0.20
     if f0_instability < 0.08:
