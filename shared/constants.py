@@ -248,9 +248,101 @@ TRANSCRIBE_LANGUAGE_CODE: str = os.environ.get("TRANSCRIBE_LANGUAGE_CODE", "en-U
 ENABLE_TRANSCRIBE_LANGUAGE_ID: bool = os.environ.get("ENABLE_TRANSCRIBE_LANGUAGE_ID", "true").lower() == "true"
 
 # Cry Emotion Training Model
-CRY_MODEL_RETRAIN_THRESHOLD: int = int(os.environ.get("CRY_MODEL_RETRAIN_THRESHOLD", "20"))
+CRY_MODEL_RETRAIN_THRESHOLD: int = int(os.environ.get("CRY_MODEL_RETRAIN_THRESHOLD", "10"))
 CRY_MODEL_MIN_SAMPLES_PER_EMOTION: int = int(os.environ.get("CRY_MODEL_MIN_SAMPLES_PER_EMOTION", "5"))
-CRY_MODEL_MIN_TOTAL_SAMPLES: int = int(os.environ.get("CRY_MODEL_MIN_TOTAL_SAMPLES", "15"))
+CRY_MODEL_MIN_TOTAL_SAMPLES: int = int(os.environ.get("CRY_MODEL_MIN_TOTAL_SAMPLES", "10"))
+
+# =============================================================================
+# Multimodal Cry Feature Encoding (Phase: Context + Behavioral features)
+# All values use -1 for "unknown / not recorded" to distinguish from "absent".
+# =============================================================================
+
+# feeding_status — derived from feeding_minutes_ago
+FEEDING_STATUS_MUCH_EARLY: int = 0    # > 90 min earlier than normal
+FEEDING_STATUS_EARLY: int = 1         # 30–90 min earlier than normal
+FEEDING_STATUS_NORMAL: int = 2        # ±30 min of expected feed time
+FEEDING_STATUS_LATE: int = 3          # 30–90 min later than normal
+FEEDING_STATUS_MUCH_LATE: int = 4     # > 90 min later than normal
+FEEDING_STATUS_UNKNOWN: int = -1
+
+# sleep_status
+SLEEP_STATUS_JUST_WOKE: int = 0       # < 30 min awake
+SLEEP_STATUS_RESTED: int = 1          # 30 min – 3 hr awake
+SLEEP_STATUS_PROBABLY_TIRED: int = 2  # 3–5 hr awake
+SLEEP_STATUS_OVERTIRED: int = 3       # > 5 hr awake
+SLEEP_STATUS_UNKNOWN: int = -1
+
+# health_flag — derived from health_state string
+HEALTH_FLAG_HEALTHY: int = 0
+HEALTH_FLAG_FUSSY: int = 1            # Behavioural, non-illness
+HEALTH_FLAG_TEETHING: int = 2
+HEALTH_FLAG_SICK_MILD: int = 3
+HEALTH_FLAG_SICK_SEVERE: int = 4      # Fever / doctor visit
+HEALTH_FLAG_UNKNOWN: int = -1
+
+# Behavioral cue flags (binary: 0=absent, 1=present, -1=unknown)
+BEHAVIORAL_FLAG_ABSENT: int = 0
+BEHAVIORAL_FLAG_PRESENT: int = 1
+BEHAVIORAL_FLAG_UNKNOWN: int = -1
+
+# location_code — derived from environment string
+LOCATION_HOME_QUIET: int = 0
+LOCATION_HOME_NOISY: int = 1
+LOCATION_OUTDOOR: int = 2
+LOCATION_CAR: int = 3
+LOCATION_OTHER: int = 4
+LOCATION_UNKNOWN: int = -1
+
+# noise_level — auto-derived from environment
+NOISE_LEVEL_QUIET: int = 0            # home_quiet
+NOISE_LEVEL_MODERATE: int = 1        # outdoor, car
+NOISE_LEVEL_LOUD: int = 2            # home_noisy
+NOISE_LEVEL_UNKNOWN: int = -1
+
+# trigger_code (12m+ only)
+TRIGGER_NONE: int = 0
+TRIGGER_WOKE_FROM_SLEEP: int = 1
+TRIGGER_FEEDING_DUE: int = 2
+TRIGGER_ACTIVITY_INTERRUPTED: int = 3
+TRIGGER_OBJECT_TAKEN: int = 4
+TRIGGER_CAREGIVER_LEFT: int = 5
+TRIGGER_OVERSTIMULATION: int = 6
+TRIGGER_TRANSITION: int = 7          # Bath, car, bedtime
+TRIGGER_PAIN_EVENT: int = 8
+TRIGGER_UNKNOWN: int = -1
+
+# Encoding lookup maps (string → int) for use in Lambda handlers
+HEALTH_STATE_ENCODING = {
+    "healthy": HEALTH_FLAG_HEALTHY,
+    "fussy":   HEALTH_FLAG_FUSSY,
+    "teething":HEALTH_FLAG_TEETHING,
+    "sick":    HEALTH_FLAG_SICK_MILD,
+    "other":   HEALTH_FLAG_SICK_MILD,
+    "unknown": HEALTH_FLAG_UNKNOWN,
+}
+
+ENVIRONMENT_TO_LOCATION = {
+    "home_quiet": LOCATION_HOME_QUIET,
+    "home_noisy": LOCATION_HOME_NOISY,
+    "outdoor":    LOCATION_OUTDOOR,
+    "car":        LOCATION_CAR,
+    "other":      LOCATION_OTHER,
+    "unknown":    LOCATION_UNKNOWN,
+}
+
+ENVIRONMENT_TO_NOISE = {
+    "home_quiet": NOISE_LEVEL_QUIET,
+    "home_noisy": NOISE_LEVEL_LOUD,
+    "outdoor":    NOISE_LEVEL_MODERATE,
+    "car":        NOISE_LEVEL_MODERATE,
+    "other":      NOISE_LEVEL_UNKNOWN,
+    "unknown":    NOISE_LEVEL_UNKNOWN,
+}
+
+# Feature version tag — models trained with 12 acoustic features are "v1";
+# models trained with the full 22-feature multimodal vector are "v2".
+CRY_FEATURE_VERSION_V1: str = "v1"   # 12 acoustic features (legacy)
+CRY_FEATURE_VERSION_V2: str = "v2"   # 22 features: 12 acoustic + 10 context/behavioral
 
 # Private Baby Language Model
 PRIVATE_LANG_MATCH_THRESHOLD: float = float(os.environ.get("PRIVATE_LANG_MATCH_THRESHOLD", "0.75"))

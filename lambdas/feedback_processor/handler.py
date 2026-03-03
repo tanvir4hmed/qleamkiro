@@ -35,10 +35,26 @@ sys.path.insert(0, "/var/task/shared")
 from constants import (
     CHILD_PROFILE_TABLE,
     CONCEPT_GRAPH_TABLE,
+    ENVIRONMENT_TO_LOCATION,
+    ENVIRONMENT_TO_NOISE,
     FEEDBACK_TABLE,
+    HEALTH_STATE_ENCODING,
     MODEL_REGISTRY_TABLE,
     SESSION_TABLE,
     TRAINING_CANDIDATE_TABLE,
+    FEEDING_STATUS_MUCH_EARLY,
+    FEEDING_STATUS_EARLY,
+    FEEDING_STATUS_NORMAL,
+    FEEDING_STATUS_LATE,
+    FEEDING_STATUS_MUCH_LATE,
+    FEEDING_STATUS_UNKNOWN,
+    SLEEP_STATUS_JUST_WOKE,
+    SLEEP_STATUS_RESTED,
+    SLEEP_STATUS_PROBABLY_TIRED,
+    SLEEP_STATUS_OVERTIRED,
+    SLEEP_STATUS_UNKNOWN,
+    BEHAVIORAL_FLAG_UNKNOWN,
+    TRIGGER_UNKNOWN,
 )
 from cry_analyzer import get_age_bracket
 from private_language_model import store_language_feedback, match_private_language
@@ -57,7 +73,91 @@ training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 
 # Retrain cry model after this many new samples per age bracket
-CRY_RETRAIN_THRESHOLD = 20
+CRY_RETRAIN_THRESHOLD = 10
+
+
+# ---------------------------------------------------------------------------
+# Context feature encoding helpers
+# ---------------------------------------------------------------------------
+
+def _encode_feeding(minutes_ago) -> int:
+    """Convert feeding_minutes_ago (int or None) to feeding_status code."""
+    if minutes_ago is None:
+        return FEEDING_STATUS_UNKNOWN
+    try:
+        m = int(minutes_ago)
+    except (TypeError, ValueError):
+        return FEEDING_STATUS_UNKNOWN
+    if m < -90:
+        return FEEDING_STATUS_MUCH_EARLY
+    if m < -30:
+        return FEEDING_STATUS_EARLY
+    if m <= 30:
+        return FEEDING_STATUS_NORMAL
+    if m <= 90:
+        return FEEDING_STATUS_LATE
+    return FEEDING_STATUS_MUCH_LATE
+
+
+def _encode_sleep(sleep_status_raw) -> int:
+    """Convert sleep_status (int or None) to sleep_status code.
+    Passes through if already an int in valid range; defaults to unknown."""
+    if sleep_status_raw is None:
+        return SLEEP_STATUS_UNKNOWN
+    try:
+        v = int(sleep_status_raw)
+        if 0 <= v <= 3:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return SLEEP_STATUS_UNKNOWN
+
+
+def _encode_behavioral_flag(raw) -> int:
+    """Pass through binary behavioral flag (0/1) or return -1 for unknown."""
+    if raw is None:
+        return BEHAVIORAL_FLAG_UNKNOWN
+    try:
+        v = int(raw)
+        if v in (0, 1):
+            return v
+    except (TypeError, ValueError):
+        pass
+    return BEHAVIORAL_FLAG_UNKNOWN
+
+
+def _encode_trigger(raw) -> int:
+    """Pass through trigger code (0-8) or return -1 for unknown."""
+    if raw is None:
+        return TRIGGER_UNKNOWN
+    try:
+        v = int(raw)
+        if 0 <= v <= 8:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return TRIGGER_UNKNOWN
+
+
+def _build_context_features(session_context: dict) -> dict:
+    """
+    Build numerically-encoded context feature dict from session_context.
+    All fields default to -1 (unknown) if not present or unrecognisable.
+    """
+    env = session_context.get("environment", "unknown")
+    return {
+        "feeding_status":     _encode_feeding(session_context.get("feeding_minutes_ago")),
+        "sleep_status":       _encode_sleep(session_context.get("sleep_status")),
+        "health_flag":        HEALTH_STATE_ENCODING.get(
+                                  session_context.get("health_state", "unknown"), -1),
+        "rooting_flag":       _encode_behavioral_flag(session_context.get("rooting_flag")),
+        "hand_to_mouth_flag": _encode_behavioral_flag(session_context.get("hand_to_mouth_flag")),
+        "eye_rub_flag":       _encode_behavioral_flag(session_context.get("eye_rub_flag")),
+        "tantrum_body_flag":  _encode_behavioral_flag(session_context.get("tantrum_body_flag")),
+        "location_code":      ENVIRONMENT_TO_LOCATION.get(env, -1),
+        "noise_level":        ENVIRONMENT_TO_NOISE.get(env, -1),
+        "trigger_code":       _encode_trigger(session_context.get("trigger_code")),
+    }
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -281,7 +381,11 @@ def _process_cry_emotion_feedback(
     if not sound_features:
         sound_features = session.get("sound_classification", {}).get("features", {})
 
-    # Store training sample
+    # Build context features from session context if available
+    session_context = session.get("session_context") or {}
+    context_features = _build_context_features(session_context) if session_context else None
+
+    # Store training sample (v2 multimodal if context available, v1 acoustic-only otherwise)
     try:
         store_result = store_cry_training_sample(
             features=sound_features,
@@ -290,6 +394,7 @@ def _process_cry_emotion_feedback(
             child_id=child_id,
             session_id=session_id,
             training_candidate_table=training_candidate_table,
+            context_features=context_features,
         )
         feedback_record["cry_model_update"] = store_result
 

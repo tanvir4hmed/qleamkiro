@@ -518,12 +518,20 @@ def _validate_context(raw: Any) -> Dict:
     Validate and sanitize optional session context provided by the parent.
 
     Accepted fields:
-        feeding_minutes_ago  — int 0-999, minutes since last feeding
-        health_state         — str: healthy|sick|teething|other|unknown
+        feeding_minutes_ago  — int -999..999 (negative = fed early, positive = fed late)
+        health_state         — str: healthy|sick|teething|fussy|other|unknown
         environment          — str: home_quiet|home_noisy|outdoor|car|other|unknown
         notes                — str, max 500 chars (free text)
+        sleep_status         — int 0-3 (0=just woke,1=rested,2=prob tired,3=overtired)
+        rooting_flag         — int 0|1
+        hand_to_mouth_flag   — int 0|1
+        eye_rub_flag         — int 0|1
+        tantrum_body_flag    — int 0|1
+        trigger_code         — int 0-8
+        noise_level          — int 0-2 (auto-derived from environment if not supplied)
 
-    Unknown keys are silently dropped.  Invalid values are replaced with None.
+    Unknown keys are silently dropped. Invalid values are replaced with -1 (unknown).
+    Old clients that don't send new fields will simply not have them (backend defaults to -1).
     Returns a clean dict (may be empty if raw is missing/invalid).
     """
     if not isinstance(raw, dict):
@@ -531,9 +539,9 @@ def _validate_context(raw: Any) -> Dict:
 
     ctx: Dict = {}
 
-    # feeding_minutes_ago
+    # feeding_minutes_ago (expanded to -999..999 to allow early feeding)
     fma = raw.get("feeding_minutes_ago")
-    if isinstance(fma, (int, float)) and 0 <= int(fma) <= 999:
+    if isinstance(fma, (int, float)) and -999 <= int(fma) <= 999:
         ctx["feeding_minutes_ago"] = int(fma)
 
     # health_state
@@ -554,6 +562,30 @@ def _validate_context(raw: Any) -> Dict:
     notes = raw.get("notes", "")
     if isinstance(notes, str) and notes.strip():
         ctx["notes"] = notes.strip()[:500]
+
+    # --- New behavioral / context fields (multimodal model inputs) ---
+    # All validated as integers in allowed range; invalid → field omitted (backend uses -1)
+
+    # sleep_status: 0=just woke, 1=rested, 2=probably tired, 3=overtired
+    sleep = raw.get("sleep_status")
+    if isinstance(sleep, (int, float)) and 0 <= int(sleep) <= 3:
+        ctx["sleep_status"] = int(sleep)
+
+    # Binary behavioral flags: 0=absent, 1=present
+    for flag in ("rooting_flag", "hand_to_mouth_flag", "eye_rub_flag", "tantrum_body_flag"):
+        val = raw.get(flag)
+        if isinstance(val, (int, float)) and int(val) in (0, 1):
+            ctx[flag] = int(val)
+
+    # trigger_code: 0-8
+    trigger = raw.get("trigger_code")
+    if isinstance(trigger, (int, float)) and 0 <= int(trigger) <= 8:
+        ctx["trigger_code"] = int(trigger)
+
+    # noise_level: 0=quiet, 1=moderate, 2=loud (can be sent explicitly or auto-derived)
+    noise = raw.get("noise_level")
+    if isinstance(noise, (int, float)) and 0 <= int(noise) <= 2:
+        ctx["noise_level"] = int(noise)
 
     return ctx
 

@@ -32,13 +32,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
 sys.path.insert(0, "/var/task/shared")
 
 from constants import (
+    BEHAVIORAL_FLAG_UNKNOWN,
     CHILD_PROFILE_TABLE,
     CONCEPT_GRAPH_TABLE,
     DISCLAIMER,
+    ENVIRONMENT_TO_LOCATION,
+    ENVIRONMENT_TO_NOISE,
+    FEEDING_STATUS_EARLY,
+    FEEDING_STATUS_LATE,
+    FEEDING_STATUS_MUCH_EARLY,
+    FEEDING_STATUS_MUCH_LATE,
+    FEEDING_STATUS_NORMAL,
+    FEEDING_STATUS_UNKNOWN,
+    HEALTH_STATE_ENCODING,
     MODEL_REGISTRY_TABLE,
     S3_BUCKET_NAME,
     SESSION_TABLE,
+    SLEEP_STATUS_UNKNOWN,
     TRAINING_CANDIDATE_TABLE,
+    TRIGGER_UNKNOWN,
 )
 from cry_analyzer import analyze_cry, get_age_bracket
 from speech_transcriber import transcribe_audio, analyze_words_for_display
@@ -56,6 +68,148 @@ child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
+
+# ---------------------------------------------------------------------------
+# Word → emotion hint mapping (for cry + word correlation)
+# ---------------------------------------------------------------------------
+_WORD_EMOTION_MAP = {
+    # Hunger
+    "neh":    ("hungry",            "Dunstan 'neh' sound — classic hunger signal"),
+    "milk":   ("hungry",            "Said 'milk' — possible hunger signal"),
+    "eat":    ("hungry",            "Said 'eat' — possible hunger signal"),
+    "food":   ("hungry",            "Said 'food' — possible hunger signal"),
+    "more":   ("hungry",            "Said 'more' — may be asking for more food"),
+    "hungry": ("hungry",            "Said 'hungry' — strong hunger signal"),
+    "bottle": ("hungry",            "Said 'bottle' — possible hunger signal"),
+    "num":    ("hungry",            "Feeding sound detected"),
+    # Tiredness
+    "owh":    ("tired",             "Dunstan 'owh' sound — classic tiredness signal"),
+    "sleepy": ("tired",             "Said 'sleepy' — strong tiredness signal"),
+    "tired":  ("tired",             "Said 'tired' — strong tiredness signal"),
+    "night":  ("tired",             "'Night night' detected — wanting sleep"),
+    "nap":    ("tired",             "Said 'nap' — wanting sleep"),
+    # Separation / caregiver
+    "mama":   ("separation_anxiety","Calling for mama — wants reassurance"),
+    "mommy":  ("separation_anxiety","Calling for mommy — wants reassurance"),
+    "mummy":  ("separation_anxiety","Calling for mummy — wants reassurance"),
+    "dada":   ("separation_anxiety","Calling for dada — wants reassurance"),
+    "daddy":  ("separation_anxiety","Calling for daddy — wants reassurance"),
+    # Pain
+    "ow":    ("pain",               "Said 'ow' — possible pain signal"),
+    "ouch":  ("pain",               "Said 'ouch' — possible pain signal"),
+    "hurt":  ("pain",               "Said 'hurt' — possible pain signal"),
+    # Frustration / wanting
+    "no":    ("frustration",        "Said 'no' — expressing refusal or frustration"),
+    "mine":  ("frustration",        "Said 'mine' — frustration or assertion"),
+    "want":  ("frustration",        "Expressing 'want' — possible frustration"),
+    "give":  ("frustration",        "Requesting something — possible frustration"),
+    # Discomfort
+    "stop":  ("discomfort",         "Said 'stop' — expressing discomfort"),
+    "hot":   ("discomfort",         "Said 'hot' — temperature discomfort"),
+    "cold":  ("discomfort",         "Said 'cold' — temperature discomfort"),
+}
+
+# ---------------------------------------------------------------------------
+# Laugh descriptions by age bracket
+# ---------------------------------------------------------------------------
+_LAUGH_DESCRIPTIONS = {
+    "0_6m": {
+        "term": "baby",
+        "headline": "Your baby is laughing!",
+        "description": "Happy, joyful sounds detected! Early laughter is one of the most precious developmental moments.",
+        "milestone_note": "First social laughs typically appear around 3–4 months — a wonderful sign of social and emotional development!",
+        "milestone_age_range_days": (60, 150),
+    },
+    "6_12m": {
+        "term": "baby",
+        "headline": "Your baby is laughing!",
+        "description": "Joyful belly laughs detected! Your baby is fully engaged, delighted, and socially thriving.",
+        "milestone_note": None,
+        "milestone_age_range_days": None,
+    },
+    "12_18m": {
+        "term": "little one",
+        "headline": "Your toddler is laughing!",
+        "description": "Pure joy! Your toddler is expressing delight — play and laughter are central to their development right now.",
+        "milestone_note": None,
+        "milestone_age_range_days": None,
+    },
+    "18_24m": {
+        "term": "toddler",
+        "headline": "Your toddler is laughing!",
+        "description": "Playful laughter detected — humor and social joy are blossoming. Laugh along to reinforce this wonderful bond!",
+        "milestone_note": None,
+        "milestone_age_range_days": None,
+    },
+    "24_36m": {
+        "term": "child",
+        "headline": "Your child is laughing!",
+        "description": "Laughter and play are core to emotional and social development at this stage. Your child is thriving!",
+        "milestone_note": None,
+        "milestone_age_range_days": None,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Multimodal feature assembly for cry prediction
+# ---------------------------------------------------------------------------
+
+def _encode_feeding(minutes_ago) -> int:
+    if minutes_ago is None:
+        return FEEDING_STATUS_UNKNOWN
+    try:
+        m = int(minutes_ago)
+    except (TypeError, ValueError):
+        return FEEDING_STATUS_UNKNOWN
+    if m < -90: return FEEDING_STATUS_MUCH_EARLY
+    if m < -30: return FEEDING_STATUS_EARLY
+    if m <= 30:  return FEEDING_STATUS_NORMAL
+    if m <= 90:  return FEEDING_STATUS_LATE
+    return FEEDING_STATUS_MUCH_LATE
+
+
+def _encode_behavioral_flag(raw) -> int:
+    if raw is None:
+        return BEHAVIORAL_FLAG_UNKNOWN
+    try:
+        v = int(raw)
+        if v in (0, 1):
+            return v
+    except (TypeError, ValueError):
+        pass
+    return BEHAVIORAL_FLAG_UNKNOWN
+
+
+def _build_prediction_features(sound_features: Dict, session_context: Dict) -> Dict:
+    """
+    Merge acoustic sound_features with numerically-encoded context/behavioral
+    fields into a single 22-feature dict for multimodal cry prediction.
+
+    All context fields default to -1 (unknown) when absent — the model's
+    Mahalanobis distance handles unknown values without bias.
+    """
+    env = session_context.get("environment", "unknown")
+    context = {
+        "feeding_status":     _encode_feeding(session_context.get("feeding_minutes_ago")),
+        "sleep_status":       int(session_context["sleep_status"])
+                              if isinstance(session_context.get("sleep_status"), (int, float))
+                              and 0 <= int(session_context.get("sleep_status", -1)) <= 3
+                              else SLEEP_STATUS_UNKNOWN,
+        "health_flag":        HEALTH_STATE_ENCODING.get(
+                                  session_context.get("health_state", "unknown"), -1),
+        "rooting_flag":       _encode_behavioral_flag(session_context.get("rooting_flag")),
+        "hand_to_mouth_flag": _encode_behavioral_flag(session_context.get("hand_to_mouth_flag")),
+        "eye_rub_flag":       _encode_behavioral_flag(session_context.get("eye_rub_flag")),
+        "tantrum_body_flag":  _encode_behavioral_flag(session_context.get("tantrum_body_flag")),
+        "location_code":      ENVIRONMENT_TO_LOCATION.get(env, -1),
+        "noise_level":        ENVIRONMENT_TO_NOISE.get(env, -1),
+        "trigger_code":       int(session_context["trigger_code"])
+                              if isinstance(session_context.get("trigger_code"), (int, float))
+                              and 0 <= int(session_context.get("trigger_code", -1)) <= 8
+                              else TRIGGER_UNKNOWN,
+    }
+    return {**sound_features, **context}
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -118,6 +272,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     age_days = event.get("age_days")
     s3_audio_path = event.get("s3_audio_path", "")
     fast_reject = event.get("fast_reject", False)
+    session_context = event.get("session_context") or {}
 
     # Get child profile
     profile = _get_child_profile(child_id)
@@ -177,11 +332,15 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                                        word_analysis, word_age_analysis, private_lang_match)
 
     elif sound_type == "cry":
-        # Check trained cry model
+        # Assemble multimodal features (acoustic + context) for trained model prediction
+        prediction_features = (
+            _build_prediction_features(sound_features, session_context)
+            if session_context else sound_features
+        )
         trained_cry = None
         age_bracket = get_age_bracket(age_days)
         try:
-            trained_cry = predict_cry_emotion(sound_features, age_bracket, model_registry_table)
+            trained_cry = predict_cry_emotion(prediction_features, age_bracket, model_registry_table)
         except Exception as e:
             logger.warning(f"Cry model prediction failed: {e}")
 
@@ -238,6 +397,7 @@ def _build_laugh_insight(
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
     private_lang_match: Optional[Dict],
+    cry_also_present: bool = False,
 ) -> Dict:
     insight["display_type"] = "laugh"
 
@@ -247,9 +407,30 @@ def _build_laugh_insight(
         insight["description"] = "Laughter was detected but it appears to be from an adult speaker."
         insight["adult_detected"] = True
     else:
-        insight["headline"] = "Your baby is laughing!"
+        age_bracket = get_age_bracket(age_days)
+        desc = _LAUGH_DESCRIPTIONS.get(age_bracket, _LAUGH_DESCRIPTIONS["6_12m"])
+
+        insight["headline"] = desc["headline"]
         insight["headline_icon"] = "😄"
-        insight["description"] = "Happy, joyful laughter detected. Your baby sounds content and delighted!"
+        insight["description"] = desc["description"]
+
+        # First-laugh milestone notice (3-5 months range)
+        milestone_range = desc.get("milestone_age_range_days")
+        if milestone_range and age_days is not None:
+            if milestone_range[0] <= age_days <= milestone_range[1]:
+                insight["laugh_milestone"] = {
+                    "is_first_laugh_age": True,
+                    "note": desc["milestone_note"],
+                }
+
+        # Mixed laugh + cry — overtired / overstimulation signal
+        if cry_also_present:
+            insight["mixed_emotional"] = True
+            insight["mixed_note"] = (
+                "Both laughter and crying were detected in this session. "
+                "Joy turning to tears is a common sign of overstimulation or tiredness — "
+                "a calm, quiet environment may help your " + desc["term"] + " settle."
+            )
 
     # Add words if found (always show)
     _attach_word_info(insight, word_analysis, word_age_analysis)
@@ -324,6 +505,11 @@ def _build_cry_insight(
 
     # Words found during cry (baby might be crying + talking)
     _attach_word_info(insight, word_analysis, word_age_analysis)
+
+    # Word → emotion hints: detected words that reinforce or contradict the primary emotion
+    word_hints = _word_emotion_modifier(word_analysis, cry_result["primary_emotion"])
+    if word_hints:
+        insight["word_emotion_hints"] = word_hints
 
     # Private language
     _attach_private_language(insight, private_lang_match)
@@ -409,15 +595,24 @@ def _build_mixed_insight(
             age_days, private_lang_match, sound_features,
         )
 
-    # Check for cry component
+    # Check for cry + laugh together — overtired / overstimulation pattern
     scores = sound_classification.get("scores", {})
-    if scores.get("cry", 0) > 0.3:
+    cry_score = scores.get("cry", 0)
+    laugh_score = scores.get("laugh", 0)
+
+    if cry_score > 0.3 and laugh_score > 0.3:
+        return _build_laugh_insight(
+            insight, is_adult, age_days, word_analysis, word_age_analysis,
+            private_lang_match, cry_also_present=True,
+        )
+
+    if cry_score > 0.3:
         return _build_cry_insight(
             insight, sound_features, age_days, is_adult,
             None, word_analysis, word_age_analysis, private_lang_match,
         )
 
-    if scores.get("laugh", 0) > 0.3:
+    if laugh_score > 0.3:
         return _build_laugh_insight(
             insight, is_adult, age_days, word_analysis, word_age_analysis, private_lang_match,
         )
@@ -478,6 +673,41 @@ def _attach_private_language(insight: Dict, match: Optional[Dict]):
         "times_heard": match.get("observation_count", 0),
         "confidence": match.get("confidence", 0),
     }
+
+
+def _word_emotion_modifier(
+    word_analysis: Optional[Dict],
+    primary_emotion: str,
+) -> List[Dict]:
+    """
+    Scan detected words for emotion signals during a cry session.
+
+    Maps known words (milk, mama, ow, no, etc.) to emotion hints that
+    enrich the insight display. Does not modify predictions — display only.
+
+    Returns a list of hint dicts, deduplicated by emotion key.
+    """
+    if not word_analysis or not word_analysis.get("has_words"):
+        return []
+
+    display_words = word_analysis.get("display_words", [])
+    hints: List[Dict] = []
+    seen_emotions: set = set()
+
+    for word_obj in display_words:
+        word = word_obj.get("word", "").lower().strip(".,!?'\"")
+        if word in _WORD_EMOTION_MAP:
+            emotion_key, hint_text = _WORD_EMOTION_MAP[word]
+            if emotion_key not in seen_emotions:
+                seen_emotions.add(emotion_key)
+                hints.append({
+                    "word": word,
+                    "emotion": emotion_key,
+                    "hint": hint_text,
+                    "confirms_primary": emotion_key == primary_emotion,
+                })
+
+    return hints
 
 
 # ---------------------------------------------------------------------------

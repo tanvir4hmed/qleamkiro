@@ -32,14 +32,42 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 MIN_SAMPLES_PER_EMOTION = 5      # Minimum samples before using trained model
-MIN_TOTAL_SAMPLES = 15            # Minimum total samples per age bracket
-FEATURE_KEYS = [
+MIN_TOTAL_SAMPLES = 10            # Minimum total samples per age bracket (reduced from 15)
+
+# v1: 12 acoustic-only features (legacy)
+FEATURE_KEYS_V1 = [
     "f0_mean", "f0_std", "f0_instability",
     "rms_mean", "rms_std", "energy_variability",
     "zcr", "spectral_centroid", "spectral_flatness",
     "spectral_rolloff", "syllable_rate", "voiced_fraction",
 ]
-FEATURE_DIM = len(FEATURE_KEYS)
+
+# v2: 22 multimodal features — 12 acoustic + 10 context/behavioral
+# Unknown/unrecorded context fields default to -1 (not 0).
+FEATURE_KEYS_V2 = [
+    # Acoustic (12) — same as v1
+    "f0_mean", "f0_std", "f0_instability",
+    "rms_mean", "rms_std", "energy_variability",
+    "zcr", "spectral_centroid", "spectral_flatness",
+    "spectral_rolloff", "syllable_rate", "voiced_fraction",
+    # Context + behavioral (10) — new in v2
+    "feeding_status",       # 0=much early,1=early,2=normal,3=late,4=much late,-1=unknown
+    "sleep_status",         # 0=just woke,1=rested,2=prob tired,3=overtired,-1=unknown
+    "health_flag",          # 0=healthy,1=fussy,2=teething,3=sick mild,4=sick severe,-1=unknown
+    "rooting_flag",         # 0=absent,1=present,-1=unknown
+    "hand_to_mouth_flag",   # 0=absent,1=present,-1=unknown
+    "eye_rub_flag",         # 0=absent,1=present,-1=unknown
+    "tantrum_body_flag",    # 0=absent,1=present,-1=unknown
+    "location_code",        # 0=home_quiet,1=home_noisy,2=outdoor,3=car,4=other,-1=unknown
+    "noise_level",          # 0=quiet,1=moderate,2=loud,-1=unknown
+    "trigger_code",         # 0-8 coded trigger,-1=unknown
+]
+
+# Active version for all new training
+FEATURE_KEYS = FEATURE_KEYS_V2
+FEATURE_VERSION = "v2"
+FEATURE_DIM = len(FEATURE_KEYS_V2)
+FEATURE_DIM_V1 = len(FEATURE_KEYS_V1)
 
 AGE_BRACKETS = ["0_6m", "6_12m", "12_18m", "18_24m", "24_36m"]
 
@@ -78,9 +106,10 @@ def _float_to_decimal(obj):
     return obj
 
 
-def _features_to_vector(features: Dict) -> List[float]:
-    """Convert feature dict to ordered vector."""
-    return [float(features.get(k, 0.0)) for k in FEATURE_KEYS]
+def _features_to_vector(features: Dict, version: str = "v2") -> List[float]:
+    """Convert feature dict to ordered vector for the given feature version."""
+    keys = FEATURE_KEYS_V1 if version == "v1" else FEATURE_KEYS_V2
+    return [float(features.get(k, 0.0)) for k in keys]
 
 
 def _normalize_vector(vec: List[float]) -> List[float]:
@@ -99,6 +128,7 @@ def store_cry_training_sample(
     child_id: str,
     session_id: str,
     training_candidate_table,
+    context_features: Optional[Dict] = None,
 ) -> Dict[str, str]:
     """
     Store a parent-confirmed cry emotion sample for model training.
@@ -110,14 +140,24 @@ def store_cry_training_sample(
         child_id: Child ID (for deduplication, not stored in model)
         session_id: Session ID
         training_candidate_table: DynamoDB Table resource
+        context_features: Optional dict of numerically-encoded context/behavioral
+            fields (feeding_status, sleep_status, health_flag, rooting_flag, etc.).
+            When provided, a v2 (22-feature) vector is stored; otherwise v1 (12-feature).
 
     Returns:
-        {"status": "stored", "candidate_id": str}
+        {"status": "stored", "candidate_id": str, "feature_version": str}
     """
     now = datetime.now(timezone.utc).isoformat()
     candidate_id = f"cry_{uuid.uuid4().hex[:12]}"
 
-    feature_vector = _features_to_vector(features)
+    if context_features:
+        # Merge acoustic + context into one dict for v2 vector
+        full_features = {**features, **context_features}
+        feature_vector = _features_to_vector(full_features, version="v2")
+        feature_version = "v2"
+    else:
+        feature_vector = _features_to_vector(features, version="v1")
+        feature_version = "v1"
 
     item = {
         "candidate_id": candidate_id,
@@ -125,14 +165,18 @@ def store_cry_training_sample(
         "age_bracket": age_bracket,
         "emotion_label": confirmed_emotion,
         "feature_vector": feature_vector,
+        "feature_version": feature_version,
         "session_id": session_id,
         "accepted_at": now,
     }
 
     try:
         training_candidate_table.put_item(Item=_float_to_decimal(item))
-        logger.info(f"Stored cry training sample: emotion={confirmed_emotion} age={age_bracket}")
-        return {"status": "stored", "candidate_id": candidate_id}
+        logger.info(
+            f"Stored cry training sample: emotion={confirmed_emotion} "
+            f"age={age_bracket} version={feature_version}"
+        )
+        return {"status": "stored", "candidate_id": candidate_id, "feature_version": feature_version}
     except Exception as e:
         logger.error(f"Failed to store cry training sample: {e}")
         return {"status": "error", "error": str(e)}
@@ -170,20 +214,26 @@ def train_cry_model(
                 "needed": MIN_TOTAL_SAMPLES,
             }
 
-        # Group by emotion
-        emotion_groups = {}
-        for sample in samples:
+        # Prefer v2 (multimodal) samples; fall back to v1 if no v2 exist yet
+        v2_samples = [s for s in samples if s.get("feature_version", "v1") == "v2"]
+        use_samples = v2_samples if len(v2_samples) >= MIN_TOTAL_SAMPLES else samples
+        train_version = "v2" if use_samples is v2_samples and v2_samples else "v1"
+        expected_dim = FEATURE_DIM if train_version == "v2" else FEATURE_DIM_V1
+
+        # Group by emotion, accepting only vectors with correct dimension
+        emotion_groups: Dict[str, List] = {}
+        for sample in use_samples:
             emotion = sample.get("emotion_label", "unknown")
             vec = sample.get("feature_vector", [])
-            if not vec or len(vec) != FEATURE_DIM:
+            if not vec or len(vec) != expected_dim:
                 continue
             if emotion not in emotion_groups:
                 emotion_groups[emotion] = []
             emotion_groups[emotion].append(vec)
 
         # Compute centroids for each emotion with enough samples
-        centroids = {}
-        counts = {}
+        centroids: Dict = {}
+        counts: Dict = {}
         for emotion, vectors in emotion_groups.items():
             if len(vectors) < MIN_SAMPLES_PER_EMOTION:
                 continue
@@ -204,7 +254,7 @@ def train_cry_model(
                 "needed_emotions": 2,
             }
 
-        # Save model to registry
+        # Save model to registry — tag with feature_version for version-aware prediction
         model_id = f"cry_{age_bracket}_{uuid.uuid4().hex[:8]}"
         now = datetime.now(timezone.utc).isoformat()
 
@@ -212,20 +262,25 @@ def train_cry_model(
             "model_id": model_id,
             "model_type": "cry_emotion",
             "age_bracket": age_bracket,
+            "feature_version": train_version,
             "centroids": centroids,
-            "total_samples": len(samples),
+            "total_samples": len(use_samples),
             "emotion_counts": counts,
             "created_at": now,
             "is_promoted": True,
         }
 
         model_registry_table.put_item(Item=_float_to_decimal(model_item))
-        logger.info(f"Trained cry model: {model_id} with {len(samples)} samples, {len(centroids)} emotions")
+        logger.info(
+            f"Trained cry model: {model_id} version={train_version} "
+            f"samples={len(use_samples)} emotions={len(centroids)}"
+        )
 
         return {
             "status": "trained",
             "model_id": model_id,
-            "sample_count": len(samples),
+            "feature_version": train_version,
+            "sample_count": len(use_samples),
             "emotion_count": len(centroids),
             "emotions": list(centroids.keys()),
         }
@@ -280,8 +335,10 @@ def predict_cry_emotion(
         if not centroids:
             return None
 
-        # Compute feature vector
-        feature_vec = np.array(_features_to_vector(features), dtype=np.float64)
+        # Determine feature version of this model and build matching vector
+        model_version = model.get("feature_version", "v1")
+        expected_dim = FEATURE_DIM if model_version == "v2" else FEATURE_DIM_V1
+        feature_vec = np.array(_features_to_vector(features, version=model_version), dtype=np.float64)
 
         # Compute distance to each emotion centroid
         scores = {}
@@ -289,7 +346,7 @@ def predict_cry_emotion(
             centroid = np.array(data.get("centroid", []), dtype=np.float64)
             std = np.array(data.get("std", []), dtype=np.float64)
 
-            if len(centroid) != FEATURE_DIM:
+            if len(centroid) != expected_dim:
                 continue
 
             # Mahalanobis-like distance (normalized by std)
@@ -317,6 +374,7 @@ def predict_cry_emotion(
             "primary_emotion": primary[0],
             "confidence": round(primary[1], 3),
             "model_id": model.get("model_id", ""),
+            "feature_version": model_version,
             "total_training_samples": int(model.get("total_samples", 0)),
         }
 

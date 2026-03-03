@@ -507,16 +507,22 @@ def analyze_cry(
     else:
         emotion_scores = _score_older_baby_emotions(features, age_bracket)
 
-    # Blend with trained model if available
+    # Blend with trained model if available.
+    # weight scales from 0.40 (low confidence) to 0.80 (high confidence):
+    #   confidence=0.2 → weight=0.48 → 52% acoustic, 48% model
+    #   confidence=0.5 → weight=0.60 → 40% acoustic, 60% model
+    #   confidence=0.9 → weight=0.76 → 24% acoustic, 76% model
     if trained_model_result and isinstance(trained_model_result, dict):
         model_scores = trained_model_result.get("emotion_scores", {})
         model_confidence = trained_model_result.get("confidence", 0.5)
-        # Weight: 60% acoustic analysis, 40% trained model
+        weight = min(0.80, 0.40 + 0.40 * model_confidence)
         for key in emotion_scores:
             if key in model_scores:
-                acoustic_val = emotion_scores[key]
-                model_val = model_scores[key]
-                emotion_scores[key] = 0.6 * acoustic_val + 0.4 * model_val * model_confidence
+                emotion_scores[key] = (1.0 - weight) * emotion_scores[key] + weight * model_scores[key]
+        # Include any emotions the trained model knows that acoustic scoring doesn't cover
+        for key in model_scores:
+            if key not in emotion_scores:
+                emotion_scores[key] = weight * model_scores[key]
 
     # Filter to only emotions available for this age
     available_emotions = set(emotions_map.keys())
