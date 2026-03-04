@@ -372,132 +372,6 @@ resource "aws_api_gateway_integration" "options_session_feedback" {
   uri                     = var.api_handler_invoke_arn
 }
 
-# /child/{child_id}/concepts
-resource "aws_api_gateway_resource" "child_concepts" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.child_id.id
-  path_part   = "concepts"
-}
-
-# GET /child/{child_id}/concepts
-resource "aws_api_gateway_method" "get_child_concepts" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.child_concepts.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "get_child_concepts" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.child_concepts.id
-  http_method             = aws_api_gateway_method.get_child_concepts.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.api_handler_invoke_arn
-}
-
-# OPTIONS /child/{child_id}/concepts (CORS preflight - unauthenticated)
-resource "aws_api_gateway_method" "options_child_concepts" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.child_concepts.id
-  http_method   = "OPTIONS"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "options_child_concepts" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.child_concepts.id
-  http_method             = aws_api_gateway_method.options_child_concepts.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.api_handler_invoke_arn
-}
-
-# /child/{child_id}/milestones
-resource "aws_api_gateway_resource" "child_milestones" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.child_id.id
-  path_part   = "milestones"
-}
-
-# GET /child/{child_id}/milestones
-resource "aws_api_gateway_method" "get_child_milestones" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.child_milestones.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "get_child_milestones" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.child_milestones.id
-  http_method             = aws_api_gateway_method.get_child_milestones.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.api_handler_invoke_arn
-}
-
-# OPTIONS /child/{child_id}/milestones (CORS preflight - unauthenticated)
-resource "aws_api_gateway_method" "options_child_milestones" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.child_milestones.id
-  http_method   = "OPTIONS"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "options_child_milestones" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.child_milestones.id
-  http_method             = aws_api_gateway_method.options_child_milestones.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.api_handler_invoke_arn
-}
-
-# /child/{child_id}/language-signals
-resource "aws_api_gateway_resource" "child_language_signals" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.child_id.id
-  path_part   = "language-signals"
-}
-
-# GET /child/{child_id}/language-signals
-resource "aws_api_gateway_method" "get_child_language_signals" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.child_language_signals.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "get_child_language_signals" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.child_language_signals.id
-  http_method             = aws_api_gateway_method.get_child_language_signals.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.api_handler_invoke_arn
-}
-
-# OPTIONS /child/{child_id}/language-signals (CORS preflight - unauthenticated)
-resource "aws_api_gateway_method" "options_child_language_signals" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.child_language_signals.id
-  http_method   = "OPTIONS"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "options_child_language_signals" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.child_language_signals.id
-  http_method             = aws_api_gateway_method.options_child_language_signals.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.api_handler_invoke_arn
-}
-
 # /child/{child_id}/sessions
 resource "aws_api_gateway_resource" "child_sessions" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -609,21 +483,6 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_integration.options_session_feedback.id,
       aws_api_gateway_method.options_child_sessions.id,
       aws_api_gateway_integration.options_child_sessions.id,
-      aws_api_gateway_resource.child_concepts.id,
-      aws_api_gateway_method.get_child_concepts.id,
-      aws_api_gateway_integration.get_child_concepts.id,
-      aws_api_gateway_method.options_child_concepts.id,
-      aws_api_gateway_integration.options_child_concepts.id,
-      aws_api_gateway_resource.child_milestones.id,
-      aws_api_gateway_method.get_child_milestones.id,
-      aws_api_gateway_integration.get_child_milestones.id,
-      aws_api_gateway_method.options_child_milestones.id,
-      aws_api_gateway_integration.options_child_milestones.id,
-      aws_api_gateway_resource.child_language_signals.id,
-      aws_api_gateway_method.get_child_language_signals.id,
-      aws_api_gateway_integration.get_child_language_signals.id,
-      aws_api_gateway_method.options_child_language_signals.id,
-      aws_api_gateway_integration.options_child_language_signals.id,
     ]))
   }
 
@@ -651,12 +510,6 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.options_session_feedback,
     aws_api_gateway_integration.get_child_sessions,
     aws_api_gateway_integration.options_child_sessions,
-    aws_api_gateway_integration.get_child_concepts,
-    aws_api_gateway_integration.options_child_concepts,
-    aws_api_gateway_integration.get_child_milestones,
-    aws_api_gateway_integration.options_child_milestones,
-    aws_api_gateway_integration.get_child_language_signals,
-    aws_api_gateway_integration.options_child_language_signals,
   ]
 }
 

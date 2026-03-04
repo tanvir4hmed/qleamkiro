@@ -12,7 +12,7 @@ This model:
 Storage: DynamoDB ModelRegistry table (model_type="cry_emotion")
 Training data: DynamoDB TrainingCandidate table (candidate_type="cry_emotion")
 
-Key difference from private_language_model:
+Key properties:
 - This is GLOBAL — all children contribute (anonymized)
 - Data is age-stratified — separate models per age bracket
 - Uses acoustic features, not embeddings

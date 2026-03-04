@@ -28,21 +28,6 @@ variable "insight_generator_lambda_arn" {
   type        = string
 }
 
-variable "developmental_tracker_lambda_arn" {
-  description = "ARN of the developmental tracker Lambda"
-  type        = string
-}
-
-variable "concept_decoder_lambda_arn" {
-  description = "ARN of the concept decoder Lambda"
-  type        = string
-}
-
-variable "speech_analyzer_lambda_arn" {
-  description = "ARN of the speech analyzer Lambda"
-  type        = string
-}
-
 variable "audio_bucket_name" {
   description = "S3 audio bucket name (for EventBridge trigger)"
   type        = string

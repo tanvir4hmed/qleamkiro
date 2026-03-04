@@ -1,17 +1,12 @@
 """
 Qleam — Feedback Processor Lambda (Redesigned)
-Handles two types of parent feedback:
+Handles parent feedback for cry emotion training:
 
-1. BABY LANGUAGE FEEDBACK
-   - Parent labels what baby was saying ("want milk", "play")
-   - Parent describes the sound they heard ("ba ba ba")
-   - Feeds into per-child private language model
-
-2. CRY EMOTION FEEDBACK
+1. CRY EMOTION FEEDBACK
    - Parent confirms/corrects the detected emotion
    - Feeds into global cry emotion training model (age-stratified)
 
-Both feedback types are stored and used to improve detection accuracy.
+Legacy "general" feedback is stored for backward compatibility.
 
 Trigger: POST /session/{id}/feedback
 Input:  API Gateway event with feedback body
@@ -34,14 +29,12 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     CHILD_PROFILE_TABLE,
-    CONCEPT_GRAPH_TABLE,
     FEEDBACK_TABLE,
     MODEL_REGISTRY_TABLE,
     SESSION_TABLE,
     TRAINING_CANDIDATE_TABLE,
 )
 from cry_analyzer import get_age_bracket
-from private_language_model import store_language_feedback, match_private_language
 from cry_training_model import store_cry_training_sample, train_cry_model
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -52,7 +45,6 @@ dynamodb = boto3.resource("dynamodb")
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
-concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
 training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 
@@ -99,16 +91,12 @@ def _decimal_to_float(obj: Any) -> Any:
 
 def lambda_handler(event: Dict, context: Any) -> Dict:
     """
-    Feedback Processor — handles language and cry emotion feedback.
+    Feedback Processor — handles cry emotion feedback.
 
     Expected body:
     {
         "session_id": str,
-        "feedback_type": "language" | "cry_emotion" | "general",
-
-        // For language feedback:
-        "baby_sound": str,        // What sound did baby make? (e.g., "ba ba ba")
-        "parent_meaning": str,    // What do you think they meant? (e.g., "want milk")
+        "feedback_type": "cry_emotion" | "general",
 
         // For cry emotion feedback:
         "confirmed_emotion": str, // Parent confirms/corrects emotion
@@ -126,7 +114,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             body = event.get("body") or event
 
         session_id = body.get("session_id")
-        feedback_type = body.get("feedback_type", "general")
+        feedback_type = str(body.get("feedback_type", "cry_emotion")).strip().lower()
 
         if not session_id:
             return _error_response(400, "session_id is required")
@@ -159,23 +147,19 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         result = {"feedback_id": feedback_id}
 
         # --- Route by feedback type ---
-        if feedback_type == "language":
-            result.update(
-                _process_language_feedback(
-                    body, session, child_id, session_id, age_days, feedback_record
-                )
-            )
-        elif feedback_type == "cry_emotion":
+        if feedback_type == "cry_emotion":
             result.update(
                 _process_cry_emotion_feedback(
                     body, session, child_id, session_id, age_days, feedback_record
                 )
             )
-        else:
+        elif feedback_type == "general":
             # General feedback (backward compatibility)
             result.update(
                 _process_general_feedback(body, feedback_record)
             )
+        else:
+            return _error_response(400, f"Unsupported feedback_type: {feedback_type}")
 
         # Save feedback record
         feedback_table.put_item(Item=_float_to_decimal(feedback_record))
@@ -192,68 +176,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         return _error_response(500, str(e))
 
 
-def _process_language_feedback(
-    body: Dict,
-    session: Dict,
-    child_id: str,
-    session_id: str,
-    age_days: Optional[int],
-    feedback_record: Dict,
-) -> Dict:
-    """
-    Process baby language feedback.
-    Parent tells us what baby was saying and what sound they made.
-    """
-    baby_sound = body.get("baby_sound", "").strip()
-    parent_meaning = body.get("parent_meaning", "").strip()
-
-    if not baby_sound and not parent_meaning:
-        return {"warning": "No language feedback provided"}
-
-    feedback_record["baby_sound"] = baby_sound
-    feedback_record["parent_meaning"] = parent_meaning
-
-    # Get embedding from session for pattern matching
-    embedding = session.get("embedding_vector", [])
-
-    # Check if this matches an existing private language pattern
-    existing_match = None
-    if embedding:
-        try:
-            existing_match = match_private_language(
-                embedding, child_id, concept_graph_table
-            )
-        except Exception as e:
-            logger.warning(f"Private language match check failed: {e}")
-
-    # Store/update private language pattern
-    existing_id = None
-    if existing_match and existing_match.get("matched"):
-        existing_id = existing_match.get("pattern_id")
-
-    label = parent_meaning or baby_sound
-    description = baby_sound if parent_meaning else ""
-
-    try:
-        store_result = store_language_feedback(
-            child_id=child_id,
-            embedding=embedding,
-            parent_label=label,
-            parent_description=description,
-            session_id=session_id,
-            concept_graph_table=concept_graph_table,
-            existing_pattern_id=existing_id,
-        )
-        feedback_record["language_model_update"] = store_result
-        return {
-            "language_update": store_result.get("status", "unknown"),
-            "pattern_id": store_result.get("concept_id", ""),
-        }
-    except Exception as e:
-        logger.error(f"Language feedback storage failed: {e}")
-        return {"warning": f"Language feedback storage failed: {e}"}
-
-
 def _process_cry_emotion_feedback(
     body: Dict,
     session: Dict,
@@ -266,7 +188,11 @@ def _process_cry_emotion_feedback(
     Process cry emotion feedback.
     Parent confirms or corrects the detected emotion.
     """
-    confirmed_emotion = body.get("confirmed_emotion", "").strip()
+    confirmed_emotion = str(body.get("confirmed_emotion", "") or "").strip()
+    if not confirmed_emotion:
+        confirmed_emotions = body.get("confirmed_emotions") or []
+        if isinstance(confirmed_emotions, list) and confirmed_emotions:
+            confirmed_emotion = str(confirmed_emotions[0] or "").strip()
     was_correct = body.get("was_correct", True)
 
     if not confirmed_emotion:

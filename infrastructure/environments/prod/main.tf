@@ -159,9 +159,6 @@ module "step_functions" {
   feature_extraction_lambda_arn    = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
   cluster_engine_lambda_arn        = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
   insight_generator_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
-  developmental_tracker_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-developmental-tracker"
-  concept_decoder_lambda_arn       = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-concept-decoder"
-  speech_analyzer_lambda_arn       = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-speech-analyzer"
   audio_bucket_name                = local.audio_bucket_name
   enable_s3_event_trigger          = var.enable_s3_event_trigger
   log_retention_days               = var.log_retention_days
@@ -262,10 +259,6 @@ module "cloudwatch" {
     module.lambda.insight_generator_function_name,
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,
-    module.lambda.nlp_processor_function_name,
-    module.lambda.developmental_tracker_function_name,
-    module.lambda.concept_decoder_function_name,
-    module.lambda.speech_analyzer_function_name,
   ]
 
   state_machine_arn            = module.step_functions.state_machine_arn

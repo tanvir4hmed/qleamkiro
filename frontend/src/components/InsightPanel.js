@@ -5,7 +5,7 @@ import React from 'react';
  *
  * Only shows sections that have data. No empty labels.
  * Matches: display_type, headline, transcript, words_detected,
- *          word_age_match, emotion, insight_sections, private_language,
+ *          word_age_match, emotion, insight_sections,
  *          adult_detected, age_mismatch, also_possible, dunstan_sound
  */
 
@@ -53,8 +53,6 @@ function InsightPanel({ insight }) {
     dunstan_sound,
     also_possible,
     age_mismatch,
-    // Private language
-    private_language,
     // Disclaimer (handled by parent)
   } = insight;
 
@@ -205,35 +203,6 @@ function InsightPanel({ insight }) {
         </div>
       )}
 
-      {/* Private language match */}
-      {private_language && private_language.matched && (
-        <div className="insight-private-lang">
-          <div className="insight-section-header">
-            <span className="section-icon">🔤</span>
-            <h3>Baby's Own Language</h3>
-          </div>
-          {private_language.parent_label && (
-            <div className="private-lang-item">
-              <span className="pl-label">Recognized as:</span>
-              <span className="pl-value">"{private_language.parent_label}"</span>
-            </div>
-          )}
-          {private_language.parent_description && (
-            <div className="private-lang-item">
-              <span className="pl-label">Meaning:</span>
-              <span className="pl-value">{private_language.parent_description}</span>
-            </div>
-          )}
-          <div className="private-lang-meta">
-            {private_language.times_heard > 0 && (
-              <span className="meta-chip">heard {private_language.times_heard} times</span>
-            )}
-            {private_language.confidence > 0 && (
-              <span className="meta-chip">{Math.round(private_language.confidence * 100)}% match</span>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

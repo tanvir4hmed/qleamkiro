@@ -22,9 +22,5 @@ variable "lambda_functions" {
     insight_generator    = "Insight generator Lambda"
     feedback_processor   = "Feedback processor Lambda"
     api_handler          = "API handler Lambda"
-    nlp_processor         = "NLP processor Lambda"
-    developmental_tracker = "Developmental tracker Lambda"
-    concept_decoder       = "Concept decoder Lambda"
-    speech_analyzer       = "Speech analyzer Lambda"
   }
 }

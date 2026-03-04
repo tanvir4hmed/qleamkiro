@@ -376,23 +376,6 @@ function Dashboard() {
           </div>
         )}
 
-        {/* Child-specific navigation */}
-        {selectedChild && (
-          <div className="child-nav-bar">
-            <button
-              className="child-nav-btn"
-              onClick={() => navigate(`/progress/${selectedChild.child_id}`)}
-            >
-              Journey ↗
-            </button>
-            <button
-              className="child-nav-btn child-nav-btn--language"
-              onClick={() => navigate(`/language/${selectedChild.child_id}`)}
-            >
-              Language ↗
-            </button>
-          </div>
-        )}
       </section>
 
       {/* ── Settings Panel ── */}

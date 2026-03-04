@@ -10,7 +10,7 @@ import FeedbackForm from '../components/FeedbackForm';
  *
  * Shows only what's available:
  * 1. Insight (dynamic based on sound type)
- * 2. Feedback form (cry emotion + baby language, age-appropriate)
+ * 2. Feedback form (cry emotion, age-appropriate)
  * 3. Disclaimer
  */
 

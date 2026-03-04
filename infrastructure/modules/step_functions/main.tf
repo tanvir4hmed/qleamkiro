@@ -104,11 +104,11 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Next = "ClusterEngine"
       }
 
-      # Step 4: Cluster for private language pattern matching (optional, non-fatal)
+      # Step 4: Cluster acoustic patterns (optional, non-fatal)
       ClusterEngine = {
         Type     = "Task"
         Resource = var.cluster_engine_lambda_arn
-        Comment  = "Cluster embedding for private language pattern detection"
+        Comment  = "Cluster embedding for pattern history"
         Parameters = {
           "child_id.$"         = "$.child_id"
           "session_id.$"       = "$.session_id"
@@ -118,28 +118,8 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"]
-            Next        = "DevelopmentalTracker"
-            ResultPath  = "$.cluster_error"
-          }
-        ]
-        Next = "DevelopmentalTracker"
-      }
-
-      # Step 5: Developmental tracking (non-fatal)
-      DevelopmentalTracker = {
-        Type     = "Task"
-        Resource = var.developmental_tracker_lambda_arn
-        Comment  = "Track developmental milestones and growth metrics"
-        Parameters = {
-          "child_id.$"   = "$.child_id"
-          "session_id.$" = "$.session_id"
-        }
-        ResultPath = "$.developmental_result"
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
             Next        = "ProcessingComplete"
-            ResultPath  = "$.developmental_error"
+            ResultPath  = "$.cluster_error"
           }
         ]
         Next = "ProcessingComplete"
