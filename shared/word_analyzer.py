@@ -9,7 +9,6 @@ Research-based word milestones:
 - 6-12 months: First words possible ("mama", "dada", "baba") — 0-3 words typical
 - 12-18 months: 3-20 words, single word utterances, mostly nouns
 - 18-24 months: 50-200 words, 2-3 word combinations ("more milk", "mama go")
-- 24-36 months: 200-1000 words, short sentences, pronouns, verbs
 
 Sources:
 - CDI (MacArthur-Bates Communicative Development Inventories)
@@ -57,14 +56,6 @@ WORD_EXPECTATIONS = {
         "example_phrases": ["more milk", "mama go", "want that", "no sleep", "big dog"],
         "adult_indicator_threshold": 100,  # Per utterance, not vocabulary
     },
-    "24_36m": {
-        "expected_words": 200,
-        "max_words": 1000,
-        "description": "200-1000 words. Short sentences, pronouns, verbs, questions",
-        "typical_patterns": ["short sentences", "questions", "pronouns", "past tense attempts"],
-        "example_phrases": ["I want milk", "where daddy go?", "me do it", "that's mine"],
-        "adult_indicator_threshold": 150,
-    },
 }
 
 
@@ -82,7 +73,8 @@ def _get_age_bracket(age_days: Optional[int]) -> str:
     elif months < 24:
         return "18_24m"
     else:
-        return "24_36m"
+        # Hard cap to supported range (0-24 months).
+        return "18_24m"
 
 
 def analyze_words_by_age(
@@ -125,7 +117,6 @@ def analyze_words_by_age(
         "6_12m": "6-12 months",
         "12_18m": "12-18 months",
         "18_24m": "18-24 months",
-        "24_36m": "24-36 months",
     }
 
     # --- Speaker assessment (baby vs adult) ---
@@ -219,7 +210,7 @@ def _estimate_age_from_words(
     words_in_text = len(text.split()) if text else 0
 
     if has_sentences and words_in_text > 10:
-        return "24_36m"
+        return "18_24m"
     elif has_sentences and words_in_text > 5:
         return "18_24m"
     elif unique_words > 20:

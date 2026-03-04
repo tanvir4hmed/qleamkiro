@@ -218,30 +218,12 @@ EMOTIONS_18_24M = {
     },
 }
 
-# 24-36 months: Full emotional range with verbal elements
-EMOTIONS_24_36M = {
-    **EMOTIONS_18_24M,
-    "embarrassment": {
-        "label": "Embarrassed / Self-conscious",
-        "icon": "🙈",
-        "description": "Cry or whimper after a social situation, hiding face",
-        "what_hearing": "Soft crying or whimpering — often hiding face, turning away, or seeking comfort",
-        "what_means": "Your child is developing self-awareness and may feel embarrassed. This shows emotional growth",
-        "what_try": [
-            "Comfort without drawing more attention to the moment",
-            "Normalize the experience: 'Everyone has moments like that'",
-            "Avoid laughing at or dismissing their feelings",
-        ],
-    },
-}
-
-# Age bracket mapping
+# Age bracket mapping (system scope: 0-24 months)
 AGE_EMOTION_MAP = {
     "0_6m": EMOTIONS_0_6M,
     "6_12m": EMOTIONS_6_12M,
     "12_18m": EMOTIONS_12_18M,
     "18_24m": EMOTIONS_18_24M,
-    "24_36m": EMOTIONS_24_36M,
 }
 
 
@@ -259,7 +241,8 @@ def get_age_bracket(age_days: Optional[int]) -> str:
     elif months < 24:
         return "18_24m"
     else:
-        return "24_36m"
+        # Hard cap to supported range (0-24 months).
+        return "18_24m"
 
 
 def get_emotions_for_age(age_days: Optional[int]) -> Dict[str, Dict]:
@@ -278,7 +261,6 @@ CRY_FREQUENCY_BY_AGE = {
     "6_12m": {"f0_range": (300, 600), "typical_f0": 450, "duration_typical": (0.5, 4.0)},
     "12_18m": {"f0_range": (280, 550), "typical_f0": 400, "duration_typical": (0.5, 3.5)},
     "18_24m": {"f0_range": (250, 500), "typical_f0": 370, "duration_typical": (0.3, 3.0)},
-    "24_36m": {"f0_range": (220, 480), "typical_f0": 340, "duration_typical": (0.3, 2.5)},
 }
 
 
@@ -437,7 +419,7 @@ def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, fl
     scores["boredom"] = min(1.0, bore_score)
 
     # Tantrum (12m+)
-    if age_bracket in ("12_18m", "18_24m", "24_36m"):
+    if age_bracket in ("12_18m", "18_24m"):
         tantrum_score = 0.0
         if rms_mean > 0.12:
             tantrum_score += 0.35
@@ -450,7 +432,7 @@ def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, fl
         scores["tantrum"] = min(1.0, tantrum_score)
 
     # Fear (12m+)
-    if age_bracket in ("12_18m", "18_24m", "24_36m"):
+    if age_bracket in ("12_18m", "18_24m"):
         fear_score = 0.0
         if f0 > 500:
             fear_score += 0.35  # Very high pitch
@@ -602,7 +584,6 @@ def _check_cry_age_match(
         "6_12m": "6-12 months",
         "12_18m": "12-18 months",
         "18_24m": "18-24 months",
-        "24_36m": "24-36 months",
     }
 
     return {

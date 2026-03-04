@@ -1582,15 +1582,9 @@ Stage 3: Word combinations (18–24 months)
   Insight:     "asking for water before lunch — confirmed 24 times"
   Value:       real-time stream decoder, parent understands child
 
-Stage 4: Early sentences (24–36 months)
-  App purpose: speech analysis + language development tracking
-  Insight:     language milestones, MLU, vocabulary, clarity
-  Value:       language health monitoring, developmental record
-
-Stage 5: Full language (36+ months)
-  App purpose: language development + emotional prosody
-  Insight:     fluency, pragmatics, emotional expression through language
-  Value:       full developmental archive from first cry to full language
+Stage 4+: Outside current production scope
+  Current deployment is intentionally capped at 0–24 months.
+  Advanced sentence-level language tracking is deferred.
 ```
 
 ### 12.10 How the AI Learns With the Baby — Daily

@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +47,7 @@ ALLOWED_ORIGINS = [
     for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
+MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
 
 dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
@@ -245,10 +246,19 @@ def create_child(event: Dict) -> Dict:
     if not birth_date:
         return response(400, {"error": "birth_date is required (YYYY-MM-DD)"}, event)
     try:
-        from datetime import date as _date
-        _date.fromisoformat(birth_date)
+        birth = date.fromisoformat(birth_date)
     except ValueError:
         return response(400, {"error": "birth_date must be a valid date in YYYY-MM-DD format"}, event)
+    today = datetime.now(timezone.utc).date()
+    age_days = (today - birth).days
+    if age_days < 0:
+        return response(400, {"error": "birth_date cannot be in the future"}, event)
+    if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return response(
+            400,
+            {"error": "Only children aged 0-24 months are supported. Please provide a birth_date within the last 24 months."},
+            event,
+        )
 
     child_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()

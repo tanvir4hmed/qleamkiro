@@ -27,23 +27,16 @@ const EMOTIONS_12_18M = [
 const EMOTIONS_18_24M = [
   ...EMOTIONS_12_18M,
   { key: 'jealousy', label: 'Jealous', icon: '😒' },
-  { key: 'embarrassment', label: 'Embarrassed', icon: '🙈' },
-];
-
-const EMOTIONS_24_36M = [
-  ...EMOTIONS_18_24M,
-  { key: 'excitement', label: 'Excited', icon: '🤩' },
-  { key: 'sadness', label: 'Sad', icon: '😢' },
 ];
 
 function getEmotionsForAge(ageDays) {
-  if (!ageDays || ageDays < 0) return EMOTIONS_24_36M;
+  if (!ageDays || ageDays < 0) return EMOTIONS_18_24M;
   const months = ageDays / 30.44;
   if (months < 6) return EMOTIONS_0_6M;
   if (months < 12) return EMOTIONS_6_12M;
   if (months < 18) return EMOTIONS_12_18M;
   if (months < 24) return EMOTIONS_18_24M;
-  return EMOTIONS_24_36M;
+  return EMOTIONS_18_24M;
 }
 
 function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {

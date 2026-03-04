@@ -147,8 +147,8 @@ DEVELOPMENTAL_STAGE_MAP = [
     (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
     (271,  365,  "PROTO_WORDS",       "TRANSITION"),
     (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
-    (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
-    (731,  99999, "EARLY_SENTENCES",  "LINGUISTIC"),
+    # System scope is capped to 0-24 months; older ages are clamped here.
+    (549,  99999, "WORD_COMBINATIONS", "LINGUISTIC"),
 ]
 
 # =============================================================================

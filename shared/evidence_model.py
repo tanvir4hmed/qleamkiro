@@ -50,7 +50,6 @@ _STAGE_BASE_WEIGHTS: Dict[str, Dict[str, float]] = {
     "PROTO_WORDS": {"acoustic": 0.58, "research": 0.20, "feedback": 0.22},
     "FIRST_WORDS": {"acoustic": 0.62, "research": 0.15, "feedback": 0.23},
     "WORD_COMBINATIONS": {"acoustic": 0.65, "research": 0.12, "feedback": 0.23},
-    "EARLY_SENTENCES": {"acoustic": 0.70, "research": 0.10, "feedback": 0.20},
     "UNKNOWN": {"acoustic": 0.60, "research": 0.20, "feedback": 0.20},
 }
 
@@ -354,17 +353,6 @@ _STAGE_PRIORS: Dict[str, Dict[str, float]] = {
         "frustration": 0.10,
         "happy": 0.16,
         "exploration": 0.32,
-        "distress_unknown": 0.05,
-    },
-    "EARLY_SENTENCES": {    # 731+ days
-        "hunger": 0.06,
-        "fatigue": 0.06,
-        "pain": 0.03,
-        "discomfort": 0.06,
-        "closeness": 0.10,
-        "frustration": 0.09,
-        "happy": 0.18,
-        "exploration": 0.37,
         "distress_unknown": 0.05,
     },
     "UNKNOWN": {

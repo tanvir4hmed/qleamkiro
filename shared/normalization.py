@@ -203,8 +203,8 @@ def developmental_stage_from_age(age_days) -> Dict:
         (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),
         (271,  365,  "PROTO_WORDS",       "TRANSITION"),
         (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
-        (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
-        (731,  99999, "EARLY_SENTENCES",  "LINGUISTIC"),
+        # System scope is capped to 0-24 months; older ages are clamped here.
+        (549,  99999, "WORD_COMBINATIONS", "LINGUISTIC"),
     ]
 
     if age_days is None or not isinstance(age_days, (int, float)) or age_days < 0:
@@ -214,7 +214,7 @@ def developmental_stage_from_age(age_days) -> Dict:
         if min_d <= int(age_days) <= max_d:
             return {"stage": stage, "mode": mode}
 
-    return {"stage": "EARLY_SENTENCES", "mode": "LINGUISTIC"}
+    return {"stage": "WORD_COMBINATIONS", "mode": "LINGUISTIC"}
 
 
 def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
@@ -227,9 +227,9 @@ def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
       VTL < 9.0cm  + F0 ≤ 380Hz  → EARLY_VOCAL    PRE_LINGUISTIC
       VTL 9–10.5cm + F0 > 300Hz  → CANONICAL_BABBLE TRANSITION
       VTL 9–10.5cm + F0 ≤ 300Hz  → PROTO_WORDS    TRANSITION
-      VTL 10.5–12cm + F0 > 240Hz → FIRST_WORDS    LINGUISTIC
-      VTL 10.5–12cm + F0 ≤ 240Hz → WORD_COMBINATIONS LINGUISTIC
-      VTL ≥ 12cm                 → EARLY_SENTENCES LINGUISTIC
+      VTL 10.5–12cm + F0 > 240Hz → FIRST_WORDS        LINGUISTIC
+      VTL 10.5–12cm + F0 ≤ 240Hz → WORD_COMBINATIONS  LINGUISTIC
+      VTL ≥ 12cm                 → WORD_COMBINATIONS  LINGUISTIC (capped)
 
     Returns:
         {"stage": str|None, "mode": str|None, "confidence": float}
@@ -263,7 +263,7 @@ def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
         mode  = "LINGUISTIC"
         conf  = 0.60
     else:
-        stage = "EARLY_SENTENCES"
+        stage = "WORD_COMBINATIONS"
         mode  = "LINGUISTIC"
         conf  = 0.55
 

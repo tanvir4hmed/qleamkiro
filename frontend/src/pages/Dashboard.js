@@ -7,6 +7,29 @@ import RecordButton from '../components/RecordButton';
 import InsightPanel from '../components/InsightPanel';
 
 const SELECTED_CHILD_KEY = 'qleam_selected_child_id';
+const MAX_SUPPORTED_CHILD_AGE_DAYS = 730;
+
+function getBirthDateBounds() {
+  const today = new Date();
+  const max = today.toISOString().split('T')[0];
+  const minDate = new Date(today);
+  minDate.setDate(minDate.getDate() - MAX_SUPPORTED_CHILD_AGE_DAYS);
+  const min = minDate.toISOString().split('T')[0];
+  return { min, max };
+}
+
+function isBirthDateInSupportedRange(dateString) {
+  if (!dateString) return false;
+  const parsed = new Date(`${dateString}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return false;
+
+  const now = new Date();
+  const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const birthUtcMs = Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate());
+  const ageDays = Math.floor((todayUtcMs - birthUtcMs) / 86400000);
+
+  return ageDays >= 0 && ageDays <= MAX_SUPPORTED_CHILD_AGE_DAYS;
+}
 
 // ─── Settings Panel ──────────────────────────────────────────────────────────
 
@@ -21,9 +44,14 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const overlayRef = useRef(null);
+  const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
   const handleAdd = async () => {
     if (!addName.trim() || !addDob) { setAddError('Name and date of birth are required.'); return; }
+    if (!isBirthDateInSupportedRange(addDob)) {
+      setAddError('Only children aged 0-24 months are supported.');
+      return;
+    }
     setAdding(true);
     setAddError('');
     try {
@@ -102,7 +130,8 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
                   type="date"
                   value={addDob}
                   onChange={e => setAddDob(e.target.value)}
-                  max={new Date().toISOString().split('T')[0]}
+                  min={minBirthDate}
+                  max={maxBirthDate}
                   className="settings-input"
                 />
               </label>
@@ -183,6 +212,7 @@ function Dashboard() {
   const [newChildBirthDate, setNewChildBirthDate] = useState('');
   const [notification, setNotification] = useState(null);
   const notificationTimerRef = useRef(null);
+  const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
   const showNotification = useCallback((msg) => {
     setNotification(msg);
@@ -266,6 +296,9 @@ function Dashboard() {
   }, [selectedChild, apiCall]);
 
   const addChild = useCallback(async (name, birthDate) => {
+    if (!isBirthDateInSupportedRange(birthDate)) {
+      throw new Error('Only children aged 0-24 months are supported.');
+    }
     const data = await apiCall('/child', {
       method: 'POST',
       body: JSON.stringify({ name, birth_date: birthDate }),
@@ -282,6 +315,10 @@ function Dashboard() {
 
   const handleAddFirstChild = async () => {
     if (!newChildName.trim() || !newChildBirthDate) return;
+    if (!isBirthDateInSupportedRange(newChildBirthDate)) {
+      setError('Only children aged 0-24 months are supported.');
+      return;
+    }
     try {
       await addChild(newChildName.trim(), newChildBirthDate);
       setNewChildName(''); setNewChildBirthDate(''); setShowAddFirst(false);
@@ -368,7 +405,8 @@ function Dashboard() {
                 type="date"
                 value={newChildBirthDate}
                 onChange={e => setNewChildBirthDate(e.target.value)}
-                max={new Date().toISOString().split('T')[0]}
+                min={minBirthDate}
+                max={maxBirthDate}
               />
             </label>
             <button onClick={handleAddFirstChild} disabled={!newChildName.trim() || !newChildBirthDate}>Add</button>
