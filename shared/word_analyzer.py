@@ -68,6 +68,23 @@ WORD_EXPECTATIONS = {
 }
 
 
+def _has_non_latin_script(words: set) -> bool:
+    """
+    Check if any words contain non-Latin characters (CJK, Arabic, Devanagari, etc.).
+
+    Baby first words are universally in the family's spoken language using basic
+    phonemes. If transcription returns CJK/Arabic/etc. characters for a young
+    baby, it's either an adult speaker or a transcription language misdetection.
+    """
+    import re
+    # Match any character outside Basic Latin + Latin Extended ranges
+    non_latin_pattern = re.compile(r'[^\u0000-\u024F\u1E00-\u1EFF]')
+    for word in words:
+        if non_latin_pattern.search(word):
+            return True
+    return False
+
+
 def _get_age_bracket(age_days: Optional[int]) -> str:
     """Convert age in days to bracket."""
     if age_days is None or age_days < 0:
@@ -132,10 +149,16 @@ def analyze_words_by_age(
     adult_threshold = expectations.get("adult_indicator_threshold", 50)
     speaker = "uncertain"
 
+    # Check if detected words use non-Latin script (strong adult/misdetection signal)
+    found_words = set(w["word"].lower() for w in display_words) if display_words else set()
+    non_latin_words = _has_non_latin_script(found_words)
+
     if is_adult_voice:
         speaker = "adult"
     elif age_bracket == "0_6m" and word_count > 0:
         speaker = "adult"  # No baby speaks at 0-6 months
+    elif non_latin_words and age_bracket in ("0_6m", "6_12m", "12_18m"):
+        speaker = "adult"  # Non-Latin script at young ages = adult or transcription error
     elif unique_words > adult_threshold:
         speaker = "adult"  # Too many words for registered age
     elif has_sentences and age_bracket in ("0_6m", "6_12m"):
@@ -146,12 +169,13 @@ def analyze_words_by_age(
         # Heuristic: check if words match baby-typical vocabulary
         if age_bracket in ("6_12m", "12_18m"):
             typical = set(expectations.get("typical_words", []))
-            found_words = set(w["word"].lower() for w in display_words)
             overlap = found_words & typical
             if len(overlap) > 0 and unique_words <= expectations["max_words"]:
                 speaker = "baby"
             elif unique_words > expectations["max_words"]:
                 speaker = "adult"
+            elif non_latin_words:
+                speaker = "adult"  # Foreign script with no typical word overlap
             else:
                 speaker = "uncertain"
         else:

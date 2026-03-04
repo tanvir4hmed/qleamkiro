@@ -33,11 +33,13 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     CHILD_PROFILE_TABLE,
+    CLUSTER_SIMILARITY_THRESHOLD,
     CONCEPT_GRAPH_TABLE,
     DISCLAIMER,
     MODEL_REGISTRY_TABLE,
     S3_BUCKET_NAME,
     SESSION_TABLE,
+    SOUND_CLUSTER_TABLE,
     TRAINING_CANDIDATE_TABLE,
 )
 from cry_analyzer import analyze_cry, get_age_bracket
@@ -45,6 +47,7 @@ from speech_transcriber import transcribe_audio, analyze_words_for_display
 from word_analyzer import analyze_words_by_age
 from private_language_model import match_private_language
 from cry_training_model import predict_cry_emotion
+from similarity import find_best_cluster
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -54,6 +57,7 @@ dynamodb = boto3.resource("dynamodb")
 session_table = dynamodb.Table(SESSION_TABLE)
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
+sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
 
@@ -94,6 +98,78 @@ def _decimal_to_float(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_decimal_to_float(i) for i in obj]
     return obj
+
+
+def _lookup_cluster_history(
+    child_id: str,
+    embedding_vector: List[float],
+) -> Optional[Dict]:
+    """
+    Look up per-child sound cluster history for the current audio embedding.
+
+    Queries all clusters for this child, finds the best matching cluster
+    via cosine similarity (≥ CLUSTER_SIMILARITY_THRESHOLD), and returns
+    the cluster's probable_intents distribution + reinforcement_weight.
+
+    This enables per-baby personalization: if a parent has previously
+    confirmed that *this* particular cry pattern means "hungry", the
+    cluster's probable_intents will carry that signal forward.
+
+    Returns:
+        Dict with keys: probable_intents, reinforcement_weight, cluster_id,
+        similarity — or None if no matching cluster found.
+    """
+    if not embedding_vector:
+        return None
+
+    try:
+        from boto3.dynamodb.conditions import Key
+
+        response = sound_cluster_table.query(
+            IndexName="child_id-last_updated-index",
+            KeyConditionExpression=Key("child_id").eq(child_id),
+        )
+        clusters = response.get("Items", [])
+        if not clusters:
+            return None
+
+        # Convert Decimal vectors to float for similarity computation
+        for c in clusters:
+            vec = c.get("embedding_vector", [])
+            if vec:
+                c["embedding_vector"] = [float(v) for v in vec]
+
+        best_id, best_sim = find_best_cluster(
+            embedding_vector, clusters, threshold=CLUSTER_SIMILARITY_THRESHOLD
+        )
+        if not best_id:
+            return None
+
+        matched = next((c for c in clusters if c.get("cluster_id") == best_id), None)
+        if not matched:
+            return None
+
+        probable_intents = matched.get("probable_intents", {})
+        # Convert Decimal values to float
+        probable_intents = {k: float(v) for k, v in probable_intents.items() if v}
+
+        reinforcement_weight = float(matched.get("reinforcement_weight", 0.5))
+
+        logger.info(
+            f"Cluster match for child {child_id}: cluster={best_id}, "
+            f"sim={best_sim:.3f}, weight={reinforcement_weight:.3f}, "
+            f"intents={list(probable_intents.keys())}"
+        )
+
+        return {
+            "probable_intents": probable_intents,
+            "reinforcement_weight": reinforcement_weight,
+            "cluster_id": best_id,
+            "similarity": round(best_sim, 4),
+        }
+    except Exception as e:
+        logger.warning(f"Cluster history lookup failed: {e}")
+        return None
 
 
 def lambda_handler(event: Dict, context: Any) -> Dict:
@@ -165,6 +241,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         except Exception as e:
             logger.warning(f"Private language matching failed: {e}")
 
+    # --- ALWAYS: Look up per-child cluster history for personalization ---
+    cluster_history = None
+    if embedding_vector and not is_adult:
+        cluster_history = _lookup_cluster_history(child_id, embedding_vector)
+
     # --- Route by sound type ---
     if sound_type == "silence":
         insight = _build_silence_insight(insight)
@@ -188,6 +269,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         insight = _build_cry_insight(
             insight, sound_features, age_days, is_adult,
             trained_cry, word_analysis, word_age_analysis, private_lang_match,
+            cluster_history,
         )
 
     elif sound_type == "speech":
@@ -201,7 +283,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         insight = _build_mixed_insight(
             insight, sound_classification, sound_features,
             word_analysis, word_age_analysis, is_adult, age_days,
-            private_lang_match,
+            private_lang_match, cluster_history,
         )
 
     # Save insight
@@ -269,6 +351,7 @@ def _build_cry_insight(
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
     private_lang_match: Optional[Dict],
+    cluster_history: Optional[Dict] = None,
 ) -> Dict:
     insight["display_type"] = "cry"
 
@@ -281,11 +364,12 @@ def _build_cry_insight(
         _attach_word_info(insight, word_analysis, word_age_analysis)
         return insight
 
-    # Cry emotion analysis
+    # Cry emotion analysis — now with per-child cluster history
     cry_result = analyze_cry(
         features=sound_features,
         age_days=age_days,
         trained_model_result=trained_cry,
+        cluster_history=cluster_history,
     )
 
     insight["headline"] = f"{cry_result['emotion_icon']} {cry_result['emotion_label']}"
@@ -316,6 +400,10 @@ def _build_cry_insight(
             ),
             "details": age_cry_match,
         }
+
+    # Per-child personalization indicator
+    if cry_result.get("cluster_personalized"):
+        insight["personalized"] = True
 
     # Also detected emotions (alternatives)
     alt_emotions = [e for e in cry_result.get("top_emotions", [])[1:3] if e.get("score", 0) > 0.15]
@@ -361,13 +449,41 @@ def _build_speech_insight(
     words = word_analysis
     age_info = word_age_analysis or {}
     speaker = age_info.get("speaker_assessment", "uncertain")
+    avg_confidence = words.get("avg_word_confidence", 0)
+
+    # --- Age-based skepticism: 0-6m babies cannot produce words ---
+    age_months = (age_days / 30.44) if age_days and age_days > 0 else None
+    if age_months is not None and age_months < 6:
+        # Any words at 0-6m are from an adult or transcription error
+        speaker = "adult"
+
+    # --- Low confidence gate: below 50% = unreliable transcription ---
+    low_confidence = avg_confidence < 0.50
 
     if is_adult or speaker == "adult":
         insight["headline"] = "Adult speech detected"
         insight["headline_icon"] = "🔊"
         insight["description"] = f"Speech detected with {words['word_count']} word(s). The voice characteristics suggest an adult speaker."
         insight["adult_detected"] = True
+    elif speaker == "uncertain" or low_confidence:
+        # DON'T claim baby is speaking when speaker identity is uncertain
+        # or transcription confidence is too low
+        insight["headline"] = "Speech sounds detected"
+        insight["headline_icon"] = "🔊"
+        if low_confidence:
+            insight["description"] = (
+                f"Audio contained speech-like sounds but transcription confidence "
+                f"was low ({round(avg_confidence * 100)}%). This may be background "
+                f"speech, babbling, or ambient noise."
+            )
+        else:
+            insight["description"] = (
+                f"{words['word_count']} word(s) detected but speaker identity is uncertain. "
+                f"This could be an adult nearby or your baby vocalizing."
+            )
+        insight["speaker_uncertain"] = True
     else:
+        # speaker == "baby" with sufficient confidence — safe to attribute to baby
         if words.get("has_sentences"):
             insight["headline"] = "Your baby is forming sentences!"
             insight["headline_icon"] = "🗣️"
@@ -398,6 +514,7 @@ def _build_mixed_insight(
     is_adult: bool,
     age_days: Optional[int],
     private_lang_match: Optional[Dict],
+    cluster_history: Optional[Dict] = None,
 ) -> Dict:
     """Handle mixed sound types — prioritize what to show."""
     insight["display_type"] = "mixed"
@@ -415,6 +532,7 @@ def _build_mixed_insight(
         return _build_cry_insight(
             insight, sound_features, age_days, is_adult,
             None, word_analysis, word_age_analysis, private_lang_match,
+            cluster_history,
         )
 
     if scores.get("laugh", 0) > 0.3:

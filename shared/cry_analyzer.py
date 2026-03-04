@@ -233,6 +233,30 @@ EMOTIONS_24_36M = {
             "Avoid laughing at or dismissing their feelings",
         ],
     },
+    "excitement": {
+        "label": "Excited / Overstimulated",
+        "icon": "🤩",
+        "description": "High-energy vocalizations with rapid breathing and movement",
+        "what_hearing": "Fast, high-pitched bursts of sound — squealing, rapid breathing, intense vocalizing",
+        "what_means": "Your child is experiencing strong positive arousal that may tip into overwhelm. Excitement and overstimulation share a thin line at this age",
+        "what_try": [
+            "Match their energy briefly, then gently guide toward calmer play",
+            "If escalating toward distress, reduce stimulation and slow the pace",
+            "Name the feeling: 'You're so excited! That's a big feeling'",
+        ],
+    },
+    "sadness": {
+        "label": "Sad / Disappointed",
+        "icon": "😢",
+        "description": "Quiet, sustained crying with low energy and withdrawal",
+        "what_hearing": "Low-pitched, sustained whimpering — less intense than pain, more withdrawn than frustration",
+        "what_means": "Your child may be feeling sad or disappointed. At this age they can experience genuine sadness about loss, change, or unmet expectations",
+        "what_try": [
+            "Sit close and offer comfort without trying to 'fix' the sadness",
+            "Validate: 'You're feeling sad. That's okay, I'm here with you'",
+            "Give them space to feel it — sadness is a healthy emotion to experience",
+        ],
+    },
 }
 
 # Age bracket mapping
@@ -462,21 +486,135 @@ def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, fl
             fear_score += 0.20
         scores["fear"] = min(1.0, fear_score)
 
+    # Excitement / Overstimulated (24m+): Fast, high-pitched bursts, high energy
+    if age_bracket == "24_36m":
+        excite_score = 0.0
+        if f0 > 400:
+            excite_score += 0.30  # High pitch
+        if rms_mean > 0.08:
+            excite_score += 0.25  # High energy
+        if energy_var > 0.35:
+            excite_score += 0.25  # Rapid bursts (high variability)
+        if f0_instability > 0.12:
+            excite_score += 0.20  # Pitch jumps
+        scores["excitement"] = min(1.0, excite_score)
+
+    # Sadness / Disappointed (24m+): Low pitch, sustained, low energy, withdrawn
+    if age_bracket == "24_36m":
+        sad_score = 0.0
+        if f0 < 300:
+            sad_score += 0.30  # Low pitch
+        if rms_mean < 0.06:
+            sad_score += 0.30  # Low intensity (withdrawn)
+        if energy_var < 0.20:
+            sad_score += 0.20  # Sustained, not bursty
+        if f0_instability < 0.10:
+            sad_score += 0.20  # Relatively steady pitch
+        scores["sadness"] = min(1.0, sad_score)
+
     return scores
+
+
+def _blend_cluster_intents(
+    emotion_scores: Dict[str, float],
+    cluster_history: Dict,
+    emotions_map: Dict,
+) -> bool:
+    """
+    Blend per-child cluster probable_intents into emotion scores (in-place).
+
+    This is the personalization layer: when a parent has previously confirmed
+    what a particular cry pattern means (e.g. "this sound = hungry"), the
+    cluster's probable_intents distribution carries that signal forward.
+
+    Blending rules:
+    - Only activates when reinforcement_weight > 0.5 (above neutral start).
+      Neutral/low-confidence clusters don't influence scores.
+    - Influence strength scales with (reinforcement_weight - 0.5) * 2,
+      giving a 0-1 range from neutral to fully confirmed.
+    - Maximum cluster influence is capped at 25% to prevent one piece of
+      feedback from overriding acoustic evidence entirely.
+    - Only cluster intents that map to valid emotions for the child's age
+      bracket are applied.
+
+    Args:
+        emotion_scores: Current blended scores (modified in-place)
+        cluster_history: From _lookup_cluster_history() — must have
+            probable_intents and reinforcement_weight
+        emotions_map: Age-appropriate emotion definitions
+
+    Returns:
+        True if cluster intents were actually blended, False otherwise.
+    """
+    probable_intents = cluster_history.get("probable_intents", {})
+    reinforcement_weight = cluster_history.get("reinforcement_weight", 0.5)
+
+    # Only apply if cluster has been reinforced above neutral
+    if reinforcement_weight <= 0.5 or not probable_intents:
+        return False
+
+    # Scale influence: 0.5 → 0%, 0.75 → 50%, 1.0 → 100% of max influence
+    raw_influence = (reinforcement_weight - 0.5) * 2.0
+    # Cap at 25% max contribution to total score
+    max_cluster_weight = 0.25
+    cluster_weight = min(max_cluster_weight, raw_influence * max_cluster_weight)
+
+    available_emotions = set(emotions_map.keys())
+    # Filter cluster intents to only valid emotions for this age
+    valid_intents = {
+        k: float(v) for k, v in probable_intents.items()
+        if k in available_emotions and float(v) > 0
+    }
+    if not valid_intents:
+        return False
+
+    # Normalize cluster intents to sum to 1.0
+    intent_total = sum(valid_intents.values())
+    if intent_total <= 0:
+        return False
+    normalized_intents = {k: v / intent_total for k, v in valid_intents.items()}
+
+    # Blend: shrink existing scores by (1 - cluster_weight), add cluster contribution
+    for key in emotion_scores:
+        emotion_scores[key] *= (1.0 - cluster_weight)
+
+    for key, intent_val in normalized_intents.items():
+        current = emotion_scores.get(key, 0.0)
+        emotion_scores[key] = current + cluster_weight * intent_val
+
+    logger.info(
+        f"Cluster personalization applied: weight={reinforcement_weight:.3f}, "
+        f"influence={cluster_weight:.3f}, top_intent={max(normalized_intents, key=normalized_intents.get)}"
+    )
+    return True
 
 
 def analyze_cry(
     features: Dict,
     age_days: Optional[int] = None,
     trained_model_result: Optional[Dict] = None,
+    cluster_history: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Analyze cry sounds and determine probable emotion.
+
+    Three-signal blending:
+      1. Acoustic analysis (rule-based Dunstan + pattern scoring)
+      2. Trained model (nearest-centroid from parent-confirmed samples)
+      3. Per-child cluster history (probable_intents from parent feedback
+         via reinforcement_engine — personalizes per baby)
+
+    Base blend: 60% acoustic + 40% trained model.
+    When cluster history is available and reinforcement_weight > neutral (0.5),
+    the cluster's probable_intents nudge the blended scores proportionally.
 
     Args:
         features: Acoustic features from sound_classifier
         age_days: Child's age in days
         trained_model_result: Optional output from cry training model
+        cluster_history: Optional per-child cluster match from _lookup_cluster_history()
+            Keys: probable_intents (Dict[str,float]), reinforcement_weight (float),
+                  cluster_id (str), similarity (float)
 
     Returns:
         {
@@ -490,6 +628,7 @@ def analyze_cry(
             "what_means": str,
             "what_try": [str, ...],
             "dunstan_sound": str or None,
+            "cluster_personalized": bool,
             "age_cry_match": {
                 "matches": bool,
                 "expected_f0_range": (float, float),
@@ -517,6 +656,13 @@ def analyze_cry(
                 acoustic_val = emotion_scores[key]
                 model_val = model_scores[key]
                 emotion_scores[key] = 0.6 * acoustic_val + 0.4 * model_val * model_confidence
+
+    # Blend with per-child cluster history (personalization signal)
+    cluster_personalized = False
+    if cluster_history and isinstance(cluster_history, dict):
+        cluster_personalized = _blend_cluster_intents(
+            emotion_scores, cluster_history, emotions_map
+        )
 
     # Filter to only emotions available for this age
     available_emotions = set(emotions_map.keys())
@@ -565,6 +711,7 @@ def analyze_cry(
         "what_means": emotion_info.get("what_means", "Your baby is expressing a need"),
         "what_try": emotion_info.get("what_try", ["Observe and respond to your baby's cues"]),
         "dunstan_sound": emotion_info.get("dunstan") if age_bracket == "0_6m" else None,
+        "cluster_personalized": cluster_personalized,
         "age_cry_match": age_cry_match,
     }
 

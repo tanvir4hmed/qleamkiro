@@ -511,7 +511,10 @@ def classify_probabilistic(
     }
 
 
-def age_class_to_stage_hint(age_class_result: Dict) -> Dict:
+def age_class_to_stage_hint(
+    age_class_result: Dict,
+    age_days: Optional[int] = None,
+) -> Dict:
     """
     Convert probabilistic classifier output to a developmental stage hint.
 
@@ -519,24 +522,32 @@ def age_class_to_stage_hint(age_class_result: Dict) -> Dict:
     that complements (and can override) the VTL/F0-only hint from
     audio_stage_hint_from_bio().
 
+    When age_days is provided, it disambiguates within broad acoustic classes:
+      - "infant" (3-12m acoustically) → EARLY_VOCAL or CANONICAL_BABBLE
+      - "child"  (2-5yr acoustically) → FIRST_WORDS, WORD_COMBINATIONS, or EARLY_SENTENCES
+
     Returns:
         {"stage": str | None, "mode": str | None, "confidence": float}
     """
     cls  = age_class_result.get("final_class", "unknown")
     conf = float(age_class_result.get("confidence", 0.0))
 
-    # Mapping: class → (stage, mode, base_confidence)
-    _MAP = {
-        "newborn":      ("NEWBORN",          "PRE_LINGUISTIC",  0.70),
-        "infant":       ("EARLY_VOCAL",      "PRE_LINGUISTIC",  0.63),
-        "toddler":      ("PROTO_WORDS",      "TRANSITION",      0.60),
-        "child":        ("FIRST_WORDS",      "LINGUISTIC",      0.55),
-        "adult_female": (None, None, 0.0),
-        "adult_male":   (None, None, 0.0),
-        "unknown":      (None, None, 0.0),
-    }
+    # For adult/unknown classes, no stage hint
+    if cls in ("adult_female", "adult_male", "unknown"):
+        return {"stage": None, "mode": None, "confidence": 0.0}
 
-    stage, mode, base_conf = _MAP.get(cls, (None, None, 0.0))
+    # Use age_days to pick the most accurate stage within the acoustic class
+    if age_days is not None and age_days >= 0:
+        stage, mode, base_conf = _stage_from_class_and_age(cls, age_days)
+    else:
+        # Fallback: pure acoustic class mapping (no age info)
+        _MAP = {
+            "newborn":  ("NEWBORN",      "PRE_LINGUISTIC",  0.70),
+            "infant":   ("EARLY_VOCAL",  "PRE_LINGUISTIC",  0.63),
+            "toddler":  ("PROTO_WORDS",  "TRANSITION",      0.60),
+            "child":    ("FIRST_WORDS",  "LINGUISTIC",      0.55),
+        }
+        stage, mode, base_conf = _MAP.get(cls, (None, None, 0.0))
 
     if stage is None:
         return {"stage": None, "mode": None, "confidence": 0.0}
@@ -544,6 +555,48 @@ def age_class_to_stage_hint(age_class_result: Dict) -> Dict:
     # Scale base confidence by the classifier's own confidence
     final_conf = round(base_conf * conf, 3)
     return {"stage": stage, "mode": mode, "confidence": final_conf}
+
+
+def _stage_from_class_and_age(
+    cls: str, age_days: int
+) -> Tuple[str, str, float]:
+    """
+    Pick developmental stage using both acoustic class and registered age.
+
+    The acoustic classifier gives broad buckets (newborn/infant/toddler/child).
+    age_days from the child profile gives the fine-grained stage within each
+    bucket, aligning with the 7-stage DEVELOPMENTAL_STAGE_MAP from constants.
+
+    Returns (stage, mode, base_confidence).
+    """
+    if cls == "newborn":
+        return ("NEWBORN", "PRE_LINGUISTIC", 0.70)
+
+    if cls == "infant":
+        # infant acoustics span 3-12 months
+        # EARLY_VOCAL: 91-180 days, CANONICAL_BABBLE: 181-270 days
+        if age_days <= 180:
+            return ("EARLY_VOCAL", "PRE_LINGUISTIC", 0.65)
+        else:
+            return ("CANONICAL_BABBLE", "PRE_LINGUISTIC", 0.63)
+
+    if cls == "toddler":
+        # toddler acoustics span ~9-24 months
+        # PROTO_WORDS: 271-365 days
+        return ("PROTO_WORDS", "TRANSITION", 0.60)
+
+    if cls == "child":
+        # child acoustics span 2-5 years
+        # FIRST_WORDS: 366-548 days, WORD_COMBINATIONS: 549-730 days,
+        # EARLY_SENTENCES: 731+ days
+        if age_days <= 548:
+            return ("FIRST_WORDS", "LINGUISTIC", 0.58)
+        elif age_days <= 730:
+            return ("WORD_COMBINATIONS", "LINGUISTIC", 0.55)
+        else:
+            return ("EARLY_SENTENCES", "LINGUISTIC", 0.52)
+
+    return (None, None, 0.0)
 
 
 # ---------------------------------------------------------------------------

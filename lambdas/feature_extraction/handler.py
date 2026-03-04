@@ -36,6 +36,7 @@ from constants import (
     S3_BUCKET_NAME,
     SESSION_TABLE,
 )
+from normalization import developmental_stage_from_age
 from audio_utils import (
     audio_quality_gate,
     biological_validation,
@@ -238,6 +239,11 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     profile = _get_child_profile(child_id)
     age_days = _compute_age_days(profile.get("birth_date"))
 
+    # --- 7b. Determine developmental stage from age ---
+    stage_info = developmental_stage_from_age(age_days)
+    developmental_stage = stage_info["stage"]
+    developmental_mode = stage_info["mode"]
+
     # Determine routing
     routing = _build_routing(
         sound_type=sound_type,
@@ -272,6 +278,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "quality_gate": quality_gate,
         "diarization": diarization_result,
         "age_days_at_recording": age_days,
+        "developmental_stage": developmental_stage,
+        "developmental_mode": developmental_mode,
         "session_context": session_context,
         "routing": routing,
     }
@@ -292,6 +300,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "biological": bio_result,
         "age_classification": age_classification,
         "age_days": age_days,
+        "developmental_stage": developmental_stage,
+        "developmental_mode": developmental_mode,
         "duration_seconds": duration_seconds,
         "quality_gate": quality_gate,
         "routing": routing,
@@ -386,6 +396,7 @@ def _save_and_return_fast_reject(
     """Save and return a fast-reject result."""
     profile = _get_child_profile(child_id)
     age_days = _compute_age_days(profile.get("birth_date"))
+    stage_info = developmental_stage_from_age(age_days)
     now = datetime.now(timezone.utc).isoformat()
 
     session_item = {
@@ -399,6 +410,8 @@ def _save_and_return_fast_reject(
         "is_adult": False,
         "quality_gate": quality_gate,
         "age_days_at_recording": age_days,
+        "developmental_stage": stage_info["stage"],
+        "developmental_mode": stage_info["mode"],
         "session_context": session_context,
         "routing": {"sound_type": "silence", "is_adult": False,
                      "run_transcription": False, "run_cry_analysis": False,
@@ -426,6 +439,8 @@ def _save_and_return_fast_reject(
         "biological": {},
         "age_classification": {},
         "age_days": age_days,
+        "developmental_stage": stage_info["stage"],
+        "developmental_mode": stage_info["mode"],
         "quality_gate": quality_gate,
         "session_context": session_context,
         "s3_audio_path": s3_audio_path,
