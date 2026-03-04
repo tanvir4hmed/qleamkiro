@@ -199,12 +199,13 @@ def developmental_stage_from_age(age_days) -> Dict:
     # Inline stage map to avoid circular imports
     _STAGE_MAP = [
         (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
-        (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
-        (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),
-        (271,  365,  "PROTO_WORDS",       "TRANSITION"),
-        (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
-        # System scope is capped to 0-24 months; older ages are clamped here.
-        (549,  99999, "WORD_COMBINATIONS", "LINGUISTIC"),
+        # (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
+        # (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),
+        # (271,  365,  "PROTO_WORDS",       "TRANSITION"),
+        # (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
+        # # System scope is capped to 0-24 months; older ages are clamped here.
+        # (549,  99999, "WORD_COMBINATIONS", "LINGUISTIC"),
+        (91, 99999, "NEWBORN", "PRE_LINGUISTIC"),
     ]
 
     if age_days is None or not isinstance(age_days, (int, float)) or age_days < 0:
@@ -214,7 +215,8 @@ def developmental_stage_from_age(age_days) -> Dict:
         if min_d <= int(age_days) <= max_d:
             return {"stage": stage, "mode": mode}
 
-    return {"stage": "WORD_COMBINATIONS", "mode": "LINGUISTIC"}
+    # return {"stage": "WORD_COMBINATIONS", "mode": "LINGUISTIC"}
+    return {"stage": "NEWBORN", "mode": "PRE_LINGUISTIC"}
 
 
 def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
@@ -251,20 +253,25 @@ def audio_stage_hint_from_bio(bio_result: Optional[Dict]) -> Dict:
         return _NO_HINT
 
     if vtl_cm < 9.0:
-        stage = "NEWBORN" if f0_hz > 380 else "EARLY_VOCAL"
+        # stage = "NEWBORN" if f0_hz > 380 else "EARLY_VOCAL"
+        stage = "NEWBORN"
         mode  = "PRE_LINGUISTIC"
         conf  = 0.70
-    elif vtl_cm < 10.5:
-        stage = "CANONICAL_BABBLE" if f0_hz > 300 else "PROTO_WORDS"
-        mode  = "TRANSITION"
-        conf  = 0.65
-    elif vtl_cm < 12.0:
-        stage = "FIRST_WORDS" if f0_hz > 240 else "WORD_COMBINATIONS"
-        mode  = "LINGUISTIC"
-        conf  = 0.60
+    # elif vtl_cm < 10.5:
+    #     stage = "CANONICAL_BABBLE" if f0_hz > 300 else "PROTO_WORDS"
+    #     mode  = "TRANSITION"
+    #     conf  = 0.65
+    # elif vtl_cm < 12.0:
+    #     stage = "FIRST_WORDS" if f0_hz > 240 else "WORD_COMBINATIONS"
+    #     mode  = "LINGUISTIC"
+    #     conf  = 0.60
+    # else:
+    #     stage = "WORD_COMBINATIONS"
+    #     mode  = "LINGUISTIC"
+    #     conf  = 0.55
     else:
-        stage = "WORD_COMBINATIONS"
-        mode  = "LINGUISTIC"
-        conf  = 0.55
+        stage = "NEWBORN"
+        mode  = "PRE_LINGUISTIC"
+        conf  = 0.60
 
     return {"stage": stage, "mode": mode, "confidence": round(conf, 2)}

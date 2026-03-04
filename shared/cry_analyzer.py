@@ -219,11 +219,12 @@ EMOTIONS_18_24M = {
 }
 
 # Age bracket mapping (system scope: 0-24 months)
+# Active runtime scope is trimmed to 0-3 months.
 AGE_EMOTION_MAP = {
     "0_6m": EMOTIONS_0_6M,
-    "6_12m": EMOTIONS_6_12M,
-    "12_18m": EMOTIONS_12_18M,
-    "18_24m": EMOTIONS_18_24M,
+    # "6_12m": EMOTIONS_6_12M,
+    # "12_18m": EMOTIONS_12_18M,
+    # "18_24m": EMOTIONS_18_24M,
 }
 
 
@@ -232,17 +233,20 @@ def get_age_bracket(age_days: Optional[int]) -> str:
     if age_days is None or age_days < 0:
         return "0_6m"
     months = age_days / 30.44
-    if months < 6:
+    # if months < 6:
+    if months <= 3:
         return "0_6m"
-    elif months < 12:
-        return "6_12m"
-    elif months < 18:
-        return "12_18m"
-    elif months < 24:
-        return "18_24m"
-    else:
-        # Hard cap to supported range (0-24 months).
-        return "18_24m"
+    # elif months < 12:
+    #     return "6_12m"
+    # elif months < 18:
+    #     return "12_18m"
+    # elif months < 24:
+    #     return "18_24m"
+    # else:
+    #     # Hard cap to supported range (0-24 months).
+    #     return "18_24m"
+    # Hard cap to active 0-3 month runtime path.
+    return "0_6m"
 
 
 def get_emotions_for_age(age_days: Optional[int]) -> Dict[str, Dict]:
@@ -258,9 +262,9 @@ def get_emotions_for_age(age_days: Optional[int]) -> Dict[str, Dict]:
 # Age-specific cry frequency characteristics (research-based)
 CRY_FREQUENCY_BY_AGE = {
     "0_6m": {"f0_range": (350, 650), "typical_f0": 500, "duration_typical": (1.0, 5.0)},
-    "6_12m": {"f0_range": (300, 600), "typical_f0": 450, "duration_typical": (0.5, 4.0)},
-    "12_18m": {"f0_range": (280, 550), "typical_f0": 400, "duration_typical": (0.5, 3.5)},
-    "18_24m": {"f0_range": (250, 500), "typical_f0": 370, "duration_typical": (0.3, 3.0)},
+    # "6_12m": {"f0_range": (300, 600), "typical_f0": 450, "duration_typical": (0.5, 4.0)},
+    # "12_18m": {"f0_range": (280, 550), "typical_f0": 400, "duration_typical": (0.5, 3.5)},
+    # "18_24m": {"f0_range": (250, 500), "typical_f0": 370, "duration_typical": (0.3, 3.0)},
 }
 
 
@@ -486,8 +490,10 @@ def analyze_cry(
     # Score emotions based on age
     if age_bracket == "0_6m":
         emotion_scores = _score_dunstan_sounds(features)
+    # else:
+    #     emotion_scores = _score_older_baby_emotions(features, age_bracket)
     else:
-        emotion_scores = _score_older_baby_emotions(features, age_bracket)
+        emotion_scores = _score_dunstan_sounds(features)
 
     # Blend with trained model if available
     if trained_model_result and isinstance(trained_model_result, dict):
@@ -580,10 +586,11 @@ def _check_cry_age_match(
             probable_bracket = best_fit
 
     bracket_labels = {
-        "0_6m": "0-6 months",
-        "6_12m": "6-12 months",
-        "12_18m": "12-18 months",
-        "18_24m": "18-24 months",
+        # "0_6m": "0-6 months",
+        "0_6m": "0-3 months",
+        # "6_12m": "6-12 months",
+        # "12_18m": "12-18 months",
+        # "18_24m": "18-24 months",
     }
 
     return {

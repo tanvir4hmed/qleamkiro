@@ -55,6 +55,8 @@ logger = logging.getLogger(__name__)
 dynamodb = boto3.resource("dynamodb")
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
+# MAX_SUPPORTED_CHILD_AGE_DAYS = 730
+MAX_SUPPORTED_CHILD_AGE_DAYS = 90
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -165,11 +167,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.warning(f"Quality gate error: {e}")
 
     # Check for critical failures (no signal, too short)
-    critical = _check_critical_issues(quality_gate)
+    # critical = _check_critical_issues(quality_gate)
+    critical, reject_title, reject_message = _check_critical_issues(quality_gate)
     if critical:
         return _save_and_return_fast_reject(
             child_id, session_id, s3_audio_path, duration_seconds,
-            quality_gate, session_context, critical,
+            quality_gate, session_context, critical, reject_title, reject_message,
         )
 
     # --- 3. Feature extraction (embedding for clustering + private language) ---
@@ -237,6 +240,20 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # --- 7. Get child profile for age info ---
     profile = _get_child_profile(child_id)
     age_days = _compute_age_days(profile.get("birth_date"))
+
+    # --- 7.1 Hard reject for out-of-scope age / adult / noisy / chaotic / broken ---
+    post_reject_reasons, post_reject_title, post_reject_message = _check_post_classification_rejects(
+        sound_type=sound_type,
+        is_adult=is_adult,
+        quality_gate=quality_gate,
+        age_days=age_days,
+    )
+    if post_reject_reasons:
+        return _save_and_return_fast_reject(
+            child_id, session_id, s3_audio_path, duration_seconds,
+            quality_gate, session_context, post_reject_reasons, post_reject_title, post_reject_message,
+            reject_sound_type=sound_type, reject_is_adult=is_adult,
+        )
 
     # Determine routing
     routing = _build_routing(
@@ -358,13 +375,72 @@ def _build_routing(
     }
 
 
-def _check_critical_issues(quality_gate: Dict) -> list:
-    """Check for critical quality issues that warrant fast rejection."""
+def _check_critical_issues(quality_gate: Dict) -> tuple:
+    """Check early quality issues that warrant fast rejection."""
     if not isinstance(quality_gate, dict):
-        return []
+        return [], "", ""
     issues = quality_gate.get("issues", []) or []
-    critical = [i for i in issues if str(i).startswith(("no_signal", "too_short:"))]
-    return critical
+    reasons = []
+    has_broken = False
+    has_noisy = False
+    for issue in issues:
+        issue_text = str(issue)
+        if issue_text.startswith(("no_signal", "too_short:", "too_long:", "clipping:")):
+            reasons.append(issue_text)
+            has_broken = True
+        elif issue_text.startswith(("low_snr:", "too_silent:", "no_vocal_activity_detected")):
+            reasons.append(issue_text)
+            has_noisy = True
+
+    if has_broken:
+        return reasons, "Audio Quality Issue", "Audio is broken. Please try to record again with a clear baby sound."
+    if has_noisy:
+        return reasons, "Noisy Environment", "Noisy environment detected. Please record again in a quieter place."
+    return [], "", ""
+
+
+def _check_post_classification_rejects(
+    sound_type: str,
+    is_adult: bool,
+    quality_gate: Dict,
+    age_days: Optional[int],
+) -> tuple:
+    """Check post-classification rejection conditions for strict 0-3 month scope."""
+    reasons = []
+    issues = quality_gate.get("issues", []) if isinstance(quality_gate, dict) else []
+
+    if not isinstance(age_days, int) or age_days < 0:
+        reasons.append("age_unavailable")
+    if isinstance(age_days, int) and age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        reasons.append(f"age_out_of_range:{age_days}d")
+
+    if is_adult:
+        reasons.append("adult_voice_detected")
+
+    if sound_type == "noise":
+        reasons.append("noisy_environment")
+    if sound_type == "mixed":
+        reasons.append("chaotic_environment")
+
+    for issue in issues:
+        issue_text = str(issue)
+        if issue_text.startswith(("no_signal", "too_short:", "too_long:", "clipping:")):
+            reasons.append("broken_audio")
+        if issue_text.startswith(("low_snr:", "too_silent:", "no_vocal_activity_detected")):
+            reasons.append("noisy_environment")
+
+    if not reasons:
+        return [], "", ""
+
+    if "age_unavailable" in reasons or any(str(r).startswith("age_out_of_range:") for r in reasons):
+        return reasons, "Age Not Supported", "This system supports only 0-3 month babies. Recording rejected."
+    if "adult_voice_detected" in reasons:
+        return reasons, "Adult Voice Detected", "Adult voice detected. Please record a clean and fresh baby sound."
+    if "chaotic_environment" in reasons:
+        return reasons, "Chaotic Environment", "Chaotic environment detected. Please record a cleaner baby-only sound."
+    if "noisy_environment" in reasons:
+        return reasons, "Noisy Environment", "Noisy environment detected. Please record in a quieter place."
+    return reasons, "Audio Quality Issue", "Audio is broken. Please try to record again."
 
 
 def _get_child_profile(child_id: str) -> Dict:
@@ -382,11 +458,18 @@ def _get_child_profile(child_id: str) -> Dict:
 def _save_and_return_fast_reject(
     child_id, session_id, s3_audio_path, duration_seconds,
     quality_gate, session_context, critical_issues,
+    reject_title: Optional[str] = None,
+    reject_message: Optional[str] = None,
+    reject_sound_type: str = "silence",
+    reject_is_adult: bool = False,
 ) -> Dict:
     """Save and return a fast-reject result."""
     profile = _get_child_profile(child_id)
     age_days = _compute_age_days(profile.get("birth_date"))
     now = datetime.now(timezone.utc).isoformat()
+
+    final_title = reject_title or "Audio Rejected"
+    final_message = reject_message or "The recording could not be processed. Please try a cleaner baby recording."
 
     session_item = {
         "session_id": session_id,
@@ -395,16 +478,23 @@ def _save_and_return_fast_reject(
         "timestamp": now,
         "duration_seconds": duration_seconds,
         "processed": True,
-        "sound_type": "silence",
-        "is_adult": False,
+        # "sound_type": "silence",
+        "sound_type": reject_sound_type,
+        # "is_adult": False,
+        "is_adult": reject_is_adult,
         "quality_gate": quality_gate,
         "age_days_at_recording": age_days,
         "session_context": session_context,
-        "routing": {"sound_type": "silence", "is_adult": False,
-                     "run_transcription": False, "run_cry_analysis": False,
-                     "run_laugh_detection": False},
+        # "routing": {"sound_type": "silence", "is_adult": False,
+        #              "run_transcription": False, "run_cry_analysis": False,
+        #              "run_laugh_detection": False},
+        "routing": {"sound_type": reject_sound_type, "is_adult": reject_is_adult,
+                    "run_transcription": False, "run_cry_analysis": False,
+                    "run_laugh_detection": False},
         "fast_reject": True,
         "fast_reject_reasons": critical_issues,
+        "fast_reject_title": final_title,
+        "fast_reject_message": final_message,
     }
     session_table.put_item(Item=_float_to_decimal(session_item))
 
@@ -412,10 +502,14 @@ def _save_and_return_fast_reject(
         "status": "classified",
         "session_id": session_id,
         "child_id": child_id,
-        "sound_type": "silence",
-        "is_adult": False,
+        # "sound_type": "silence",
+        "sound_type": reject_sound_type,
+        # "is_adult": False,
+        "is_adult": reject_is_adult,
         "fast_reject": True,
         "fast_reject_reasons": critical_issues,
+        "fast_reject_title": final_title,
+        "fast_reject_message": final_message,
         "routing": session_item["routing"],
         "duration_seconds": duration_seconds,
         "embedding_vector": [],

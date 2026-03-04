@@ -47,7 +47,8 @@ ALLOWED_ORIGINS = [
     for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
-MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
+# MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
+MAX_SUPPORTED_CHILD_AGE_DAYS = 90  # 3 months (0-3 month boundary)
 
 dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
@@ -256,7 +257,8 @@ def create_child(event: Dict) -> Dict:
     if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
         return response(
             400,
-            {"error": "Only children aged 0-24 months are supported. Please provide a birth_date within the last 24 months."},
+            # {"error": "Only children aged 0-24 months are supported. Please provide a birth_date within the last 24 months."},
+            {"error": "Only babies aged 0-3 months are supported. Please provide a birth_date within the last 90 days."},
             event,
         )
 
@@ -566,6 +568,31 @@ def upload_session(event: Dict) -> Dict:
     if not child_id:
         return response(400, {"error": "child_id is required"}, event)
 
+    # Enforce ownership + strict 0-3 month boundary before creating upload session
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    profile = _decimal_to_float(profile_resp["Item"])
+    if profile.get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized for this child profile"}, event)
+    birth_date = str(profile.get("birth_date") or "").strip()
+    if not birth_date:
+        return response(400, {"error": "Child birth_date is missing. Please update the profile first."}, event)
+    try:
+        birth = date.fromisoformat(birth_date)
+    except ValueError:
+        return response(400, {"error": "Child birth_date is invalid. Please update the profile."}, event)
+    today = datetime.now(timezone.utc).date()
+    age_days = (today - birth).days
+    if age_days < 0:
+        return response(400, {"error": "Child birth_date cannot be in the future"}, event)
+    if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return response(
+            400,
+            {"error": "This system supports only babies aged 0-3 months. Recording rejected."},
+            event,
+        )
+
     # [Phase 3] Optional session context (feeding time, health, environment)
     # Frontend sends the key as "session_context"; accept both for backward compat
     session_context = _validate_context(
@@ -621,6 +648,7 @@ def upload_session(event: Dict) -> Dict:
 # POST /session/{session_id}/start — Start processing pipeline
 # =============================================================================
 def start_processing(event: Dict) -> Dict:
+    user_id = get_user_id(event)
     session_id = event["pathParameters"]["session_id"]
     body = json.loads(event.get("body") or "{}")
 
@@ -629,8 +657,35 @@ def start_processing(event: Dict) -> Dict:
         return response(404, {"error": "Session not found"}, event)
 
     session = _decimal_to_float(session_resp["Item"])
+    if session.get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized for this session"}, event)
     child_id = session["child_id"]
     s3_audio_path = session["s3_audio_path"]
+
+    # Enforce ownership + strict 0-3 month boundary at pipeline start
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    profile = _decimal_to_float(profile_resp["Item"])
+    if profile.get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized for this child profile"}, event)
+    birth_date = str(profile.get("birth_date") or "").strip()
+    if not birth_date:
+        return response(400, {"error": "Child birth_date is missing. Please update the profile first."}, event)
+    try:
+        birth = date.fromisoformat(birth_date)
+    except ValueError:
+        return response(400, {"error": "Child birth_date is invalid. Please update the profile."}, event)
+    today = datetime.now(timezone.utc).date()
+    age_days = (today - birth).days
+    if age_days < 0:
+        return response(400, {"error": "Child birth_date cannot be in the future"}, event)
+    if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return response(
+            400,
+            {"error": "This system supports only babies aged 0-3 months. Recording rejected."},
+            event,
+        )
 
     # Get Step Function ARN from SSM Parameter Store (resolves circular dependency)
     try:

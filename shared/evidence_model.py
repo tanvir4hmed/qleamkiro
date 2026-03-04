@@ -45,15 +45,16 @@ FEEDBACK_WEIGHT: float = 0.25
 
 _STAGE_BASE_WEIGHTS: Dict[str, Dict[str, float]] = {
     "NEWBORN": {"acoustic": 0.45, "research": 0.40, "feedback": 0.15},
-    "EARLY_VOCAL": {"acoustic": 0.50, "research": 0.30, "feedback": 0.20},
-    "CANONICAL_BABBLE": {"acoustic": 0.55, "research": 0.25, "feedback": 0.20},
-    "PROTO_WORDS": {"acoustic": 0.58, "research": 0.20, "feedback": 0.22},
-    "FIRST_WORDS": {"acoustic": 0.62, "research": 0.15, "feedback": 0.23},
-    "WORD_COMBINATIONS": {"acoustic": 0.65, "research": 0.12, "feedback": 0.23},
+    # "EARLY_VOCAL": {"acoustic": 0.50, "research": 0.30, "feedback": 0.20},
+    # "CANONICAL_BABBLE": {"acoustic": 0.55, "research": 0.25, "feedback": 0.20},
+    # "PROTO_WORDS": {"acoustic": 0.58, "research": 0.20, "feedback": 0.22},
+    # "FIRST_WORDS": {"acoustic": 0.62, "research": 0.15, "feedback": 0.23},
+    # "WORD_COMBINATIONS": {"acoustic": 0.65, "research": 0.12, "feedback": 0.23},
     "UNKNOWN": {"acoustic": 0.60, "research": 0.20, "feedback": 0.20},
 }
 
-_INFANT_STAGE_SET = {"NEWBORN", "EARLY_VOCAL", "CANONICAL_BABBLE", "PROTO_WORDS"}
+# _INFANT_STAGE_SET = {"NEWBORN", "EARLY_VOCAL", "CANONICAL_BABBLE", "PROTO_WORDS"}
+_INFANT_STAGE_SET = {"NEWBORN"}
 
 
 def _base_weights_for_stage(developmental_stage: str) -> Dict[str, float]:

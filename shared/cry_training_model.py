@@ -41,7 +41,8 @@ FEATURE_KEYS = [
 ]
 FEATURE_DIM = len(FEATURE_KEYS)
 
-AGE_BRACKETS = ["0_6m", "6_12m", "12_18m", "18_24m"]
+# AGE_BRACKETS = ["0_6m", "6_12m", "12_18m", "18_24m"]
+AGE_BRACKETS = ["0_6m"]
 
 
 def _decimal_to_float(obj):

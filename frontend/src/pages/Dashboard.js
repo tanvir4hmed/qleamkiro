@@ -7,7 +7,8 @@ import RecordButton from '../components/RecordButton';
 import InsightPanel from '../components/InsightPanel';
 
 const SELECTED_CHILD_KEY = 'qleam_selected_child_id';
-const MAX_SUPPORTED_CHILD_AGE_DAYS = 730;
+// const MAX_SUPPORTED_CHILD_AGE_DAYS = 730;
+const MAX_SUPPORTED_CHILD_AGE_DAYS = 90;
 
 function getBirthDateBounds() {
   const today = new Date();
@@ -49,7 +50,8 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
   const handleAdd = async () => {
     if (!addName.trim() || !addDob) { setAddError('Name and date of birth are required.'); return; }
     if (!isBirthDateInSupportedRange(addDob)) {
-      setAddError('Only children aged 0-24 months are supported.');
+      // setAddError('Only children aged 0-24 months are supported.');
+      setAddError('Only babies aged 0-3 months are supported.');
       return;
     }
     setAdding(true);
@@ -297,7 +299,8 @@ function Dashboard() {
 
   const addChild = useCallback(async (name, birthDate) => {
     if (!isBirthDateInSupportedRange(birthDate)) {
-      throw new Error('Only children aged 0-24 months are supported.');
+      // throw new Error('Only children aged 0-24 months are supported.');
+      throw new Error('Only babies aged 0-3 months are supported.');
     }
     const data = await apiCall('/child', {
       method: 'POST',
@@ -316,7 +319,8 @@ function Dashboard() {
   const handleAddFirstChild = async () => {
     if (!newChildName.trim() || !newChildBirthDate) return;
     if (!isBirthDateInSupportedRange(newChildBirthDate)) {
-      setError('Only children aged 0-24 months are supported.');
+      // setError('Only children aged 0-24 months are supported.');
+      setError('Only babies aged 0-3 months are supported.');
       return;
     }
     try {

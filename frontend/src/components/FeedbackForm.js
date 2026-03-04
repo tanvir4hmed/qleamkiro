@@ -11,32 +11,35 @@ const EMOTIONS_0_6M = [
   { key: 'closeness', label: 'Wants Closeness', icon: '🤗' },
 ];
 
-const EMOTIONS_6_12M = [
-  ...EMOTIONS_0_6M,
-  { key: 'frustration', label: 'Frustrated', icon: '😣' },
-  { key: 'separation_anxiety', label: 'Separation Anxiety', icon: '😢' },
-  { key: 'boredom', label: 'Bored', icon: '😐' },
-];
-
-const EMOTIONS_12_18M = [
-  ...EMOTIONS_6_12M,
-  { key: 'tantrum', label: 'Tantrum', icon: '😤' },
-  { key: 'fear', label: 'Scared', icon: '😰' },
-];
-
-const EMOTIONS_18_24M = [
-  ...EMOTIONS_12_18M,
-  { key: 'jealousy', label: 'Jealous', icon: '😒' },
-];
+// const EMOTIONS_6_12M = [
+//   ...EMOTIONS_0_6M,
+//   { key: 'frustration', label: 'Frustrated', icon: '😣' },
+//   { key: 'separation_anxiety', label: 'Separation Anxiety', icon: '😢' },
+//   { key: 'boredom', label: 'Bored', icon: '😐' },
+// ];
+//
+// const EMOTIONS_12_18M = [
+//   ...EMOTIONS_6_12M,
+//   { key: 'tantrum', label: 'Tantrum', icon: '😤' },
+//   { key: 'fear', label: 'Scared', icon: '😰' },
+// ];
+//
+// const EMOTIONS_18_24M = [
+//   ...EMOTIONS_12_18M,
+//   { key: 'jealousy', label: 'Jealous', icon: '😒' },
+// ];
 
 function getEmotionsForAge(ageDays) {
-  if (!ageDays || ageDays < 0) return EMOTIONS_18_24M;
+  // if (!ageDays || ageDays < 0) return EMOTIONS_18_24M;
+  if (!ageDays || ageDays < 0) return EMOTIONS_0_6M;
   const months = ageDays / 30.44;
-  if (months < 6) return EMOTIONS_0_6M;
-  if (months < 12) return EMOTIONS_6_12M;
-  if (months < 18) return EMOTIONS_12_18M;
-  if (months < 24) return EMOTIONS_18_24M;
-  return EMOTIONS_18_24M;
+  // if (months < 6) return EMOTIONS_0_6M;
+  if (months <= 3) return EMOTIONS_0_6M;
+  // if (months < 12) return EMOTIONS_6_12M;
+  // if (months < 18) return EMOTIONS_12_18M;
+  // if (months < 24) return EMOTIONS_18_24M;
+  // return EMOTIONS_18_24M;
+  return EMOTIONS_0_6M;
 }
 
 function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {

@@ -108,10 +108,18 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     # --- Fast reject path ---
     if fast_reject:
-        insight["display_type"] = "silence"
-        insight["headline"] = "No sound detected to analyze"
-        insight["headline_icon"] = "🔇"
-        insight["description"] = "The recording was too short or too quiet. Try recording closer to your baby."
+        # insight["display_type"] = "silence"
+        insight["display_type"] = event.get("sound_type", "silence")
+        # insight["headline"] = "No sound detected to analyze"
+        insight["headline"] = event.get("fast_reject_title", "Recording rejected")
+        # insight["headline_icon"] = "🔇"
+        insight["headline_icon"] = "⚠️"
+        # insight["description"] = "The recording was too short or too quiet. Try recording closer to your baby."
+        insight["description"] = event.get(
+            "fast_reject_message",
+            "The recording could not be processed. Please try a clean baby recording.",
+        )
+        insight["fast_reject_reasons"] = event.get("fast_reject_reasons", [])
         _save_insight(session_id, insight)
         return {"status": "insight_generated", "session_id": session_id, "insight": insight}
 

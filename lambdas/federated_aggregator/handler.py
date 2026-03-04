@@ -67,11 +67,11 @@ _ALL_INTENTS = list(canonical_intent_keys(include_technical=False))
 # Developmental stages to aggregate separately
 _AGGREGATION_STAGES = [
     "NEWBORN",
-    "EARLY_VOCAL",
-    "CANONICAL_BABBLE",
-    "PROTO_WORDS",
-    "FIRST_WORDS",
-    "WORD_COMBINATIONS",
+    # "EARLY_VOCAL",
+    # "CANONICAL_BABBLE",
+    # "PROTO_WORDS",
+    # "FIRST_WORDS",
+    # "WORD_COMBINATIONS",
 ]
 
 
