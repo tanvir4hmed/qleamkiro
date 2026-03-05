@@ -719,6 +719,40 @@ def start_processing(event: Dict) -> Dict:
 # =============================================================================
 # GET /session/{session_id}/insight — Get session insight
 # =============================================================================
+def _build_raw_debug_from_session(session: Dict, insight: Dict) -> Dict[str, Any]:
+    """Build raw debug payload from stored session fields (supports older sessions)."""
+    return {
+        "recording": {
+            "sound_type": session.get("sound_type"),
+            "is_adult": session.get("is_adult", False),
+            "age_days": session.get("age_days_at_recording"),
+            "duration_seconds": session.get("duration_seconds"),
+            "fast_reject": session.get("fast_reject", False),
+            "fast_reject_reasons": session.get("fast_reject_reasons", []),
+        },
+        "quality_gate": session.get("quality_gate", {}),
+        "routing": session.get("routing", {}),
+        "sound_classification": session.get("sound_classification", {}),
+        "sound_summary": session.get("sound_summary", {}),
+        "sound_features": session.get("sound_features", {}),
+        "diarization": session.get("diarization", {}),
+        "biological": session.get("biological", {}),
+        "age_classification": session.get("age_classification", {}),
+        "session_context": session.get("session_context", {}),
+        "analysis_output": {
+            "display_type": insight.get("display_type"),
+            "headline": insight.get("headline"),
+            "emotion": insight.get("emotion"),
+            "emotion_confidence": insight.get("emotion_confidence"),
+            "top_emotions": insight.get("top_emotions", []),
+            "dunstan_sound": insight.get("dunstan_sound"),
+            "dunstan_ambiguous": insight.get("dunstan_ambiguous", False),
+            "also_possible": insight.get("also_possible", []),
+        },
+        "cry_model_debug": insight.get("debug_payload", {}),
+    }
+
+
 def get_insight(event: Dict) -> Dict:
     session_id = event["pathParameters"]["session_id"]
 
@@ -734,6 +768,14 @@ def get_insight(event: Dict) -> Dict:
     insight = session.get("insight")
     if not insight:
         return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
+    if not isinstance(insight, dict):
+        insight = {}
+    else:
+        insight = dict(insight)
+
+    # Ensure raw debug is available for both new and older sessions.
+    if not isinstance(insight.get("raw_debug"), dict):
+        insight["raw_debug"] = _build_raw_debug_from_session(session, insight)
 
     # Fetch child name for personalization
     child_id = session.get("child_id", "")

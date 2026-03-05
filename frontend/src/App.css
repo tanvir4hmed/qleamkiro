@@ -487,6 +487,47 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
    NEW Insight Panel v3 — matches redesigned insight_generator output
    ══════════════════════════════════════════════════════ */
 
+/* Raw debug panel (shown before parent-facing insight) */
+.raw-debug-panel {
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+  background: rgba(0, 0, 0, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.raw-debug-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+.raw-debug-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.raw-debug-block-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.raw-debug-pre {
+  margin: 0;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
 /* Headline */
 .insight-headline { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .headline-icon { font-size: 28px; line-height: 1; }

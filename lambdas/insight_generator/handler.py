@@ -290,6 +290,14 @@ def _build_cry_insight(
     insight["emotion"] = cry_result["primary_emotion"]
     insight["emotion_confidence"] = cry_result["confidence"]
     insight["top_emotions"] = cry_result.get("top_emotions", [])
+    insight["dunstan_candidates"] = cry_result.get("dunstan_candidates", [])
+    insight["decision_close_call"] = bool(cry_result.get("decision_close_call", False))
+    insight["debug_payload"] = {
+        "emotion_scores": cry_result.get("emotion_scores", {}),
+        "debug_trace": debug_trace or {},
+        "dunstan_candidates": cry_result.get("dunstan_candidates", []),
+        "decision_close_call": bool(cry_result.get("decision_close_call", False)),
+    }
 
     # Three insight cards
     insight["insight_sections"] = {

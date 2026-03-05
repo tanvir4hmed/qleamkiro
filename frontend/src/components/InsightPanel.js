@@ -18,6 +18,24 @@ const DISPLAY_COLORS = {
   mixed: '#FFE66D',
 };
 
+function hasVisibleData(value) {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return true;
+}
+
+function RawDebugSection({ title, value }) {
+  if (!hasVisibleData(value)) return null;
+  return (
+    <div className="raw-debug-block">
+      <div className="raw-debug-block-title">{title}</div>
+      <pre className="raw-debug-pre">{JSON.stringify(value, null, 2)}</pre>
+    </div>
+  );
+}
+
 function ConfidenceBar({ confidence }) {
   const pct = Math.round((confidence || 0) * 100);
   const color = pct >= 60 ? '#4ECDC4' : pct >= 30 ? '#FFE66D' : '#C7C7C7';
@@ -53,6 +71,7 @@ function InsightPanel({ insight }) {
     dunstan_sound,
     also_possible,
     age_mismatch,
+    raw_debug,
     // Disclaimer (handled by parent)
   } = insight;
 
@@ -66,6 +85,24 @@ function InsightPanel({ insight }) {
 
   return (
     <div className="insight-panel" style={{ borderLeftColor: borderColor }}>
+      {/* Raw debug dump (shown before parent-facing insight) */}
+      {raw_debug && (
+        <div className="raw-debug-panel">
+          <h3 className="raw-debug-title">Raw Extracted Data</h3>
+          <RawDebugSection title="Type: Recording" value={raw_debug.recording} />
+          <RawDebugSection title="Type: Quality Gate" value={raw_debug.quality_gate} />
+          <RawDebugSection title="Type: Routing" value={raw_debug.routing} />
+          <RawDebugSection title="Type: Sound Classification" value={raw_debug.sound_classification} />
+          <RawDebugSection title="Type: Sound Summary" value={raw_debug.sound_summary} />
+          <RawDebugSection title="Type: Acoustic Features" value={raw_debug.sound_features} />
+          <RawDebugSection title="Type: Diarization" value={raw_debug.diarization} />
+          <RawDebugSection title="Type: Biological" value={raw_debug.biological} />
+          <RawDebugSection title="Type: Age Classifier" value={raw_debug.age_classification} />
+          <RawDebugSection title="Type: Session Context" value={raw_debug.session_context} />
+          <RawDebugSection title="Type: Analysis Output" value={raw_debug.analysis_output} />
+          <RawDebugSection title="Type: Cry Model Debug" value={raw_debug.cry_model_debug} />
+        </div>
+      )}
 
       {/* Headline */}
       {headline && (
