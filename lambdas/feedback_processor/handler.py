@@ -35,7 +35,12 @@ from constants import (
     TRAINING_CANDIDATE_TABLE,
 )
 from cry_analyzer import get_age_bracket
-from cry_training_model import store_cry_training_sample, train_cry_model
+from cry_training_model import (
+    CANONICAL_AGE_BRACKET,
+    LEGACY_AGE_BRACKET,
+    store_cry_training_sample,
+    train_cry_model,
+)
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -243,10 +248,13 @@ def _check_and_retrain(age_bracket: str):
     """Check if enough new samples exist to trigger cry model retraining."""
     try:
         from boto3.dynamodb.conditions import Attr
+        age_filter = Attr("age_bracket").eq(age_bracket)
+        if age_bracket == CANONICAL_AGE_BRACKET:
+            age_filter = age_filter | Attr("age_bracket").eq(LEGACY_AGE_BRACKET)
         response = training_candidate_table.scan(
             FilterExpression=(
                 Attr("candidate_type").eq("cry_emotion") &
-                Attr("age_bracket").eq(age_bracket)
+                age_filter
             ),
             Select="COUNT",
         )

@@ -220,8 +220,11 @@ EMOTIONS_18_24M = {
 
 # Age bracket mapping (system scope: 0-24 months)
 # Active runtime scope is trimmed to 0-3 months.
+CANONICAL_AGE_BRACKET = "0_3m"
+LEGACY_AGE_BRACKET = "0_6m"
+
 AGE_EMOTION_MAP = {
-    "0_6m": EMOTIONS_0_6M,
+    CANONICAL_AGE_BRACKET: EMOTIONS_0_6M,
     # "6_12m": EMOTIONS_6_12M,
     # "12_18m": EMOTIONS_12_18M,
     # "18_24m": EMOTIONS_18_24M,
@@ -231,11 +234,11 @@ AGE_EMOTION_MAP = {
 def get_age_bracket(age_days: Optional[int]) -> str:
     """Convert age in days to age bracket string."""
     if age_days is None or age_days < 0:
-        return "0_6m"
+        return CANONICAL_AGE_BRACKET
     months = age_days / 30.44
     # if months < 6:
     if months <= 3:
-        return "0_6m"
+        return CANONICAL_AGE_BRACKET
     # elif months < 12:
     #     return "6_12m"
     # elif months < 18:
@@ -246,13 +249,13 @@ def get_age_bracket(age_days: Optional[int]) -> str:
     #     # Hard cap to supported range (0-24 months).
     #     return "18_24m"
     # Hard cap to active 0-3 month runtime path.
-    return "0_6m"
+    return CANONICAL_AGE_BRACKET
 
 
 def get_emotions_for_age(age_days: Optional[int]) -> Dict[str, Dict]:
     """Get the emotion set appropriate for the child's age."""
     bracket = get_age_bracket(age_days)
-    return AGE_EMOTION_MAP.get(bracket, EMOTIONS_0_6M)
+    return AGE_EMOTION_MAP.get(bracket, AGE_EMOTION_MAP[CANONICAL_AGE_BRACKET])
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +264,7 @@ def get_emotions_for_age(age_days: Optional[int]) -> Dict[str, Dict]:
 
 # Age-specific cry frequency characteristics (research-based)
 CRY_FREQUENCY_BY_AGE = {
-    "0_6m": {"f0_range": (350, 650), "typical_f0": 500, "duration_typical": (1.0, 5.0)},
+    CANONICAL_AGE_BRACKET: {"f0_range": (350, 650), "typical_f0": 500, "duration_typical": (1.0, 5.0)},
     # "6_12m": {"f0_range": (300, 600), "typical_f0": 450, "duration_typical": (0.5, 4.0)},
     # "12_18m": {"f0_range": (280, 550), "typical_f0": 400, "duration_typical": (0.5, 3.5)},
     # "18_24m": {"f0_range": (250, 500), "typical_f0": 370, "duration_typical": (0.3, 3.0)},
@@ -270,7 +273,7 @@ CRY_FREQUENCY_BY_AGE = {
 
 EMOTION_PROFILES_0_6M = {
     "hungry": {
-        "prior": 0.12,
+        "prior": 0.08,
         "rules": [
             {"feature": "f0", "min": 300.0, "max": 560.0, "weight": 0.20},
             {"feature": "f0_instability", "min": 0.0, "max": 0.16, "weight": 0.14},
@@ -292,7 +295,7 @@ EMOTION_PROFILES_0_6M = {
         ],
     },
     "tired": {
-        "prior": 0.00,
+        "prior": 0.03,
         "rules": [
             {"feature": "f0", "min": 220.0, "max": 430.0, "weight": 0.20},
             {"feature": "f0_instability", "min": 0.0, "max": 0.11, "weight": 0.18},
@@ -315,7 +318,7 @@ EMOTION_PROFILES_0_6M = {
         ],
     },
     "discomfort": {
-        "prior": 0.04,
+        "prior": 0.06,
         "rules": [
             {"feature": "zcr", "min": 0.03, "max": 0.09, "weight": 0.20},
             {"feature": "energy_var", "min": 0.28, "max": 0.60, "weight": 0.20},
@@ -328,18 +331,18 @@ EMOTION_PROFILES_0_6M = {
     "gas": {
         "prior": 0.00,
         "rules": [
-            {"feature": "f0", "min": 350.0, "max": 700.0, "weight": 0.12},
-            {"feature": "rms_mean", "min": 0.06, "max": 0.18, "weight": 0.18},
-            {"feature": "f0_instability", "min": 0.15, "max": 0.35, "weight": 0.18},
-            {"feature": "spectral_centroid", "min": 1850.0, "max": 4200.0, "weight": 0.18},
-            {"feature": "voiced_fraction", "min": 0.35, "max": 0.95, "weight": 0.14},
-            {"feature": "energy_var", "min": 0.30, "max": 0.80, "weight": 0.10},
-            {"feature": "duration_s", "min": 0.8, "max": 6.0, "weight": 0.10},
+            {"feature": "f0", "min": 400.0, "max": 660.0, "weight": 0.08},
+            {"feature": "rms_mean", "min": 0.085, "max": 0.18, "weight": 0.12},
+            {"feature": "f0_instability", "min": 0.20, "max": 0.35, "weight": 0.13},
+            {"feature": "spectral_centroid", "min": 2200.0, "max": 4200.0, "weight": 0.14},
+            {"feature": "voiced_fraction", "min": 0.45, "max": 0.95, "weight": 0.10},
+            {"feature": "energy_var", "min": 0.38, "max": 0.80, "weight": 0.10},
+            {"feature": "duration_s", "min": 1.0, "max": 4.5, "weight": 0.06},
         ],
         "compound_rules": [
             {
                 "label": "strain_signature",
-                "weight": 0.10,
+                "weight": 0.06,
                 "all": [
                     {"feature": "rms_mean", "min": 0.07},
                     {"feature": "energy_var", "min": 0.30},
@@ -398,34 +401,8 @@ EMOTION_PROFILES_0_6M = {
 }
 
 
-CONFLICT_RULES_0_6M = [
-    {
-        "name": "sleepy_deconflict",
-        "if_signature": "sleepy",
-        "scale": {"pain": 0.60, "gas": 0.85, "discomfort": 0.88},
-    },
-    {
-        "name": "strain_deconflict",
-        "if_signature": "strain",
-        "scale": {"discomfort": 0.85, "closeness": 0.70},
-    },
-    {
-        "name": "pain_deconflict",
-        "if_signature": "pain",
-        "scale": {"closeness": 0.55, "tired": 0.70},
-    },
-    {
-        "name": "hungry_discomfort_overlap",
-        "if_scores_overlap": {
-            "a": "hungry",
-            "b": "discomfort",
-            "min_score": 0.45,
-            "max_b_minus_a": 0.20,
-        },
-        "scale": {"discomfort": 0.85},
-        "prefer_primary": "hungry",
-    },
-]
+# Keep conflict rules empty in current mode: winner should come from natural profile score.
+CONFLICT_RULES_0_6M: List[Dict[str, Any]] = []
 
 
 def _to_float(x: Any, default: float = 0.0) -> float:
@@ -458,18 +435,18 @@ def _soft_range_match(value: float, min_v: Optional[float], max_v: Optional[floa
     if min_v is None:
         if value <= max_v:
             return 1.0
-        span = max(abs(max_v), 1.0)
+        span = max(abs(max_v), 1e-6)
         tol = span * tol_ratio
         return max(0.0, min(1.0, (max_v + tol - value) / max(tol, 1e-6)))
 
     if max_v is None:
         if value >= min_v:
             return 1.0
-        span = max(abs(min_v), 1.0)
+        span = max(abs(min_v), 1e-6)
         tol = span * tol_ratio
         return max(0.0, min(1.0, (value - (min_v - tol)) / max(tol, 1e-6)))
 
-    span = max(max_v - min_v, 1.0)
+    span = max(max_v - min_v, 1e-6)
     tol = span * tol_ratio
     if min_v <= value <= max_v:
         return 1.0
@@ -492,6 +469,12 @@ def _evaluate_condition(values: Dict[str, float], cond: Dict[str, Any]) -> float
 
 
 def _derive_signatures(values: Dict[str, float]) -> Dict[str, bool]:
+    strain = (
+        values["rms_mean"] > 0.07
+        and values["energy_var"] > 0.30
+        and values["f0_instability"] > 0.14
+        and values["spectral_centroid"] > 1800
+    )
     return {
         "sleepy": (
             values["rms_mean"] < 0.07
@@ -499,11 +482,20 @@ def _derive_signatures(values: Dict[str, float]) -> Dict[str, bool]:
             and values["f0_instability"] < 0.11
             and values["duration_s"] >= 2.0
         ),
-        "strain": (
-            values["rms_mean"] > 0.07
-            and values["energy_var"] > 0.30
-            and values["f0_instability"] > 0.14
-            and values["spectral_centroid"] > 1800
+        "strain": strain,
+        "hungry": (
+            280 <= values["f0"] <= 620
+            and values["f0_instability"] <= 0.16
+            and 0.18 <= values["energy_var"] <= 0.55
+            and values["spectral_centroid"] <= 2600
+            and 0.04 <= values["rms_mean"] <= 0.16
+        ),
+        "discomfort": (
+            values["zcr"] > 0.03
+            and values["energy_var"] > 0.26
+            and values["rms_mean"] < 0.12
+            and values["f0_instability"] > 0.09
+            and not strain
         ),
         "pain": (
             values["rms_mean"] > 0.11
@@ -566,24 +558,32 @@ def _apply_conflict_rules(scores: Dict[str, float], signatures: Dict[str, bool],
     overlap_flags: Dict[str, bool] = {}
 
     for rule in rules:
-        apply_now = False
+        apply_now = True
+        has_condition = False
 
         signature_key = rule.get("if_signature")
         if signature_key:
-            apply_now = bool(signatures.get(signature_key, False))
+            has_condition = True
+            apply_now = apply_now and bool(signatures.get(signature_key, False))
 
         overlap_cfg = rule.get("if_scores_overlap")
         if overlap_cfg:
+            has_condition = True
             a = overlap_cfg.get("a")
             b = overlap_cfg.get("b")
             min_score = _to_float(overlap_cfg.get("min_score", 0.0), 0.0)
             max_b_minus_a = _to_float(overlap_cfg.get("max_b_minus_a", 0.0), 0.0)
+            overlap_match = False
             if a in resolved and b in resolved:
-                apply_now = (
+                overlap_match = (
                     resolved[a] >= min_score
                     and resolved[b] >= min_score
                     and (resolved[b] - resolved[a]) < max_b_minus_a
                 )
+            apply_now = apply_now and overlap_match
+
+        if not has_condition:
+            apply_now = False
 
         if not apply_now:
             continue
@@ -594,10 +594,11 @@ def _apply_conflict_rules(scores: Dict[str, float], signatures: Dict[str, bool],
 
         rule_name = str(rule.get("name", "conflict_rule"))
         applied_rules.append(rule_name)
+        if "hungry_discomfort_overlap" in rule_name or "discomfort_hungry_overlap" in rule_name:
+            overlap_flags["hungry_discomfort_overlap"] = True
         prefer = rule.get("prefer_primary")
         if prefer:
             preferred_primary = str(prefer)
-            overlap_flags["hungry_discomfort_overlap"] = rule_name == "hungry_discomfort_overlap"
 
     return {
         "scores": resolved,
@@ -635,6 +636,55 @@ def _score_dunstan_sounds(features: Dict, return_debug: bool = False) -> Any:
         "overlap_flags": resolved.get("overlap_flags", {}),
     }
     return scores, debug
+
+
+def _select_dunstan_info(
+    primary_key: str,
+    filtered_scores: Dict[str, float],
+    emotions_map: Dict[str, Dict],
+) -> Dict[str, Any]:
+    """Choose Dunstan sound with ambiguity handling from top cry candidates."""
+    candidates = []
+    for emotion, score in filtered_scores.items():
+        dunstan = emotions_map.get(emotion, {}).get("dunstan")
+        if dunstan and score >= 0.20:
+            candidates.append((emotion, float(score), str(dunstan)))
+
+    if not candidates:
+        return {
+            "sound": None,
+            "ambiguous": False,
+            "candidates": [],
+        }
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best_emotion, best_score, best_sound = candidates[0]
+    second_score = candidates[1][1] if len(candidates) > 1 else 0.0
+    ambiguous = (best_score - second_score) < 0.08 if len(candidates) > 1 else False
+
+    primary_sound = emotions_map.get(primary_key, {}).get("dunstan")
+    primary_score = float(filtered_scores.get(primary_key, 0.0))
+    chosen_sound = best_sound
+    chosen_emotion = best_emotion
+    if primary_sound and primary_score + 0.03 >= best_score:
+        chosen_sound = str(primary_sound)
+        chosen_emotion = primary_key
+
+    out_candidates = [
+        {
+            "emotion": emo,
+            "sound": snd,
+            "score": round(sc, 3),
+        }
+        for emo, sc, snd in candidates[:3]
+    ]
+
+    return {
+        "sound": chosen_sound,
+        "emotion": chosen_emotion,
+        "ambiguous": ambiguous,
+        "candidates": out_candidates,
+    }
 
 
 def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, float]:
@@ -754,7 +804,7 @@ def analyze_cry(
     scoring_debug: Dict[str, Any] = {}
 
     # Score emotions based on age
-    if age_bracket == "0_6m":
+    if age_bracket == CANONICAL_AGE_BRACKET:
         emotion_scores, scoring_debug = _score_dunstan_sounds(features, return_debug=True)
     # else:
     #     emotion_scores = _score_older_baby_emotions(features, age_bracket)
@@ -765,12 +815,16 @@ def analyze_cry(
     if trained_model_result and isinstance(trained_model_result, dict):
         model_scores = trained_model_result.get("emotion_scores", {})
         model_confidence = trained_model_result.get("confidence", 0.5)
-        # Weight: 60% acoustic analysis, 40% trained model
+        model_samples = _to_float(trained_model_result.get("total_training_samples", 0), 0.0)
+        sample_factor = min(1.0, model_samples / 120.0)
+        # Adaptive blending: low-data models stay supportive; mature models contribute more.
+        model_weight = min(0.45, 0.10 + 0.22 * _to_float(model_confidence, 0.5) + 0.13 * sample_factor)
+        acoustic_weight = 1.0 - model_weight
         for key in emotion_scores:
             if key in model_scores:
                 acoustic_val = emotion_scores[key]
                 model_val = model_scores[key]
-                emotion_scores[key] = 0.6 * acoustic_val + 0.4 * model_val * model_confidence
+                emotion_scores[key] = acoustic_weight * acoustic_val + model_weight * model_val
 
     # Filter to only emotions available for this age
     available_emotions = set(emotions_map.keys())
@@ -794,8 +848,12 @@ def analyze_cry(
         primary_score = filtered_scores[preferred_primary]
         second_score = max([v for k, v in filtered_scores.items() if k != preferred_primary] or [0.0])
 
-    # Confidence based on margin
-    confidence = min(0.92, primary_score * (1.0 + (primary_score - second_score) * 0.5))
+    # Confidence from top score + margin; avoids constant 92% plateaus.
+    margin = max(0.0, primary_score - second_score)
+    confidence = min(0.90, max(0.35, 0.55 * primary_score + 0.45 * margin))
+    if margin < 0.07:
+        confidence = min(confidence, 0.72 + margin)
+    is_close_call = margin < 0.10 and second_score > 0.35
 
     # Get emotion details
     emotion_info = emotions_map.get(primary_key, {})
@@ -804,7 +862,9 @@ def analyze_cry(
     f0_actual = features.get("f0_mean", 0)
     age_cry_match = _check_cry_age_match(f0_actual, age_bracket, age_days)
 
-    # Top 3 emotions for display
+    # Top emotions for display:
+    # - Always include top 2 so UI can show "also possible" guidance consistently.
+    # - Include 3rd only if it has meaningful signal.
     display_ranked = ranked
     if preferred_primary in filtered_scores:
         display_ranked = [(preferred_primary, filtered_scores[preferred_primary])] + [
@@ -812,24 +872,32 @@ def analyze_cry(
         ]
 
     top_emotions = []
-    for key, score in display_ranked[:3]:
-        if score > 0.1:
-            emo = emotions_map.get(key, {})
-            top_emotions.append({
-                "key": key,
-                "label": emo.get("label", key),
-                "icon": emo.get("icon", ""),
-                "score": round(score, 3),
-            })
+    for idx, (key, score) in enumerate(display_ranked[:3]):
+        if idx >= 2 and score <= 0.1:
+            continue
+        emo = emotions_map.get(key, {})
+        top_emotions.append({
+            "key": key,
+            "label": emo.get("label", key),
+            "icon": emo.get("icon", ""),
+            "score": round(score, 3),
+        })
+
+    dunstan_info = _select_dunstan_info(primary_key, filtered_scores, emotions_map)
 
     debug_trace = {
         "applied_conflict_rules": scoring_debug.get("applied_conflict_rules", []),
         "feature_snapshot": scoring_debug.get("feature_snapshot", {}),
+        "margin": round(margin, 3),
+        "close_call": is_close_call,
+        "dunstan_info": dunstan_info,
         "top_feature_triggers": {
             emo_key: scoring_debug.get("emotion_triggers", {}).get(emo_key, [])[:2]
             for emo_key, _ in display_ranked[:3]
         },
     }
+
+    secondary_emotion = top_emotions[1] if len(top_emotions) > 1 else None
 
     return {
         "primary_emotion": primary_key,
@@ -838,12 +906,16 @@ def analyze_cry(
         "confidence": round(confidence, 3),
         "emotion_scores": {k: round(v, 3) for k, v in filtered_scores.items()},
         "top_emotions": top_emotions,
+        "secondary_emotion": secondary_emotion,
         "age_bracket": age_bracket,
         "hungry_discomfort_overlap": hungry_discomfort_overlap,
         "what_hearing": emotion_info.get("what_hearing", "Cry sounds detected"),
         "what_means": emotion_info.get("what_means", "Your baby is expressing a need"),
         "what_try": emotion_info.get("what_try", ["Observe and respond to your baby's cues"]),
-        "dunstan_sound": emotion_info.get("dunstan") if age_bracket == "0_6m" else None,
+        "dunstan_sound": dunstan_info.get("sound") if age_bracket == CANONICAL_AGE_BRACKET else None,
+        "dunstan_ambiguous": bool(dunstan_info.get("ambiguous", False)),
+        "dunstan_candidates": dunstan_info.get("candidates", []),
+        "decision_close_call": is_close_call,
         "age_cry_match": age_cry_match,
         "debug_trace": debug_trace,
     }
@@ -858,7 +930,7 @@ def _check_cry_age_match(
     if f0_actual <= 0:
         return {"matches": True, "reason": "insufficient_data"}
 
-    expected = CRY_FREQUENCY_BY_AGE.get(age_bracket, CRY_FREQUENCY_BY_AGE["0_6m"])
+    expected = CRY_FREQUENCY_BY_AGE.get(age_bracket, CRY_FREQUENCY_BY_AGE[CANONICAL_AGE_BRACKET])
     f0_min, f0_max = expected["f0_range"]
 
     matches = f0_min <= f0_actual <= f0_max
@@ -879,7 +951,8 @@ def _check_cry_age_match(
 
     bracket_labels = {
         # "0_6m": "0-6 months",
-        "0_6m": "0-3 months",
+        CANONICAL_AGE_BRACKET: "0-3 months",
+        LEGACY_AGE_BRACKET: "0-3 months",
         # "6_12m": "6-12 months",
         # "12_18m": "12-18 months",
         # "18_24m": "18-24 months",

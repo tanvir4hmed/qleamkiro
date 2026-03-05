@@ -151,7 +151,7 @@ function InsightPanel({ insight }) {
         </div>
       )}
 
-      {/* Dunstan sound reference (0-6m) */}
+      {/* Dunstan sound reference (0-3m runtime scope) */}
       {dunstan_sound && (
         <div className="insight-dunstan">
           <span className="dunstan-label">Dunstan sound:</span>

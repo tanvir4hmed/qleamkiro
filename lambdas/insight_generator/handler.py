@@ -270,6 +270,20 @@ def _build_cry_insight(
             debug_trace.get("top_feature_triggers", {}),
             debug_trace.get("feature_snapshot", {}),
         )
+        top_emotions = cry_result.get("top_emotions", [])
+        second_key = top_emotions[1].get("key") if len(top_emotions) > 1 else None
+        margin = float(debug_trace.get("margin", 0.0))
+        dunstan_candidates = [
+            f"{c.get('sound')}:{c.get('score')}"
+            for c in cry_result.get("dunstan_candidates", [])[:3]
+        ]
+        logger.info(
+            "Cry decision: primary=%s second=%s margin=%.3f dunstan_candidates=%s",
+            cry_result.get("primary_emotion"),
+            second_key,
+            margin,
+            dunstan_candidates,
+        )
 
     insight["headline"] = f"{cry_result['emotion_icon']} {cry_result['emotion_label']}"
     insight["headline_icon"] = cry_result["emotion_icon"]
@@ -287,10 +301,16 @@ def _build_cry_insight(
         insight["insight_sections"]["note"] = (
             "Hungry and discomfort signals overlap. Feeding cues appear stronger in this recording."
         )
+    if cry_result.get("decision_close_call"):
+        base_note = insight["insight_sections"].get("note", "")
+        close_note = "Signals are mixed and close. Please use this as a guidance signal with your direct observation."
+        insight["insight_sections"]["note"] = f"{base_note} {close_note}".strip()
 
-    # Dunstan sound reference (0-6m only)
+    # Dunstan sound reference (0-3m runtime scope)
     if cry_result.get("dunstan_sound"):
         insight["dunstan_sound"] = cry_result["dunstan_sound"]
+    if cry_result.get("dunstan_ambiguous"):
+        insight["dunstan_ambiguous"] = True
 
     # Age cry match
     age_cry_match = cry_result.get("age_cry_match", {})
@@ -305,7 +325,14 @@ def _build_cry_insight(
         }
 
     # Also detected emotions (alternatives)
-    alt_emotions = [e for e in cry_result.get("top_emotions", [])[1:3] if e.get("score", 0) > 0.15]
+    top_emotions = cry_result.get("top_emotions", [])
+    alt_emotions = []
+    if len(top_emotions) > 1:
+        # Always show second-best as "also possible".
+        alt_emotions.append(top_emotions[1])
+    for e in top_emotions[2:3]:
+        if e.get("score", 0) > 0.15:
+            alt_emotions.append(e)
     if alt_emotions:
         insight["also_possible"] = alt_emotions
 

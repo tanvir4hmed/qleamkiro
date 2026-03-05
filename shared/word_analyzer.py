@@ -23,8 +23,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Age-based word expectations (research-based norms)
 # ---------------------------------------------------------------------------
+CANONICAL_AGE_BRACKET = "0_3m"
+LEGACY_AGE_BRACKET = "0_6m"
+
 WORD_EXPECTATIONS = {
-    "0_6m": {
+    CANONICAL_AGE_BRACKET: {
         "expected_words": 0,
         "max_words": 0,
         "description": "No words expected at this age. Only cooing, vowel sounds, and early babbling",
@@ -62,11 +65,11 @@ WORD_EXPECTATIONS = {
 def _get_age_bracket(age_days: Optional[int]) -> str:
     """Convert age in days to bracket."""
     if age_days is None or age_days < 0:
-        return "0_6m"
+        return CANONICAL_AGE_BRACKET
     months = age_days / 30.44
     # if months < 6:
     if months <= 3:
-        return "0_6m"
+        return CANONICAL_AGE_BRACKET
     # elif months < 12:
     #     return "6_12m"
     # elif months < 18:
@@ -76,7 +79,7 @@ def _get_age_bracket(age_days: Optional[int]) -> str:
     # else:
     #     # Hard cap to supported range (0-24 months).
     #     return "18_24m"
-    return "0_6m"
+    return CANONICAL_AGE_BRACKET
 
 
 def analyze_words_by_age(
@@ -106,7 +109,7 @@ def analyze_words_by_age(
         }
     """
     age_bracket = _get_age_bracket(age_days)
-    expectations = WORD_EXPECTATIONS.get(age_bracket, WORD_EXPECTATIONS["0_6m"])
+    expectations = WORD_EXPECTATIONS.get(age_bracket, WORD_EXPECTATIONS[CANONICAL_AGE_BRACKET])
 
     word_count = word_analysis.get("word_count", 0)
     unique_words = word_analysis.get("unique_word_count", 0)
@@ -116,7 +119,8 @@ def analyze_words_by_age(
 
     bracket_labels = {
         # "0_6m": "0-6 months",
-        "0_6m": "0-3 months",
+        CANONICAL_AGE_BRACKET: "0-3 months",
+        LEGACY_AGE_BRACKET: "0-3 months",
         # "6_12m": "6-12 months",
         # "12_18m": "12-18 months",
         # "18_24m": "18-24 months",
@@ -128,12 +132,12 @@ def analyze_words_by_age(
 
     if is_adult_voice:
         speaker = "adult"
-    elif age_bracket == "0_6m" and word_count > 0:
+    elif age_bracket == CANONICAL_AGE_BRACKET and word_count > 0:
         speaker = "adult"  # No baby speaks at 0-6 months
     elif unique_words > adult_threshold:
         speaker = "adult"  # Too many words for registered age
     # elif has_sentences and age_bracket in ("0_6m", "6_12m"):
-    elif has_sentences and age_bracket == "0_6m":
+    elif has_sentences and age_bracket == CANONICAL_AGE_BRACKET:
         speaker = "adult"  # Sentences at this age = adult
     elif word_count == 0:
         speaker = "baby"
@@ -149,7 +153,7 @@ def analyze_words_by_age(
         #         speaker = "adult"
         #     else:
         #         speaker = "uncertain"
-        if age_bracket == "0_6m":
+        if age_bracket == CANONICAL_AGE_BRACKET:
             speaker = "adult" if unique_words > 0 else "baby"
         else:
             speaker = "baby" if unique_words <= expectations["max_words"] else "adult"
@@ -228,5 +232,5 @@ def _estimate_age_from_words(
     # else:
     #     return "0_6m"
     if has_sentences or unique_words > 0 or words_in_text > 0:
-        return "0_6m"
-    return "0_6m"
+        return CANONICAL_AGE_BRACKET
+    return CANONICAL_AGE_BRACKET

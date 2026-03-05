@@ -42,7 +42,22 @@ FEATURE_KEYS = [
 FEATURE_DIM = len(FEATURE_KEYS)
 
 # AGE_BRACKETS = ["0_6m", "6_12m", "12_18m", "18_24m"]
-AGE_BRACKETS = ["0_6m"]
+CANONICAL_AGE_BRACKET = "0_3m"
+LEGACY_AGE_BRACKET = "0_6m"
+AGE_BRACKETS = [CANONICAL_AGE_BRACKET]
+
+
+def _normalize_age_bracket(age_bracket: str) -> str:
+    if age_bracket in (CANONICAL_AGE_BRACKET, LEGACY_AGE_BRACKET):
+        return CANONICAL_AGE_BRACKET
+    return age_bracket
+
+
+def _age_bracket_filter(attr_cls, age_bracket: str):
+    normalized = _normalize_age_bracket(age_bracket)
+    if normalized == CANONICAL_AGE_BRACKET:
+        return attr_cls("age_bracket").eq(CANONICAL_AGE_BRACKET) | attr_cls("age_bracket").eq(LEGACY_AGE_BRACKET)
+    return attr_cls("age_bracket").eq(normalized)
 
 
 def _decimal_to_float(obj):
@@ -115,6 +130,7 @@ def store_cry_training_sample(
     Returns:
         {"status": "stored", "candidate_id": str}
     """
+    age_bracket = _normalize_age_bracket(age_bracket)
     now = datetime.now(timezone.utc).isoformat()
     candidate_id = f"cry_{uuid.uuid4().hex[:12]}"
 
@@ -155,11 +171,12 @@ def train_cry_model(
     """
     try:
         from boto3.dynamodb.conditions import Attr
+        age_bracket = _normalize_age_bracket(age_bracket)
         # Scan for all cry training samples for this age bracket
         response = training_candidate_table.scan(
             FilterExpression=(
                 Attr("candidate_type").eq("cry_emotion") &
-                Attr("age_bracket").eq(age_bracket)
+                _age_bracket_filter(Attr, age_bracket)
             ),
         )
         samples = _decimal_to_float(response.get("Items", []))
@@ -261,11 +278,12 @@ def predict_cry_emotion(
     """
     try:
         from boto3.dynamodb.conditions import Attr
+        age_bracket = _normalize_age_bracket(age_bracket)
         # Find latest promoted cry model for this age bracket
         response = model_registry_table.scan(
             FilterExpression=(
                 Attr("model_type").eq("cry_emotion") &
-                Attr("age_bracket").eq(age_bracket) &
+                _age_bracket_filter(Attr, age_bracket) &
                 Attr("is_promoted").eq(True)
             ),
         )
