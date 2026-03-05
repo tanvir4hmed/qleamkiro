@@ -232,6 +232,43 @@ jobs:
       # ────────────────────────────────────────────────────────────────────────
       # Phase 3: Create all remaining resources (including Lambda functions)
       # ────────────────────────────────────────────────────────────────────────
+      - name: Migration - Empty deprecated ECR repositories (one-time)
+        run: |
+          set -euo pipefail
+
+          DEPRECATED_REPOS="qleam-dev-concept_decoder qleam-dev-nlp_processor qleam-dev-developmental_tracker qleam-dev-speech_analyzer"
+
+          echo "🧹 One-time migration: emptying deprecated ECR repositories..."
+          for REPO in $DEPRECATED_REPOS; do
+            if ! aws ecr describe-repositories --repository-names "$REPO" >/dev/null 2>&1; then
+              echo "  $REPO not found (already removed)"
+              continue
+            fi
+
+            echo "  Cleaning images from $REPO..."
+            while true; do
+              IMAGE_COUNT=$(aws ecr list-images \
+                --repository-name "$REPO" \
+                --query 'length(imageIds)' \
+                --output text)
+
+              if [ "$IMAGE_COUNT" = "0" ] || [ "$IMAGE_COUNT" = "None" ]; then
+                echo "  ✅ $REPO is empty"
+                break
+              fi
+
+              IMAGE_IDS_JSON=$(aws ecr list-images \
+                --repository-name "$REPO" \
+                --max-results 1000 \
+                --query 'imageIds' \
+                --output json)
+
+              aws ecr batch-delete-image \
+                --repository-name "$REPO" \
+                --image-ids "$IMAGE_IDS_JSON" >/dev/null
+            done
+          done
+
       - name: Terraform Apply - All Resources
         run: |
           cd infrastructure/environments/dev
