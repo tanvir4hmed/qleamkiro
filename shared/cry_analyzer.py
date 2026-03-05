@@ -295,23 +295,23 @@ EMOTION_PROFILES_0_6M = {
         ],
     },
     "tired": {
-        "prior": 0.03,
+        "prior": 0.06,
         "rules": [
-            {"feature": "f0", "min": 220.0, "max": 430.0, "weight": 0.20},
-            {"feature": "f0_instability", "min": 0.0, "max": 0.11, "weight": 0.18},
-            {"feature": "rms_mean", "min": 0.015, "max": 0.08, "weight": 0.22},
-            {"feature": "zcr", "min": 0.0, "max": 0.032, "weight": 0.16},
-            {"feature": "duration_s", "min": 2.2, "max": 8.0, "weight": 0.12},
-            {"feature": "voiced_fraction", "min": 0.15, "max": 0.70, "weight": 0.12},
+            {"feature": "f0", "min": 210.0, "max": 430.0, "weight": 0.22},
+            {"feature": "f0_instability", "min": 0.0, "max": 0.10, "weight": 0.20},
+            {"feature": "rms_mean", "min": 0.010, "max": 0.075, "weight": 0.25},
+            {"feature": "zcr", "min": 0.0, "max": 0.030, "weight": 0.16},
+            {"feature": "duration_s", "min": 2.4, "max": 8.0, "weight": 0.10},
+            {"feature": "voiced_fraction", "min": 0.10, "max": 0.65, "weight": 0.10},
         ],
         "compound_rules": [
             {
                 "label": "sleepy_signature",
-                "weight": 0.10,
+                "weight": 0.14,
                 "all": [
-                    {"feature": "rms_mean", "max": 0.07},
-                    {"feature": "zcr", "max": 0.035},
-                    {"feature": "f0_instability", "max": 0.11},
+                    {"feature": "rms_mean", "max": 0.075},
+                    {"feature": "zcr", "max": 0.032},
+                    {"feature": "f0_instability", "max": 0.10},
                     {"feature": "duration_s", "min": 2.0},
                 ],
             },
@@ -366,22 +366,22 @@ EMOTION_PROFILES_0_6M = {
     "pain": {
         "prior": 0.00,
         "rules": [
-            {"feature": "f0", "min": 500.0, "max": 1000.0, "weight": 0.20},
-            {"feature": "rms_mean", "min": 0.11, "max": 0.40, "weight": 0.24},
-            {"feature": "voiced_fraction", "min": 0.45, "max": 1.00, "weight": 0.14},
-            {"feature": "spectral_centroid", "min": 2100.0, "max": 5000.0, "weight": 0.12},
-            {"feature": "f0_instability", "min": 0.18, "max": 0.50, "weight": 0.10},
-            {"feature": "duration_s", "min": 1.2, "max": 8.0, "weight": 0.10},
-            {"feature": "energy_var", "min": 0.0, "max": 0.22, "weight": 0.10},
+            {"feature": "f0", "min": 560.0, "max": 1100.0, "weight": 0.22},
+            {"feature": "rms_mean", "min": 0.13, "max": 0.45, "weight": 0.26},
+            {"feature": "voiced_fraction", "min": 0.60, "max": 1.00, "weight": 0.14},
+            {"feature": "spectral_centroid", "min": 2400.0, "max": 5200.0, "weight": 0.12},
+            {"feature": "f0_instability", "min": 0.22, "max": 0.55, "weight": 0.10},
+            {"feature": "duration_s", "min": 1.5, "max": 8.0, "weight": 0.08},
+            {"feature": "energy_var", "min": 0.0, "max": 0.18, "weight": 0.08},
         ],
         "compound_rules": [
             {
                 "label": "pain_signature",
-                "weight": 0.10,
+                "weight": 0.08,
                 "all": [
-                    {"feature": "rms_mean", "min": 0.11},
-                    {"feature": "f0", "min": 520.0},
-                    {"feature": "voiced_fraction", "min": 0.45},
+                    {"feature": "rms_mean", "min": 0.13},
+                    {"feature": "f0", "min": 560.0},
+                    {"feature": "voiced_fraction", "min": 0.60},
                 ],
             },
         ],
@@ -647,7 +647,7 @@ def _select_dunstan_info(
     candidates = []
     for emotion, score in filtered_scores.items():
         dunstan = emotions_map.get(emotion, {}).get("dunstan")
-        if dunstan and score >= 0.20:
+        if dunstan and score >= 0.30:
             candidates.append((emotion, float(score), str(dunstan)))
 
     if not candidates:
@@ -816,9 +816,12 @@ def analyze_cry(
         model_scores = trained_model_result.get("emotion_scores", {})
         model_confidence = trained_model_result.get("confidence", 0.5)
         model_samples = _to_float(trained_model_result.get("total_training_samples", 0), 0.0)
-        sample_factor = min(1.0, model_samples / 120.0)
-        # Adaptive blending: low-data models stay supportive; mature models contribute more.
-        model_weight = min(0.45, 0.10 + 0.22 * _to_float(model_confidence, 0.5) + 0.13 * sample_factor)
+        # Keep trained model in advisory role unless data volume is mature.
+        if model_samples < 80:
+            model_weight = 0.0
+        else:
+            sample_factor = min(1.0, (model_samples - 80.0) / 220.0)
+            model_weight = min(0.25, 0.05 + 0.12 * _to_float(model_confidence, 0.5) + 0.08 * sample_factor)
         acoustic_weight = 1.0 - model_weight
         for key in emotion_scores:
             if key in model_scores:
@@ -848,11 +851,10 @@ def analyze_cry(
         primary_score = filtered_scores[preferred_primary]
         second_score = max([v for k, v in filtered_scores.items() if k != preferred_primary] or [0.0])
 
-    # Confidence from top score + margin; avoids constant 92% plateaus.
+    # Show primary confidence from actual top emotion score so displayed percentage
+    # stays aligned with top_emotions percentages.
     margin = max(0.0, primary_score - second_score)
-    confidence = min(0.90, max(0.35, 0.55 * primary_score + 0.45 * margin))
-    if margin < 0.07:
-        confidence = min(confidence, 0.72 + margin)
+    confidence = min(0.95, max(0.30, primary_score))
     is_close_call = margin < 0.10 and second_score > 0.35
 
     # Get emotion details
