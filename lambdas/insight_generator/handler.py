@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 dynamodb = boto3.resource("dynamodb")
 session_table = dynamodb.Table(SESSION_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
+CRY_ONLY_MAX_AGE_DAYS = 90
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -123,12 +124,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         _save_insight(session_id, insight)
         return {"status": "insight_generated", "session_id": session_id, "insight": insight}
 
-    # --- ALWAYS: Check for words via transcription ---
+    # --- Optional transcription path (disabled for 0-3 month cry-only mode) ---
     transcript_result = None
     word_analysis = None
     word_age_analysis = None
 
-    if routing.get("run_transcription", False) or sound_type in ("speech", "mixed"):
+    if _should_run_transcription(sound_type, routing, age_days):
         try:
             transcript_result = transcribe_audio(s3_audio_path, os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME))
             word_analysis = analyze_words_for_display(transcript_result)
@@ -180,6 +181,13 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     logger.info(f"Insight generated: session={session_id} type={insight.get('display_type', 'unknown')}")
     return {"status": "insight_generated", "session_id": session_id, "insight": insight}
+
+
+def _should_run_transcription(sound_type: str, routing: Dict, age_days: Optional[int]) -> bool:
+    """Enable transcription only outside strict 0-3 month cry-only runtime."""
+    if isinstance(age_days, int) and age_days <= CRY_ONLY_MAX_AGE_DAYS:
+        return False
+    return bool(routing.get("run_transcription", False) or sound_type in ("speech", "mixed"))
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +260,16 @@ def _build_cry_insight(
         age_days=age_days,
         trained_model_result=trained_cry,
     )
+    debug_trace = cry_result.get("debug_trace", {})
+    if debug_trace:
+        logger.info(
+            "Cry debug: primary=%s conf=%.3f rules=%s triggers=%s snapshot=%s",
+            cry_result.get("primary_emotion"),
+            float(cry_result.get("confidence", 0.0)),
+            debug_trace.get("applied_conflict_rules", []),
+            debug_trace.get("top_feature_triggers", {}),
+            debug_trace.get("feature_snapshot", {}),
+        )
 
     insight["headline"] = f"{cry_result['emotion_icon']} {cry_result['emotion_label']}"
     insight["headline_icon"] = cry_result["emotion_icon"]
@@ -265,6 +283,10 @@ def _build_cry_insight(
         "what_it_means": cry_result["what_means"],
         "what_to_try": cry_result["what_try"],
     }
+    if cry_result.get("hungry_discomfort_overlap"):
+        insight["insight_sections"]["note"] = (
+            "Hungry and discomfort signals overlap. Feeding cues appear stronger in this recording."
+        )
 
     # Dunstan sound reference (0-6m only)
     if cry_result.get("dunstan_sound"):

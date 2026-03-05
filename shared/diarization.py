@@ -459,9 +459,7 @@ def diarize(y: np.ndarray, sr: int) -> Dict:
 
 def extract_baby_audio(y: np.ndarray, sr: int, diarization_result: Dict) -> np.ndarray:
     """
-    Concatenate all baby-labeled segments (newborn, infant, toddler, child).
-    
-    Also includes "unknown" segments in case they are baby sounds.
+    Concatenate all baby-labeled segments for the active 0-3 month scope.
 
     Falls back to full audio if no baby segments are found — ensures
     feature extraction always has input to work with.
@@ -469,7 +467,7 @@ def extract_baby_audio(y: np.ndarray, sr: int, diarization_result: Dict) -> np.n
     Returns:
         np.ndarray: concatenated baby audio samples
     """
-    baby_labels = ("newborn", "infant", "toddler", "child", "unknown")
+    baby_labels = ("newborn", "infant")
     baby_chunks = []
 
     for seg in diarization_result.get("segments", []):

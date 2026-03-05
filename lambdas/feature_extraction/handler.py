@@ -175,6 +175,10 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             quality_gate, session_context, critical, reject_title, reject_message,
         )
 
+    # --- 2.1 Fetch child profile early so all downstream decisions use DOB age ---
+    profile = _get_child_profile(child_id)
+    age_days = _compute_age_days(profile.get("birth_date"))
+
     # --- 3. Feature extraction (embedding for clustering + private language) ---
     extraction = extract_all_features_from_array(audio_array, sample_rate, apply_vad=False)
     feature_scores = extraction["feature_scores"]
@@ -215,6 +219,24 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "has_laugh": sound_type == "laugh",
     }
 
+    # In strict 0-3 month scope, map borderline speech/mixed back to cry when
+    # whole-recording evidence is cry-dominant.
+    normalized_sound_type = _normalize_sound_type_for_scope(
+        sound_type=sound_type,
+        sound_summary=sound_summary,
+        sound_scores=sound_result.get("scores", {}),
+        age_days=age_days,
+    )
+    if normalized_sound_type != sound_type:
+        logger.info(f"Sound type normalized for 0-3 month mode: {sound_type} -> {normalized_sound_type}")
+        sound_type = normalized_sound_type
+        sound_result["primary_type"] = normalized_sound_type
+        if isinstance(sound_summary, dict):
+            sound_summary["dominant_type"] = normalized_sound_type
+            sound_summary["has_cry"] = normalized_sound_type == "cry" or bool(sound_summary.get("has_cry", False))
+            if normalized_sound_type == "cry":
+                sound_summary["has_speech"] = False
+
     # --- 6. Adult/baby detection ---
     bio_result = {}
     age_classification = {}
@@ -237,16 +259,14 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # Determine adult/baby
     is_adult = _determine_is_adult(bio_result, age_classification)
 
-    # --- 7. Get child profile for age info ---
-    profile = _get_child_profile(child_id)
-    age_days = _compute_age_days(profile.get("birth_date"))
-
     # --- 7.1 Hard reject for out-of-scope age / adult / noisy / chaotic / broken ---
     post_reject_reasons, post_reject_title, post_reject_message = _check_post_classification_rejects(
         sound_type=sound_type,
         is_adult=is_adult,
         quality_gate=quality_gate,
         age_days=age_days,
+        sound_summary=sound_summary,
+        sound_scores=sound_result.get("scores", {}),
     )
     if post_reject_reasons:
         return _save_and_return_fast_reject(
@@ -365,6 +385,10 @@ def _build_routing(
         if sound_summary.get("has_laugh"):
             run_laugh_detection = True
 
+    # 0-3 month mode is cry-only: disable transcript path fully.
+    if isinstance(age_days, int) and age_days <= MAX_SUPPORTED_CHILD_AGE_DAYS:
+        run_transcription = False
+
     return {
         "sound_type": sound_type,
         "is_adult": is_adult,
@@ -404,6 +428,8 @@ def _check_post_classification_rejects(
     is_adult: bool,
     quality_gate: Dict,
     age_days: Optional[int],
+    sound_summary: Optional[Dict] = None,
+    sound_scores: Optional[Dict] = None,
 ) -> tuple:
     """Check post-classification rejection conditions for strict 0-3 month scope."""
     reasons = []
@@ -419,8 +445,11 @@ def _check_post_classification_rejects(
 
     if sound_type == "noise":
         reasons.append("noisy_environment")
+    if sound_type == "speech":
+        reasons.append("speech_not_expected")
     if sound_type == "mixed":
-        reasons.append("chaotic_environment")
+        if _is_chaotic_mixed(sound_summary, sound_scores):
+            reasons.append("chaotic_environment")
 
     for issue in issues:
         issue_text = str(issue)
@@ -436,11 +465,100 @@ def _check_post_classification_rejects(
         return reasons, "Age Not Supported", "This system supports only 0-3 month babies. Recording rejected."
     if "adult_voice_detected" in reasons:
         return reasons, "Adult Voice Detected", "Adult voice detected. Please record a clean and fresh baby sound."
+    if "speech_not_expected" in reasons:
+        return reasons, "Speech Not Supported", "This system is configured for 0-3 month cry analysis only. Please upload a clean baby crying recording."
     if "chaotic_environment" in reasons:
         return reasons, "Chaotic Environment", "Chaotic environment detected. Please record a cleaner baby-only sound."
     if "noisy_environment" in reasons:
         return reasons, "Noisy Environment", "Noisy environment detected. Please record in a quieter place."
     return reasons, "Audio Quality Issue", "Audio is broken. Please try to record again."
+
+
+def _is_chaotic_mixed(sound_summary: Optional[Dict], sound_scores: Optional[Dict]) -> bool:
+    """Return True if mixed audio is too noisy/non-cry to analyze safely."""
+    summary = sound_summary if isinstance(sound_summary, dict) else {}
+    scores = sound_scores if isinstance(sound_scores, dict) else {}
+    ratios = summary.get("type_ratios", {}) if isinstance(summary.get("type_ratios"), dict) else {}
+
+    cry_ratio = float(ratios.get("cry", 0.0))
+    speech_ratio = float(ratios.get("speech", 0.0))
+    noise_ratio = float(ratios.get("noise", 0.0))
+
+    # Segment-ratio path (preferred when diarized segments exist).
+    if ratios:
+        cry_dominant = (
+            cry_ratio >= 0.35
+            and cry_ratio >= speech_ratio + 0.08
+            and cry_ratio >= noise_ratio
+        )
+        return not cry_dominant
+
+    # Fallback to session-level classifier scores.
+    cry_score = float(scores.get("cry", 0.0))
+    speech_score = float(scores.get("speech", 0.0))
+    noise_score = float(scores.get("noise", 0.0))
+    mixed_score = float(scores.get("mixed", 0.0))
+
+    cry_dominant = (
+        cry_score >= 0.45
+        and cry_score >= speech_score + 0.08
+        and cry_score >= noise_score
+        and cry_score >= mixed_score
+    )
+    return not cry_dominant
+
+
+def _normalize_sound_type_for_scope(
+    sound_type: str,
+    sound_summary: Optional[Dict],
+    sound_scores: Optional[Dict],
+    age_days: Optional[int],
+) -> str:
+    """Normalize sound type for strict 0-3 month cry-only analysis mode."""
+    if not isinstance(age_days, int) or age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return sound_type
+
+    if sound_type == "speech":
+        # Keep speech only when whole-session evidence is strongly speech.
+        if _is_clear_speech_without_cry(sound_summary, sound_scores):
+            return sound_type
+        return "cry"
+
+    if sound_type == "mixed":
+        # In this age scope, mixed that is cry-dominant should proceed as cry.
+        if not _is_chaotic_mixed(sound_summary, sound_scores):
+            return "cry"
+        return sound_type
+
+    return sound_type
+
+
+def _is_clear_speech_without_cry(sound_summary: Optional[Dict], sound_scores: Optional[Dict]) -> bool:
+    """Strong speech dominance over the full recording; avoids cry->speech misfires."""
+    summary = sound_summary if isinstance(sound_summary, dict) else {}
+    scores = sound_scores if isinstance(sound_scores, dict) else {}
+    ratios = summary.get("type_ratios", {}) if isinstance(summary.get("type_ratios"), dict) else {}
+
+    if ratios:
+        speech_ratio = float(ratios.get("speech", 0.0))
+        cry_ratio = float(ratios.get("cry", 0.0))
+        noise_ratio = float(ratios.get("noise", 0.0))
+        return (
+            speech_ratio >= 0.55
+            and speech_ratio >= cry_ratio + 0.20
+            and cry_ratio <= 0.15
+            and noise_ratio <= 0.35
+        )
+
+    speech_score = float(scores.get("speech", 0.0))
+    cry_score = float(scores.get("cry", 0.0))
+    noise_score = float(scores.get("noise", 0.0))
+    return (
+        speech_score >= 0.70
+        and speech_score >= cry_score + 0.20
+        and cry_score <= 0.30
+        and noise_score <= 0.45
+    )
 
 
 def _get_child_profile(child_id: str) -> Dict:

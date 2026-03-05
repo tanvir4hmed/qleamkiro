@@ -54,7 +54,7 @@ EMOTIONS_0_6M = {
         "icon": "😴",
         "dunstan": "owh",
         "description": "An 'owh' sound with an oval-shaped mouth, similar to a yawn reflex",
-        "what_hearing": "Breathy, drawn-out cry with a yawn-like quality — often with long pauses between cries",
+        "what_hearing": "Soft, slow, breathy cry with a yawn-like quality — often near sleep, with long pauses between cries",
         "what_means": "This pattern resembles the yawning reflex. Your baby may be ready for sleep or showing early signs of tiredness",
         "what_try": [
             "Start a calming sleep routine — dim lights, reduce stimulation",
@@ -268,108 +268,373 @@ CRY_FREQUENCY_BY_AGE = {
 }
 
 
-def _score_dunstan_sounds(features: Dict) -> Dict[str, float]:
+EMOTION_PROFILES_0_6M = {
+    "hungry": {
+        "prior": 0.12,
+        "rules": [
+            {"feature": "f0", "min": 300.0, "max": 560.0, "weight": 0.20},
+            {"feature": "f0_instability", "min": 0.0, "max": 0.16, "weight": 0.14},
+            {"feature": "spectral_centroid", "min": 800.0, "max": 2500.0, "weight": 0.16},
+            {"feature": "energy_var", "min": 0.20, "max": 0.65, "weight": 0.12},
+            {"feature": "voiced_fraction", "min": 0.30, "max": 0.95, "weight": 0.10},
+            {"feature": "rms_mean", "min": 0.055, "max": 0.16, "weight": 0.10},
+            {"feature": "duration_s", "min": 2.0, "max": 8.0, "weight": 0.08},
+        ],
+        "compound_rules": [
+            {
+                "label": "voiced_variable_pattern",
+                "weight": 0.08,
+                "all": [
+                    {"feature": "voiced_fraction", "min": 0.30},
+                    {"feature": "energy_var", "min": 0.20},
+                ],
+            },
+        ],
+    },
+    "tired": {
+        "prior": 0.00,
+        "rules": [
+            {"feature": "f0", "min": 220.0, "max": 430.0, "weight": 0.20},
+            {"feature": "f0_instability", "min": 0.0, "max": 0.11, "weight": 0.18},
+            {"feature": "rms_mean", "min": 0.015, "max": 0.08, "weight": 0.22},
+            {"feature": "zcr", "min": 0.0, "max": 0.032, "weight": 0.16},
+            {"feature": "duration_s", "min": 2.2, "max": 8.0, "weight": 0.12},
+            {"feature": "voiced_fraction", "min": 0.15, "max": 0.70, "weight": 0.12},
+        ],
+        "compound_rules": [
+            {
+                "label": "sleepy_signature",
+                "weight": 0.10,
+                "all": [
+                    {"feature": "rms_mean", "max": 0.07},
+                    {"feature": "zcr", "max": 0.035},
+                    {"feature": "f0_instability", "max": 0.11},
+                    {"feature": "duration_s", "min": 2.0},
+                ],
+            },
+        ],
+    },
+    "discomfort": {
+        "prior": 0.04,
+        "rules": [
+            {"feature": "zcr", "min": 0.03, "max": 0.09, "weight": 0.20},
+            {"feature": "energy_var", "min": 0.28, "max": 0.60, "weight": 0.20},
+            {"feature": "rms_mean", "min": 0.03, "max": 0.11, "weight": 0.16},
+            {"feature": "f0_instability", "min": 0.10, "max": 0.22, "weight": 0.16},
+            {"feature": "duration_s", "min": 0.4, "max": 3.0, "weight": 0.12},
+            {"feature": "spectral_centroid", "min": 1200.0, "max": 2800.0, "weight": 0.12},
+        ],
+    },
+    "gas": {
+        "prior": 0.00,
+        "rules": [
+            {"feature": "f0", "min": 350.0, "max": 700.0, "weight": 0.12},
+            {"feature": "rms_mean", "min": 0.06, "max": 0.18, "weight": 0.18},
+            {"feature": "f0_instability", "min": 0.15, "max": 0.35, "weight": 0.18},
+            {"feature": "spectral_centroid", "min": 1850.0, "max": 4200.0, "weight": 0.18},
+            {"feature": "voiced_fraction", "min": 0.35, "max": 0.95, "weight": 0.14},
+            {"feature": "energy_var", "min": 0.30, "max": 0.80, "weight": 0.10},
+            {"feature": "duration_s", "min": 0.8, "max": 6.0, "weight": 0.10},
+        ],
+        "compound_rules": [
+            {
+                "label": "strain_signature",
+                "weight": 0.10,
+                "all": [
+                    {"feature": "rms_mean", "min": 0.07},
+                    {"feature": "energy_var", "min": 0.30},
+                    {"feature": "f0_instability", "min": 0.14},
+                    {"feature": "spectral_centroid", "min": 1800.0},
+                ],
+            },
+        ],
+    },
+    "burp": {
+        "prior": 0.00,
+        "rules": [
+            {"feature": "f0", "min": 280.0, "max": 520.0, "weight": 0.18},
+            {"feature": "energy_var", "min": 0.22, "max": 0.55, "weight": 0.24},
+            {"feature": "f0_instability", "min": 0.0, "max": 0.13, "weight": 0.18},
+            {"feature": "zcr", "min": 0.0, "max": 0.05, "weight": 0.14},
+            {"feature": "duration_s", "min": 0.2, "max": 2.5, "weight": 0.12},
+            {"feature": "rms_mean", "min": 0.03, "max": 0.10, "weight": 0.14},
+        ],
+    },
+    "pain": {
+        "prior": 0.00,
+        "rules": [
+            {"feature": "f0", "min": 500.0, "max": 1000.0, "weight": 0.20},
+            {"feature": "rms_mean", "min": 0.11, "max": 0.40, "weight": 0.24},
+            {"feature": "voiced_fraction", "min": 0.45, "max": 1.00, "weight": 0.14},
+            {"feature": "spectral_centroid", "min": 2100.0, "max": 5000.0, "weight": 0.12},
+            {"feature": "f0_instability", "min": 0.18, "max": 0.50, "weight": 0.10},
+            {"feature": "duration_s", "min": 1.2, "max": 8.0, "weight": 0.10},
+            {"feature": "energy_var", "min": 0.0, "max": 0.22, "weight": 0.10},
+        ],
+        "compound_rules": [
+            {
+                "label": "pain_signature",
+                "weight": 0.10,
+                "all": [
+                    {"feature": "rms_mean", "min": 0.11},
+                    {"feature": "f0", "min": 520.0},
+                    {"feature": "voiced_fraction", "min": 0.45},
+                ],
+            },
+        ],
+    },
+    "closeness": {
+        "prior": 0.00,
+        "rules": [
+            {"feature": "f0", "min": 120.0, "max": 420.0, "weight": 0.20},
+            {"feature": "rms_mean", "min": 0.0, "max": 0.055, "weight": 0.24},
+            {"feature": "energy_var", "min": 0.24, "max": 0.70, "weight": 0.14},
+            {"feature": "f0_instability", "min": 0.0, "max": 0.12, "weight": 0.16},
+            {"feature": "zcr", "min": 0.0, "max": 0.045, "weight": 0.12},
+            {"feature": "duration_s", "min": 1.2, "max": 8.0, "weight": 0.10},
+            {"feature": "voiced_fraction", "min": 0.05, "max": 0.70, "weight": 0.08},
+        ],
+    },
+}
+
+
+CONFLICT_RULES_0_6M = [
+    {
+        "name": "sleepy_deconflict",
+        "if_signature": "sleepy",
+        "scale": {"pain": 0.60, "gas": 0.85, "discomfort": 0.88},
+    },
+    {
+        "name": "strain_deconflict",
+        "if_signature": "strain",
+        "scale": {"discomfort": 0.85, "closeness": 0.70},
+    },
+    {
+        "name": "pain_deconflict",
+        "if_signature": "pain",
+        "scale": {"closeness": 0.55, "tired": 0.70},
+    },
+    {
+        "name": "hungry_discomfort_overlap",
+        "if_scores_overlap": {
+            "a": "hungry",
+            "b": "discomfort",
+            "min_score": 0.45,
+            "max_b_minus_a": 0.20,
+        },
+        "scale": {"discomfort": 0.85},
+        "prefer_primary": "hungry",
+    },
+]
+
+
+def _to_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_scoring_features(features: Dict) -> Dict[str, float]:
+    return {
+        "f0": _to_float(features.get("f0_mean", 0.0)),
+        "f0_instability": _to_float(features.get("f0_instability", 0.0)),
+        "spectral_centroid": _to_float(features.get("spectral_centroid", 0.0)),
+        "zcr": _to_float(features.get("zcr", 0.0)),
+        "energy_var": _to_float(features.get("energy_variability", 0.0)),
+        "rms_mean": _to_float(features.get("rms_mean", 0.0)),
+        "voiced_fraction": _to_float(features.get("voiced_fraction", 0.0)),
+        "duration_s": _to_float(features.get("duration_s", 0.0)),
+    }
+
+
+def _soft_range_match(value: float, min_v: Optional[float], max_v: Optional[float], tol_ratio: float = 0.20) -> float:
+    """Smooth range match score in [0,1] with soft edges."""
+    if min_v is None and max_v is None:
+        return 1.0
+    if min_v is not None and max_v is not None and max_v < min_v:
+        min_v, max_v = max_v, min_v
+
+    if min_v is None:
+        if value <= max_v:
+            return 1.0
+        span = max(abs(max_v), 1.0)
+        tol = span * tol_ratio
+        return max(0.0, min(1.0, (max_v + tol - value) / max(tol, 1e-6)))
+
+    if max_v is None:
+        if value >= min_v:
+            return 1.0
+        span = max(abs(min_v), 1.0)
+        tol = span * tol_ratio
+        return max(0.0, min(1.0, (value - (min_v - tol)) / max(tol, 1e-6)))
+
+    span = max(max_v - min_v, 1.0)
+    tol = span * tol_ratio
+    if min_v <= value <= max_v:
+        return 1.0
+    if value < min_v:
+        return max(0.0, min(1.0, (value - (min_v - tol)) / max(tol, 1e-6)))
+    return max(0.0, min(1.0, (max_v + tol - value) / max(tol, 1e-6)))
+
+
+def _evaluate_condition(values: Dict[str, float], cond: Dict[str, Any]) -> float:
+    feature = cond.get("feature")
+    if not feature or feature not in values:
+        return 0.0
+    value = values[feature]
+    return _soft_range_match(
+        value=value,
+        min_v=cond.get("min"),
+        max_v=cond.get("max"),
+        tol_ratio=_to_float(cond.get("tol_ratio", 0.20), 0.20),
+    )
+
+
+def _derive_signatures(values: Dict[str, float]) -> Dict[str, bool]:
+    return {
+        "sleepy": (
+            values["rms_mean"] < 0.07
+            and values["zcr"] < 0.035
+            and values["f0_instability"] < 0.11
+            and values["duration_s"] >= 2.0
+        ),
+        "strain": (
+            values["rms_mean"] > 0.07
+            and values["energy_var"] > 0.30
+            and values["f0_instability"] > 0.14
+            and values["spectral_centroid"] > 1800
+        ),
+        "pain": (
+            values["rms_mean"] > 0.11
+            and values["f0"] > 520
+            and values["voiced_fraction"] > 0.45
+        ),
+    }
+
+
+def _score_profiles(values: Dict[str, float], profiles: Dict[str, Dict]) -> tuple:
+    scores: Dict[str, float] = {}
+    trigger_map: Dict[str, List[Dict[str, Any]]] = {}
+
+    for emotion, cfg in profiles.items():
+        score = _to_float(cfg.get("prior", 0.0), 0.0)
+        triggers: List[Dict[str, Any]] = []
+
+        for rule in cfg.get("rules", []):
+            weight = _to_float(rule.get("weight", 0.0), 0.0)
+            if weight <= 0:
+                continue
+            match = _evaluate_condition(values, rule)
+            gain = weight * match
+            score += gain
+            if gain >= max(0.04, 0.45 * weight):
+                feat = rule.get("feature", "unknown")
+                triggers.append({
+                    "rule": f"{feat}:{rule.get('min', '-inf')}..{rule.get('max', '+inf')}",
+                    "gain": round(gain, 3),
+                    "value": round(values.get(feat, 0.0), 4),
+                })
+
+        for crule in cfg.get("compound_rules", []):
+            weight = _to_float(crule.get("weight", 0.0), 0.0)
+            conds = crule.get("all", [])
+            if weight <= 0 or not conds:
+                continue
+            match_scores = [_evaluate_condition(values, c) for c in conds]
+            match = min(match_scores) if match_scores else 0.0
+            gain = weight * match
+            score += gain
+            if gain >= max(0.03, 0.40 * weight):
+                triggers.append({
+                    "rule": str(crule.get("label", "compound_rule")),
+                    "gain": round(gain, 3),
+                    "value": 1.0 if match >= 0.99 else round(match, 3),
+                })
+
+        scores[emotion] = min(1.0, max(0.0, score))
+        triggers.sort(key=lambda x: x.get("gain", 0.0), reverse=True)
+        trigger_map[emotion] = triggers[:4]
+
+    return scores, trigger_map
+
+
+def _apply_conflict_rules(scores: Dict[str, float], signatures: Dict[str, bool], rules: List[Dict[str, Any]]) -> Dict[str, Any]:
+    resolved = dict(scores)
+    applied_rules: List[str] = []
+    preferred_primary = None
+    overlap_flags: Dict[str, bool] = {}
+
+    for rule in rules:
+        apply_now = False
+
+        signature_key = rule.get("if_signature")
+        if signature_key:
+            apply_now = bool(signatures.get(signature_key, False))
+
+        overlap_cfg = rule.get("if_scores_overlap")
+        if overlap_cfg:
+            a = overlap_cfg.get("a")
+            b = overlap_cfg.get("b")
+            min_score = _to_float(overlap_cfg.get("min_score", 0.0), 0.0)
+            max_b_minus_a = _to_float(overlap_cfg.get("max_b_minus_a", 0.0), 0.0)
+            if a in resolved and b in resolved:
+                apply_now = (
+                    resolved[a] >= min_score
+                    and resolved[b] >= min_score
+                    and (resolved[b] - resolved[a]) < max_b_minus_a
+                )
+
+        if not apply_now:
+            continue
+
+        for emotion, scale in rule.get("scale", {}).items():
+            if emotion in resolved:
+                resolved[emotion] = min(1.0, max(0.0, resolved[emotion] * _to_float(scale, 1.0)))
+
+        rule_name = str(rule.get("name", "conflict_rule"))
+        applied_rules.append(rule_name)
+        prefer = rule.get("prefer_primary")
+        if prefer:
+            preferred_primary = str(prefer)
+            overlap_flags["hungry_discomfort_overlap"] = rule_name == "hungry_discomfort_overlap"
+
+    return {
+        "scores": resolved,
+        "applied_rules": applied_rules,
+        "preferred_primary": preferred_primary,
+        "overlap_flags": overlap_flags,
+    }
+
+
+def _score_dunstan_sounds(features: Dict, return_debug: bool = False) -> Any:
     """
-    Score Dunstan Baby Language sounds from acoustic features.
-
-    Uses spectral and temporal patterns to estimate which reflexive
-    sound pattern best matches the cry.
+    Uniform, profile-driven scoring for 0-3 month cry emotions.
     """
-    f0 = features.get("f0_mean", 0)
-    f0_std = features.get("f0_std", 0)
-    f0_instability = features.get("f0_instability", 0)
-    spectral_centroid = features.get("spectral_centroid", 0)
-    zcr = features.get("zcr", 0)
-    energy_var = features.get("energy_variability", 0)
-    rms_mean = features.get("rms_mean", 0)
+    values = _extract_scoring_features(features)
+    signatures = _derive_signatures(values)
+    raw_scores, trigger_map = _score_profiles(values, EMOTION_PROFILES_0_6M)
+    resolved = _apply_conflict_rules(raw_scores, signatures, CONFLICT_RULES_0_6M)
 
-    scores = {}
+    scores = resolved["scores"]
+    if not return_debug:
+        return scores
 
-    # Neh (hungry): Rhythmic, nasal, moderate pitch, repetitive
-    neh_score = 0.0
-    if 300 < f0 < 550:
-        neh_score += 0.30
-    if f0_instability < 0.15:
-        neh_score += 0.25  # Relatively stable pitch (rhythmic)
-    if 800 < spectral_centroid < 2500:
-        neh_score += 0.25  # Nasal resonance range
-    if energy_var > 0.2:
-        neh_score += 0.20  # Rhythmic on/off
-    scores["hungry"] = min(1.0, neh_score)
-
-    # Owh (tired): Breathy, drawn out, lower intensity
-    owh_score = 0.0
-    if 250 < f0 < 450:
-        owh_score += 0.25  # Lower pitch for tired
-    if f0_instability < 0.12:
-        owh_score += 0.25  # Relatively stable
-    if rms_mean < 0.08:
-        owh_score += 0.25  # Lower intensity
-    if zcr < 0.04:
-        owh_score += 0.25  # Less harsh
-    scores["tired"] = min(1.0, owh_score)
-
-    # Heh (discomfort): Breathy, short, intermittent
-    heh_score = 0.0
-    if zcr > 0.03:
-        heh_score += 0.30  # Breathy quality
-    if energy_var > 0.3:
-        heh_score += 0.30  # Intermittent
-    if rms_mean < 0.10:
-        heh_score += 0.20  # Moderate intensity
-    if f0_instability > 0.08:
-        heh_score += 0.20
-    scores["discomfort"] = min(1.0, heh_score)
-
-    # Eairh (gas): Intense, straining, grunting, lower
-    eairh_score = 0.0
-    if f0 > 400:
-        eairh_score += 0.25  # Can be high pitched
-    if rms_mean > 0.06:
-        eairh_score += 0.25  # Intense
-    if f0_instability > 0.15:
-        eairh_score += 0.25  # Strained, wavering
-    if spectral_centroid > 2000:
-        eairh_score += 0.25  # Strained quality
-    scores["gas"] = min(1.0, eairh_score)
-
-    # Eh (burp): Short, repetitive, pushing quality
-    eh_score = 0.0
-    if 300 < f0 < 500:
-        eh_score += 0.25
-    if energy_var > 0.25:
-        eh_score += 0.30  # Repetitive short bursts
-    if f0_instability < 0.10:
-        eh_score += 0.25  # Relatively stable per burst
-    if zcr < 0.05:
-        eh_score += 0.20
-    scores["burp"] = min(1.0, eh_score)
-
-    # Pain: High-pitched, sudden, intense, sustained
-    pain_score = 0.0
-    if f0 > 500:
-        pain_score += 0.35  # Very high pitch
-    if rms_mean > 0.10:
-        pain_score += 0.25  # High intensity
-    if f0_instability > 0.20:
-        pain_score += 0.20  # Wavering/strained
-    if energy_var < 0.20:
-        pain_score += 0.20  # Sustained (not rhythmic)
-    scores["pain"] = min(1.0, pain_score)
-
-    # Closeness: Lower intensity, whimpering
-    close_score = 0.0
-    if f0 < 400:
-        close_score += 0.30  # Lower pitch
-    if rms_mean < 0.05:
-        close_score += 0.30  # Low intensity (whimpering)
-    if energy_var > 0.3:
-        close_score += 0.20  # Intermittent (fussy, not sustained)
-    if f0_instability < 0.10:
-        close_score += 0.20
-    scores["closeness"] = min(1.0, close_score)
-
-    return scores
+    debug = {
+        "applied_conflict_rules": resolved.get("applied_rules", []),
+        "preferred_primary": resolved.get("preferred_primary"),
+        "signatures": signatures,
+        "emotion_triggers": trigger_map,
+        "feature_snapshot": {
+            "f0": round(values["f0"], 2),
+            "rms_mean": round(values["rms_mean"], 5),
+            "energy_var": round(values["energy_var"], 3),
+            "zcr": round(values["zcr"], 4),
+            "duration_s": round(values["duration_s"], 2),
+        },
+        "overlap_flags": resolved.get("overlap_flags", {}),
+    }
+    return scores, debug
 
 
 def _score_older_baby_emotions(features: Dict, age_bracket: str) -> Dict[str, float]:
@@ -486,10 +751,11 @@ def analyze_cry(
     """
     age_bracket = get_age_bracket(age_days)
     emotions_map = get_emotions_for_age(age_days)
+    scoring_debug: Dict[str, Any] = {}
 
     # Score emotions based on age
     if age_bracket == "0_6m":
-        emotion_scores = _score_dunstan_sounds(features)
+        emotion_scores, scoring_debug = _score_dunstan_sounds(features, return_debug=True)
     # else:
     #     emotion_scores = _score_older_baby_emotions(features, age_bracket)
     else:
@@ -518,6 +784,15 @@ def analyze_cry(
     primary_key = ranked[0][0]
     primary_score = ranked[0][1]
     second_score = ranked[1][1] if len(ranked) > 1 else 0
+    preferred_primary = scoring_debug.get("preferred_primary")
+    hungry_discomfort_overlap = bool(
+        scoring_debug.get("overlap_flags", {}).get("hungry_discomfort_overlap", False)
+    )
+
+    if preferred_primary in filtered_scores:
+        primary_key = preferred_primary
+        primary_score = filtered_scores[preferred_primary]
+        second_score = max([v for k, v in filtered_scores.items() if k != preferred_primary] or [0.0])
 
     # Confidence based on margin
     confidence = min(0.92, primary_score * (1.0 + (primary_score - second_score) * 0.5))
@@ -530,8 +805,14 @@ def analyze_cry(
     age_cry_match = _check_cry_age_match(f0_actual, age_bracket, age_days)
 
     # Top 3 emotions for display
+    display_ranked = ranked
+    if preferred_primary in filtered_scores:
+        display_ranked = [(preferred_primary, filtered_scores[preferred_primary])] + [
+            item for item in ranked if item[0] != preferred_primary
+        ]
+
     top_emotions = []
-    for key, score in ranked[:3]:
+    for key, score in display_ranked[:3]:
         if score > 0.1:
             emo = emotions_map.get(key, {})
             top_emotions.append({
@@ -541,6 +822,15 @@ def analyze_cry(
                 "score": round(score, 3),
             })
 
+    debug_trace = {
+        "applied_conflict_rules": scoring_debug.get("applied_conflict_rules", []),
+        "feature_snapshot": scoring_debug.get("feature_snapshot", {}),
+        "top_feature_triggers": {
+            emo_key: scoring_debug.get("emotion_triggers", {}).get(emo_key, [])[:2]
+            for emo_key, _ in display_ranked[:3]
+        },
+    }
+
     return {
         "primary_emotion": primary_key,
         "emotion_label": emotion_info.get("label", primary_key),
@@ -549,11 +839,13 @@ def analyze_cry(
         "emotion_scores": {k: round(v, 3) for k, v in filtered_scores.items()},
         "top_emotions": top_emotions,
         "age_bracket": age_bracket,
+        "hungry_discomfort_overlap": hungry_discomfort_overlap,
         "what_hearing": emotion_info.get("what_hearing", "Cry sounds detected"),
         "what_means": emotion_info.get("what_means", "Your baby is expressing a need"),
         "what_try": emotion_info.get("what_try", ["Observe and respond to your baby's cues"]),
         "dunstan_sound": emotion_info.get("dunstan") if age_bracket == "0_6m" else None,
         "age_cry_match": age_cry_match,
+        "debug_trace": debug_trace,
     }
 
 
