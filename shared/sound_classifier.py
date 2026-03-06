@@ -60,6 +60,11 @@ SPEECH_SYLLABLE_RATE_MIN = 1.5        # Minimum syllable rate for speech
 SPEECH_F0_STABILITY_MAX = 0.15        # Speech has more stable F0 than cry
 SPEECH_PAUSE_RATIO_RANGE = (0.15, 0.65)  # Speech has natural pauses
 
+# Mixed classification ambiguity threshold.
+# Tuned from 0.10 -> 0.08 so "mixed" is assigned slightly less often while
+# preserving ambiguity handling.
+MIXED_AMBIGUITY_GAP = 0.08
+
 
 def _compute_rms_profile(y: np.ndarray, sr: int, frame_ms: int = 25) -> np.ndarray:
     """Compute frame-level RMS energy profile."""
@@ -322,7 +327,7 @@ def classify_sound(
     if best_score < 0.25:
         primary_type = SOUND_NOISE  # Default fallback
         confidence = 0.3
-    elif best_score - second_score < 0.10:
+    elif best_score - second_score < MIXED_AMBIGUITY_GAP:
         primary_type = SOUND_MIXED
         confidence = best_score
     else:
