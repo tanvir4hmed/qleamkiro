@@ -6,7 +6,8 @@
       "Bash(find:*)",
       "Bash(npx react-scripts build)",
       "Bash(npm ls react)",
-      "Bash(npm install)"
+      "Bash(npm install)",
+      "WebSearch"
     ]
   }
 }
