@@ -17,8 +17,6 @@ locals {
     POPULATION_MODEL_TABLE       = var.population_model_table
     TRAINING_CANDIDATE_TABLE     = var.training_candidate_table
     MODEL_REGISTRY_TABLE         = var.model_registry_table
-    ALPHA_VALUE                  = tostring(var.alpha_value)
-    CLUSTER_SIMILARITY_THRESHOLD = tostring(var.cluster_similarity_threshold)
     STEP_FUNCTION_ARN            = var.step_function_arn
     STEP_FUNCTION_ARN_PARAM_NAME = var.step_function_arn_param_name
     LOG_LEVEL                    = var.environment == "prod" ? "WARNING" : "DEBUG"
@@ -66,90 +64,6 @@ resource "aws_lambda_function" "feature_extraction" {
 
 resource "aws_cloudwatch_log_group" "feature_extraction" {
   name              = "/aws/lambda/${aws_lambda_function.feature_extraction.function_name}"
-  retention_in_days = var.log_retention_days
-}
-
-# -----------------------------------------------------------------------------
-# Cluster Engine Lambda
-# -----------------------------------------------------------------------------
-resource "aws_lambda_function" "cluster_engine" {
-  function_name = "${var.project}-${var.environment}-cluster-engine"
-  description   = "Manages sound cluster formation and evolution"
-
-  package_type = "Image"
-  image_uri    = "${var.ecr_repository_urls["cluster_engine"]}:${var.image_tag}"
-
-  role        = var.lambda_execution_role_arn
-  timeout     = 60
-  memory_size = 512
-
-  environment {
-    variables = local.common_env_vars
-  }
-
-  vpc_config {
-    subnet_ids         = var.private_subnet_ids
-    security_group_ids = [var.lambda_security_group_id]
-  }
-
-  tracing_config {
-    mode = "Active"
-  }
-
-  lifecycle {
-    ignore_changes = [image_uri]
-  }
-
-  tags = {
-    Name      = "${var.project}-${var.environment}-cluster-engine"
-    Component = "cluster-engine"
-  }
-}
-
-resource "aws_cloudwatch_log_group" "cluster_engine" {
-  name              = "/aws/lambda/${aws_lambda_function.cluster_engine.function_name}"
-  retention_in_days = var.log_retention_days
-}
-
-# -----------------------------------------------------------------------------
-# Reinforcement Engine Lambda
-# -----------------------------------------------------------------------------
-resource "aws_lambda_function" "reinforcement_engine" {
-  function_name = "${var.project}-${var.environment}-reinforcement-engine"
-  description   = "Updates reinforcement weights and semantic bridges"
-
-  package_type = "Image"
-  image_uri    = "${var.ecr_repository_urls["reinforcement_engine"]}:${var.image_tag}"
-
-  role        = var.lambda_execution_role_arn
-  timeout     = 30
-  memory_size = 512
-
-  environment {
-    variables = local.common_env_vars
-  }
-
-  vpc_config {
-    subnet_ids         = var.private_subnet_ids
-    security_group_ids = [var.lambda_security_group_id]
-  }
-
-  tracing_config {
-    mode = "Active"
-  }
-
-  lifecycle {
-    ignore_changes = [image_uri]
-  }
-
-  tags = {
-    Name      = "${var.project}-${var.environment}-reinforcement-engine"
-    Component = "reinforcement-engine"
-  }
-}
-
-resource "aws_cloudwatch_log_group" "reinforcement_engine" {
-  name              = "/aws/lambda/${aws_lambda_function.reinforcement_engine.function_name}"
   retention_in_days = var.log_retention_days
 }
 

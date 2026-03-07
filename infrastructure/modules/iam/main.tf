@@ -115,7 +115,7 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   policy_arn = aws_iam_policy.lambda_dynamodb.arn
 }
 
-# Lambda invoke permission (api_handler → feedback_processor, feedback_processor → reinforcement_engine)
+# Lambda invoke permission (api_handler → feedback_processor)
 resource "aws_iam_policy" "lambda_invoke" {
   name        = "${var.project}-${var.environment}-lambda-invoke-policy"
   description = "Allow Lambda functions to invoke other Qleam Lambda functions"

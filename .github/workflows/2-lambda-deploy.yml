@@ -92,7 +92,7 @@ jobs:
           ECR_URLS: ${{ steps.ecr-urls.outputs.ecr_urls }}
         run: |
           # Define Lambda functions
-          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler"
+          LAMBDA_FUNCTIONS="feature_extraction insight_generator feedback_processor api_handler"
           
           # Generate image tag based on commit SHA
           IMAGE_TAG="${{ github.sha }}"
@@ -133,8 +133,6 @@ jobs:
           # ECR uses underscores, Lambda uses hyphens
           declare -A LAMBDA_NAMES
           LAMBDA_NAMES["feature_extraction"]="qleam-dev-feature-extraction"
-          LAMBDA_NAMES["cluster_engine"]="qleam-dev-cluster-engine"
-          LAMBDA_NAMES["reinforcement_engine"]="qleam-dev-reinforcement-engine"
           LAMBDA_NAMES["insight_generator"]="qleam-dev-insight-generator"
           LAMBDA_NAMES["feedback_processor"]="qleam-dev-feedback-processor"
           LAMBDA_NAMES["api_handler"]="qleam-dev-api-handler"

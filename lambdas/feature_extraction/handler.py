@@ -31,7 +31,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
 sys.path.insert(0, "/var/task/shared")
 
 from constants import (
-    ALPHA_VALUE,
     CHILD_PROFILE_TABLE,
     S3_BUCKET_NAME,
     SESSION_TABLE,
@@ -46,6 +45,7 @@ from audio_utils import (
 )
 from diarization import diarize, extract_baby_audio
 from age_classifier import classify_probabilistic
+from core_features import compute_core_features
 from sound_classifier import classify_sound, classify_segments, aggregate_sound_types
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -55,8 +55,7 @@ logger = logging.getLogger(__name__)
 dynamodb = boto3.resource("dynamodb")
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
-# MAX_SUPPORTED_CHILD_AGE_DAYS = 730
-MAX_SUPPORTED_CHILD_AGE_DAYS = 90
+MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -197,8 +196,21 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         logger.warning(f"Diarization error: {e}")
         baby_audio = audio_array
 
-    # --- 5. Sound classification ---
-    sound_result = classify_sound(baby_audio, sample_rate, duration_s=duration_seconds)
+    # --- 4.5. Core features (F0, RMS, spectral) — computed ONCE ---
+    baby_core = compute_core_features(baby_audio, sample_rate)
+
+    # --- 4.6. Early rejection gate (silence/noise/adult-only) ---
+    early_reject = _check_early_rejection(baby_core)
+    if early_reject:
+        return _save_and_return_fast_reject(
+            child_id, session_id, s3_audio_path, duration_seconds,
+            quality_gate, session_context, early_reject["reasons"],
+            early_reject["title"], early_reject["message"],
+        )
+
+    # --- 5. Sound classification (uses pre-computed core features) ---
+    sound_result = classify_sound(baby_audio, sample_rate, duration_s=duration_seconds,
+                                  core_features=baby_core)
     sound_type = sound_result["primary_type"]
     logger.info(f"Sound classification: type={sound_type} conf={sound_result['confidence']}")
 
@@ -385,8 +397,8 @@ def _build_routing(
         if sound_summary.get("has_laugh"):
             run_laugh_detection = True
 
-    # 0-3 month mode is cry-only: disable transcript path fully.
-    if isinstance(age_days, int) and age_days <= MAX_SUPPORTED_CHILD_AGE_DAYS:
+    # 0-3 month babies: cry-only analysis, disable transcription
+    if isinstance(age_days, int) and age_days <= 90:
         run_transcription = False
 
     return {
@@ -431,7 +443,7 @@ def _check_post_classification_rejects(
     sound_summary: Optional[Dict] = None,
     sound_scores: Optional[Dict] = None,
 ) -> tuple:
-    """Check post-classification rejection conditions for strict 0-3 month scope."""
+    """Check post-classification rejection conditions."""
     reasons = []
     issues = quality_gate.get("issues", []) if isinstance(quality_gate, dict) else []
 
@@ -445,7 +457,8 @@ def _check_post_classification_rejects(
 
     if sound_type == "noise":
         reasons.append("noisy_environment")
-    if sound_type == "speech":
+    # Speech is only rejected for 0-3m babies (cry-only scope)
+    if sound_type == "speech" and isinstance(age_days, int) and age_days <= 90:
         reasons.append("speech_not_expected")
     if sound_type == "mixed":
         if _is_chaotic_mixed(sound_summary, sound_scores):
@@ -462,11 +475,11 @@ def _check_post_classification_rejects(
         return [], "", ""
 
     if "age_unavailable" in reasons or any(str(r).startswith("age_out_of_range:") for r in reasons):
-        return reasons, "Age Not Supported", "This system supports only 0-3 month babies. Recording rejected."
+        return reasons, "Age Not Supported", "This system supports children aged 0-24 months only."
     if "adult_voice_detected" in reasons:
         return reasons, "Adult Voice Detected", "Adult voice detected. Please record a clean and fresh baby sound."
     if "speech_not_expected" in reasons:
-        return reasons, "Speech Not Supported", "This system is configured for 0-3 month cry analysis only. Please upload a clean baby crying recording."
+        return reasons, "Speech Not Supported", "Babies under 3 months are analyzed for cry patterns only. Please upload a baby crying recording."
     if "chaotic_environment" in reasons:
         return reasons, "Chaotic Environment", "Chaotic environment detected. Please record a cleaner baby-only sound."
     if "noisy_environment" in reasons:
@@ -559,6 +572,48 @@ def _is_clear_speech_without_cry(sound_summary: Optional[Dict], sound_scores: Op
         and cry_score <= 0.30
         and noise_score <= 0.45
     )
+
+
+def _check_early_rejection(core: Dict) -> Optional[Dict]:
+    """
+    Early rejection gate using pre-computed core features.
+    Rejects silence, noise, and adult-only audio in <2s.
+    Returns None if audio should proceed, or a dict with reasons/title/message.
+    """
+    reasons = []
+
+    # Silence: very low RMS across most frames
+    rms = core.get("rms")
+    rms_mean = core.get("rms_mean", 0.0)
+    voiced_frac = core.get("voiced_fraction", 0.0)
+
+    if rms is not None and len(rms) > 0 and rms_mean < 0.005:
+        low_frames = float(np.sum(rms < 0.005)) / max(1, len(rms))
+        if low_frames >= 0.80:
+            reasons.append("silence_detected")
+
+    # No voiced frames at all
+    if voiced_frac < 0.03 and rms_mean < 0.015:
+        reasons.append("no_voiced_frames")
+
+    if reasons:
+        return {
+            "reasons": reasons,
+            "title": "No Sound Detected",
+            "message": "No baby sound detected. Please record closer to the baby.",
+        }
+
+    # Adult-only: F0 median below baby range with no high-F0 segments
+    f0_mean = core.get("f0_mean", 0.0)
+    if 0 < f0_mean < 200 and voiced_frac > 0.2:
+        reasons.append("adult_voice_only")
+        return {
+            "reasons": reasons,
+            "title": "Adult Voice Detected",
+            "message": "Adult voice detected. Please record a clean baby sound.",
+        }
+
+    return None
 
 
 def _get_child_profile(child_id: str) -> Dict:

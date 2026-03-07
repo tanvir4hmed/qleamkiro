@@ -17,8 +17,6 @@ variable "lambda_functions" {
   type        = map(string)
   default = {
     feature_extraction   = "Feature extraction Lambda"
-    cluster_engine       = "Cluster engine Lambda"
-    reinforcement_engine = "Reinforcement engine Lambda"
     insight_generator    = "Insight generator Lambda"
     feedback_processor   = "Feedback processor Lambda"
     api_handler          = "API handler Lambda"

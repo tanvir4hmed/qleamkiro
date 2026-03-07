@@ -178,6 +178,7 @@ def classify_sound(
     y: np.ndarray,
     sr: int,
     duration_s: Optional[float] = None,
+    core_features: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Classify audio into sound type with confidence scores.
@@ -186,30 +187,8 @@ def classify_sound(
         y: Audio signal (mono, float32)
         sr: Sample rate
         duration_s: Duration in seconds (computed if not provided)
-
-    Returns:
-        {
-            "primary_type": "speech" | "cry" | "laugh" | "silence" | "noise" | "mixed",
-            "confidence": float,
-            "scores": {
-                "speech": float,
-                "cry": float,
-                "laugh": float,
-                "silence": float,
-                "noise": float,
-            },
-            "features": {
-                "f0_mean": float,
-                "f0_std": float,
-                "voiced_fraction": float,
-                "zcr": float,
-                "rms_mean": float,
-                "spectral_centroid": float,
-                "spectral_flatness": float,
-                "syllable_rate": float,
-                "energy_burst_ratio": float,
-            }
-        }
+        core_features: Pre-computed features from core_features.compute_core_features().
+                       If provided, avoids recomputing F0/RMS/spectral features.
     """
     if y is None or len(y) == 0:
         return {
@@ -222,19 +201,35 @@ def classify_sound(
     if duration_s is None:
         duration_s = len(y) / max(sr, 1)
 
-    # Compute all features
-    rms = _compute_rms_profile(y, sr)
-    rms_mean = float(np.mean(rms)) if len(rms) > 0 else 0.0
-    rms_std = float(np.std(rms)) if len(rms) > 0 else 0.0
-    energy_var = rms_std / (rms_mean + 1e-9)
-
-    f0_mean, f0_std, voiced_frac = _compute_f0_profile(y, sr)
-    f0_instability = f0_std / (f0_mean + 1e-9) if f0_mean > 0 else 0.0
-
-    zcr = _compute_zcr(y)
-    spectral = _compute_spectral_features(y, sr)
-    syllable_rate = _estimate_syllable_rate(y, sr)
-    energy_bursts = _detect_energy_bursts(rms)
+    # Use pre-computed features if available, otherwise compute locally
+    if core_features:
+        rms = core_features["rms"]
+        rms_mean = core_features["rms_mean"]
+        rms_std = core_features["rms_std"]
+        energy_var = core_features["energy_variability"]
+        f0_mean = core_features["f0_mean"]
+        f0_std = core_features["f0_std"]
+        voiced_frac = core_features["voiced_fraction"]
+        f0_instability = core_features["f0_instability"]
+        zcr = core_features["zcr"]
+        spectral = {
+            "centroid": core_features["spectral_centroid"],
+            "flatness": core_features["spectral_flatness"],
+            "rolloff": core_features["spectral_rolloff"],
+        }
+        syllable_rate = core_features["syllable_rate"]
+        energy_bursts = core_features["energy_burst_ratio"]
+    else:
+        rms = _compute_rms_profile(y, sr)
+        rms_mean = float(np.mean(rms)) if len(rms) > 0 else 0.0
+        rms_std = float(np.std(rms)) if len(rms) > 0 else 0.0
+        energy_var = rms_std / (rms_mean + 1e-9)
+        f0_mean, f0_std, voiced_frac = _compute_f0_profile(y, sr)
+        f0_instability = f0_std / (f0_mean + 1e-9) if f0_mean > 0 else 0.0
+        zcr = _compute_zcr(y)
+        spectral = _compute_spectral_features(y, sr)
+        syllable_rate = _estimate_syllable_rate(y, sr)
+        energy_bursts = _detect_energy_bursts(rms)
 
     features = {
         "f0_mean": round(f0_mean, 2),

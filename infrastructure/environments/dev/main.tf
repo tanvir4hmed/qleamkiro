@@ -178,7 +178,6 @@ module "step_functions" {
   environment                      = var.environment
   step_functions_role_arn          = module.iam.step_functions_role_arn
   feature_extraction_lambda_arn    = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
-  cluster_engine_lambda_arn        = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
   insight_generator_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
   audio_bucket_name                = local.audio_bucket_name
   enable_s3_event_trigger          = var.enable_s3_event_trigger
@@ -211,8 +210,6 @@ module "lambda" {
   training_candidate_table = module.dynamodb.training_candidate_table_name
   model_registry_table     = module.dynamodb.model_registry_table_name
 
-  alpha_value                    = var.alpha_value
-  cluster_similarity_threshold   = var.cluster_similarity_threshold
   step_function_arn              = module.step_functions.state_machine_arn
   step_function_arn_param_name   = ""
   use_bedrock                    = var.use_bedrock
@@ -276,8 +273,6 @@ module "cloudwatch" {
 
   lambda_function_names = [
     module.lambda.feature_extraction_function_name,
-    module.lambda.cluster_engine_function_name,
-    module.lambda.reinforcement_engine_function_name,
     module.lambda.insight_generator_function_name,
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,

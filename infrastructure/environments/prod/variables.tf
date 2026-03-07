@@ -61,18 +61,6 @@ variable "audio_retention_days" {
 }
 
 # Lambda
-variable "alpha_value" {
-  description = "EMA smoothing factor for baseline updates"
-  type        = number
-  default     = 0.3
-}
-
-variable "cluster_similarity_threshold" {
-  description = "Cosine similarity threshold for cluster assignment"
-  type        = number
-  default     = 0.85
-}
-
 variable "use_bedrock" {
   description = "Use Amazon Bedrock for insight generation"
   type        = bool

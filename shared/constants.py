@@ -5,32 +5,6 @@ Central configuration for all Lambda functions
 import os
 
 # =============================================================================
-# EMA & Clustering
-# =============================================================================
-ALPHA_VALUE: float = float(os.environ.get("ALPHA_VALUE", "0.3"))
-CLUSTER_SIMILARITY_THRESHOLD: float = float(os.environ.get("CLUSTER_SIMILARITY_THRESHOLD", "0.85"))
-
-# =============================================================================
-# Reinforcement Learning Rates
-# =============================================================================
-REINFORCEMENT_LEARNING_RATE: float = 0.1
-REINFORCEMENT_DECAY_NEUTRAL: float = 0.02
-REINFORCEMENT_DECAY_INEFFECTIVE: float = 0.05
-REINFORCEMENT_MAX: float = 1.0
-REINFORCEMENT_MIN: float = 0.0
-REINFORCEMENT_NEUTRAL_START: float = 0.5
-
-SEMANTIC_CONFIDENCE_INCREMENT: float = 0.05
-SEMANTIC_CONFIDENCE_MAX: float = 1.0
-
-# =============================================================================
-# Deviation Detection
-# =============================================================================
-MIN_SESSIONS_FOR_DEVIATION: int = 3
-DEVIATION_THRESHOLD_MODERATE: float = 0.3
-DEVIATION_THRESHOLD_HIGH: float = 0.6
-
-# =============================================================================
 # Audio Processing
 # =============================================================================
 MAX_AUDIO_DURATION_SECONDS: int = 30
@@ -191,18 +165,6 @@ VTL_SPEED_OF_SOUND_CM_S: float = 34300.0  # Deprecated: use temperature-correcte
 VTL_AMBIENT_TEMP_C: float = 20.0      # Default ambient temperature for c(T) calc
 INFANT_F0_MIN_HZ: float = 250.0       # Was 200 â€” spec: adult threshold â‰¥ 250 Hz (Theorem 3.1)
 STRONG_INFANT_F0_HZ: float = 300.0    # Above this â†’ strong infant signal
-
-# =============================================================================
-# Federated Learning (Phase 8 â€” FIVL)
-# Spec: SCIENTIFIC_MATHEMATICS.md Section 10, Theorem 10.1-10.2
-# =============================================================================
-FL_EPSILON: float = 1.0          # Differential privacy Îµ (privacy budget)
-FL_DELTA: float = 1e-5           # Differential privacy Î´ (failure probability)
-FL_MIN_PARTICIPANTS: int = 10    # Minimum sessions per stage before aggregation
-FL_FRS_QUALITY_GATE: float = 0.60   # Minimum FRS for session to be included
-FL_DELTA_QUALITY_GATE: float = 0.65  # Minimum delta_score for session to be included
-FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor â€” never fully replaced by FL
-FL_ROUND_INTERVAL_HOURS: int = 24    # How often aggregation runs (via EventBridge)
 
 # =============================================================================
 # Training Candidate Acceptance (Phase 1)

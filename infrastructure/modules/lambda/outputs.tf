@@ -8,26 +8,6 @@ output "feature_extraction_function_arn" {
   value       = aws_lambda_function.feature_extraction.arn
 }
 
-output "cluster_engine_function_name" {
-  description = "Cluster engine Lambda function name"
-  value       = aws_lambda_function.cluster_engine.function_name
-}
-
-output "cluster_engine_function_arn" {
-  description = "Cluster engine Lambda function ARN"
-  value       = aws_lambda_function.cluster_engine.arn
-}
-
-output "reinforcement_engine_function_name" {
-  description = "Reinforcement engine Lambda function name"
-  value       = aws_lambda_function.reinforcement_engine.function_name
-}
-
-output "reinforcement_engine_function_arn" {
-  description = "Reinforcement engine Lambda function ARN"
-  value       = aws_lambda_function.reinforcement_engine.arn
-}
-
 output "insight_generator_function_name" {
   description = "Insight generator Lambda function name"
   value       = aws_lambda_function.insight_generator.function_name

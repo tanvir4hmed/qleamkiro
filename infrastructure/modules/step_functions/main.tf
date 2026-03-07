@@ -101,27 +101,6 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
             ResultPath  = "$.error"
           }
         ]
-        Next = "ClusterEngine"
-      }
-
-      # Step 4: Cluster acoustic patterns (optional, non-fatal)
-      ClusterEngine = {
-        Type     = "Task"
-        Resource = var.cluster_engine_lambda_arn
-        Comment  = "Cluster embedding for pattern history"
-        Parameters = {
-          "child_id.$"         = "$.child_id"
-          "session_id.$"       = "$.session_id"
-          "embedding_vector.$" = "$.classifier_result.embedding_vector"
-        }
-        ResultPath = "$.cluster_result"
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
-            Next        = "ProcessingComplete"
-            ResultPath  = "$.cluster_error"
-          }
-        ]
         Next = "ProcessingComplete"
       }
 

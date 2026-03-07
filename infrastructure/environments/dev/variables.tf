@@ -57,18 +57,6 @@ variable "audio_retention_days" {
 }
 
 # Lambda config
-variable "alpha_value" {
-  description = "EMA alpha value"
-  type        = number
-  default     = 0.3
-}
-
-variable "cluster_similarity_threshold" {
-  description = "Cosine similarity threshold"
-  type        = number
-  default     = 0.85
-}
-
 variable "use_bedrock" {
   description = "Use Amazon Bedrock for insights"
   type        = bool
@@ -165,18 +153,6 @@ variable "feature_extraction_zip_path" {
   description = "Path to feature extraction Lambda zip"
   type        = string
   default     = "../../../lambdas/feature_extraction/dist/feature_extraction.zip"
-}
-
-variable "cluster_engine_zip_path" {
-  description = "Path to cluster engine Lambda zip"
-  type        = string
-  default     = "../../../lambdas/cluster_engine/dist/cluster_engine.zip"
-}
-
-variable "reinforcement_engine_zip_path" {
-  description = "Path to reinforcement engine Lambda zip"
-  type        = string
-  default     = "../../../lambdas/reinforcement_engine/dist/reinforcement_engine.zip"
 }
 
 variable "insight_generator_zip_path" {

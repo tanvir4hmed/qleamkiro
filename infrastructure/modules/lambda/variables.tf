@@ -82,18 +82,6 @@ variable "model_registry_table" {
   type        = string
 }
 
-variable "alpha_value" {
-  description = "EMA alpha value for baseline aggregation"
-  type        = number
-  default     = 0.3
-}
-
-variable "cluster_similarity_threshold" {
-  description = "Cosine similarity threshold for cluster assignment"
-  type        = number
-  default     = 0.85
-}
-
 variable "step_function_arn" {
   description = "ARN of the processing Step Function state machine (deprecated - use SSM parameter)"
   type        = string

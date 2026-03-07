@@ -18,11 +18,6 @@ variable "feature_extraction_lambda_arn" {
   type        = string
 }
 
-variable "cluster_engine_lambda_arn" {
-  description = "ARN of the cluster engine Lambda"
-  type        = string
-}
-
 variable "insight_generator_lambda_arn" {
   description = "ARN of the insight generator Lambda"
   type        = string

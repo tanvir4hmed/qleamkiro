@@ -17,8 +17,6 @@ os.environ.setdefault("SOUND_CLUSTER_TABLE", "test-SoundCluster")
 os.environ.setdefault("SEMANTIC_BRIDGE_TABLE", "test-SemanticBridge")
 os.environ.setdefault("FEEDBACK_TABLE", "test-Feedback")
 os.environ.setdefault("S3_BUCKET_NAME", "test-audio-bucket")
-os.environ.setdefault("ALPHA_VALUE", "0.3")
-os.environ.setdefault("CLUSTER_SIMILARITY_THRESHOLD", "0.85")
 
 
 @pytest.fixture

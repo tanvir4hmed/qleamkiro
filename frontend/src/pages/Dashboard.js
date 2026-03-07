@@ -7,8 +7,7 @@ import RecordButton from '../components/RecordButton';
 import InsightPanel from '../components/InsightPanel';
 
 const SELECTED_CHILD_KEY = 'qleam_selected_child_id';
-// const MAX_SUPPORTED_CHILD_AGE_DAYS = 730;
-const MAX_SUPPORTED_CHILD_AGE_DAYS = 90;
+const MAX_SUPPORTED_CHILD_AGE_DAYS = 730; // 24 months
 
 function getBirthDateBounds() {
   const today = new Date();
@@ -38,6 +37,7 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
   const [panel, setPanel] = useState(null); // null | 'add' | 'remove'
   const [addName, setAddName] = useState('');
   const [addDob, setAddDob] = useState('');
+  const [addGender, setAddGender] = useState('');
   const [deleteChildId, setDeleteChildId] = useState('');
   const [confirmName, setConfirmName] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -51,14 +51,14 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
     if (!addName.trim() || !addDob) { setAddError('Name and date of birth are required.'); return; }
     if (!isBirthDateInSupportedRange(addDob)) {
       // setAddError('Only children aged 0-24 months are supported.');
-      setAddError('Only babies aged 0-3 months are supported.');
+      setAddError('Only children aged 0-24 months are supported.');
       return;
     }
     setAdding(true);
     setAddError('');
     try {
-      const child = await onAddChild(addName.trim(), addDob);
-      setAddName(''); setAddDob(''); setPanel(null);
+      const child = await onAddChild(addName.trim(), addDob, addGender);
+      setAddName(''); setAddDob(''); setAddGender(''); setPanel(null);
       onSuccess?.(`${child?.name || addName.trim()} added`);
     } catch (e) { setAddError(e.message || 'Failed to add child.'); }
     finally { setAdding(false); }
@@ -136,6 +136,19 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
                   max={maxBirthDate}
                   className="settings-input"
                 />
+              </label>
+              <label className="settings-dob-label">
+                Gender <span className="birth-date-optional">(optional)</span>
+                <select
+                  value={addGender}
+                  onChange={e => setAddGender(e.target.value)}
+                  className="settings-input settings-select"
+                >
+                  <option value="">Prefer not to say</option>
+                  <option value="boy">Boy</option>
+                  <option value="girl">Girl</option>
+                  <option value="other">Other</option>
+                </select>
               </label>
               {addError && <p className="settings-error">{addError}</p>}
               <button
@@ -297,16 +310,15 @@ function Dashboard() {
     return () => { cancelled = true; };
   }, [selectedChild, apiCall]);
 
-  const addChild = useCallback(async (name, birthDate) => {
+  const addChild = useCallback(async (name, birthDate, gender = '') => {
     if (!isBirthDateInSupportedRange(birthDate)) {
-      // throw new Error('Only children aged 0-24 months are supported.');
-      throw new Error('Only babies aged 0-3 months are supported.');
+      throw new Error('Only children aged 0-24 months are supported.');
     }
     const data = await apiCall('/child', {
       method: 'POST',
-      body: JSON.stringify({ name, birth_date: birthDate }),
+      body: JSON.stringify({ name, birth_date: birthDate, gender }),
     });
-    const newChild = { child_id: data.child_id, name, birth_date: birthDate };
+    const newChild = { child_id: data.child_id, name, birth_date: birthDate, gender };
     setChildren(prev => {
       const updated = [...prev, newChild];
       localStorage.setItem('qleam_children', JSON.stringify(updated));
@@ -320,7 +332,7 @@ function Dashboard() {
     if (!newChildName.trim() || !newChildBirthDate) return;
     if (!isBirthDateInSupportedRange(newChildBirthDate)) {
       // setError('Only children aged 0-24 months are supported.');
-      setError('Only babies aged 0-3 months are supported.');
+      setError('Only children aged 0-24 months are supported.');
       return;
     }
     try {

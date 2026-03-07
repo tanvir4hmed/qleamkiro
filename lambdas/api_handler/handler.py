@@ -47,8 +47,7 @@ ALLOWED_ORIGINS = [
     for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
-# MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
-MAX_SUPPORTED_CHILD_AGE_DAYS = 90  # 3 months (0-3 month boundary)
+MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
 
 dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
@@ -239,6 +238,7 @@ def create_child(event: Dict) -> Dict:
     body = json.loads(event.get("body") or "{}")
     child_name = body.get("name", "").strip()
     birth_date = body.get("birth_date", "").strip()  # Expected: "YYYY-MM-DD"
+    gender = body.get("gender", "").strip().lower()  # "boy", "girl", "other", or "" (optional)
 
     if not child_name:
         return response(400, {"error": "name is required"}, event)
@@ -257,8 +257,7 @@ def create_child(event: Dict) -> Dict:
     if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
         return response(
             400,
-            # {"error": "Only children aged 0-24 months are supported. Please provide a birth_date within the last 24 months."},
-            {"error": "Only babies aged 0-3 months are supported. Please provide a birth_date within the last 90 days."},
+            {"error": "Only children aged 0-24 months are supported. Please provide a birth_date within the last 24 months."},
             event,
         )
 
@@ -270,6 +269,7 @@ def create_child(event: Dict) -> Dict:
         "parent_id": user_id,
         "name": child_name,
         "birth_date": birth_date,
+        "gender": gender if gender in ("boy", "girl", "other") else "",
         "baseline_features": {},
         "readiness_score": 0.5,
         "session_count": 0,
@@ -568,7 +568,7 @@ def upload_session(event: Dict) -> Dict:
     if not child_id:
         return response(400, {"error": "child_id is required"}, event)
 
-    # Enforce ownership + strict 0-3 month boundary before creating upload session
+    # Enforce ownership + age boundary check (0-24 months) before creating upload session
     profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
     if "Item" not in profile_resp:
         return response(404, {"error": "Child not found"}, event)
@@ -589,7 +589,7 @@ def upload_session(event: Dict) -> Dict:
     if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
         return response(
             400,
-            {"error": "This system supports only babies aged 0-3 months. Recording rejected."},
+            {"error": "This system supports only children aged 0-24 months. Recording rejected."},
             event,
         )
 
@@ -662,7 +662,7 @@ def start_processing(event: Dict) -> Dict:
     child_id = session["child_id"]
     s3_audio_path = session["s3_audio_path"]
 
-    # Enforce ownership + strict 0-3 month boundary at pipeline start
+    # Enforce ownership + age boundary check (0-24 months) at pipeline start
     profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
     if "Item" not in profile_resp:
         return response(404, {"error": "Child not found"}, event)
@@ -683,7 +683,7 @@ def start_processing(event: Dict) -> Dict:
     if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
         return response(
             400,
-            {"error": "This system supports only babies aged 0-3 months. Recording rejected."},
+            {"error": "This system supports only children aged 0-24 months. Recording rejected."},
             event,
         )
 
