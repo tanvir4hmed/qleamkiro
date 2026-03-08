@@ -20,5 +20,7 @@ variable "lambda_functions" {
     insight_generator    = "Insight generator Lambda"
     feedback_processor   = "Feedback processor Lambda"
     api_handler          = "API handler Lambda"
+    cluster_engine       = "Cluster engine Lambda"
+    reinforcement_engine = "Reinforcement engine Lambda"
   }
 }
