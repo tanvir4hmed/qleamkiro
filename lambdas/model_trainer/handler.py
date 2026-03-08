@@ -1,10 +1,10 @@
 """
-Qleam — Model Trainer Lambda (Phase 3)
+Qleam — Model Trainer Lambda (Phase 4)
 Orchestrated by Step Function. Each invocation handles one step:
 
 Steps:
-  load     — Query confirmed training data, load embeddings from S3
-  train    — Train Dense classifier on HuBERT embeddings
+  load     — Query confirmed training data, load embeddings + age from S3
+  train    — Train two-branch age-conditioned classifier
   validate — Evaluate on held-out split, compare to current active model
   promote  — Upload new model to S3, update ModelVersions table
 
@@ -30,6 +30,7 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import S3_BUCKET_NAME, TRAINING_FEATURES_TABLE
 from emotion_classifier import EMOTION_CLASSES
+from age_encoder import encode_age, encode_age_batch, AGE_DIM
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -68,7 +69,7 @@ def lambda_handler(event, context):
 
 
 def _step_load(event: Dict) -> Dict:
-    """Load confirmed training data from DynamoDB + S3."""
+    """Load confirmed training data from DynamoDB + S3, including age_days."""
     if not TRAINING_FEATURES_TABLE:
         return {"error": "TRAINING_FEATURES_TABLE not configured"}
 
@@ -100,9 +101,10 @@ def _step_load(event: Dict) -> Dict:
             "accuracy_improved": False,
         }
 
-    # Load embeddings from S3
+    # Load embeddings and age_days from S3
     embeddings = []
     labels = []
+    age_days_list = []
     feature_ids = []
     skipped = 0
 
@@ -120,6 +122,7 @@ def _step_load(event: Dict) -> Dict:
             if emb.shape[0] == EMBEDDING_DIM:
                 embeddings.append(emb)
                 labels.append(emotion)
+                age_days_list.append(int(item.get("age_days", 0)))
                 feature_ids.append(str(item.get("feature_id", "")))
         except Exception as e:
             logger.warning(f"Failed to load embedding {s3_key}: {e}")
@@ -140,7 +143,6 @@ def _step_load(event: Dict) -> Dict:
     for l in labels:
         label_counts[l] = label_counts.get(l, 0) + 1
 
-    # Filter out classes with too few samples
     valid_classes = [c for c in EMOTION_CLASSES if label_counts.get(c, 0) >= MIN_SAMPLES_PER_CLASS]
     if len(valid_classes) < 2:
         return {
@@ -156,12 +158,13 @@ def _step_load(event: Dict) -> Dict:
 
     embeddings_array = np.array(embeddings, dtype=np.float32)
     labels_array = np.array(labels)
+    age_encodings = encode_age_batch(age_days_list)
 
     # Upload to S3
     _upload_numpy(bucket, f"{temp_prefix}/embeddings.npy", embeddings_array)
     _upload_numpy(bucket, f"{temp_prefix}/labels.npy", labels_array)
+    _upload_numpy(bucket, f"{temp_prefix}/age_encodings.npy", age_encodings)
 
-    # Save feature_ids for marking as trained later
     feature_ids_bytes = json.dumps(feature_ids).encode("utf-8")
     s3_client.put_object(Bucket=bucket, Key=f"{temp_prefix}/feature_ids.json",
                          Body=feature_ids_bytes)
@@ -181,7 +184,7 @@ def _step_load(event: Dict) -> Dict:
 
 
 def _step_train(event: Dict) -> Dict:
-    """Train classifier on loaded embeddings."""
+    """Train two-branch age-conditioned classifier."""
     if event.get("skip"):
         return event
 
@@ -192,6 +195,7 @@ def _step_train(event: Dict) -> Dict:
     # Load data from S3
     embeddings = _download_numpy(bucket, f"{prefix}/embeddings.npy")
     labels = _download_numpy(bucket, f"{prefix}/labels.npy")
+    age_encodings = _download_numpy(bucket, f"{prefix}/age_encodings.npy")
 
     # Encode labels
     label_to_idx = {c: i for i, c in enumerate(EMOTION_CLASSES)}
@@ -199,6 +203,7 @@ def _step_train(event: Dict) -> Dict:
 
     valid_mask = y >= 0
     embeddings = embeddings[valid_mask]
+    age_encodings = age_encodings[valid_mask]
     y = y[valid_mask]
 
     # Train/val split
@@ -210,34 +215,29 @@ def _step_train(event: Dict) -> Dict:
     val_idx = indices[:n_val]
     train_idx = indices[n_val:]
 
-    X_train, y_train = embeddings[train_idx], y[train_idx]
-    X_val, y_val = embeddings[val_idx], y[val_idx]
+    X_emb_train, X_age_train, y_train = embeddings[train_idx], age_encodings[train_idx], y[train_idx]
+    X_emb_val, X_age_val, y_val = embeddings[val_idx], age_encodings[val_idx], y[val_idx]
 
-    logger.info(f"Training: {len(X_train)} samples, Validation: {len(X_val)} samples")
+    logger.info(f"Training: {len(X_emb_train)} samples, Validation: {len(X_emb_val)} samples")
 
-    # Train using numpy-only approach (no TF dependency in Lambda)
-    # Simple softmax regression with L2 regularization — lightweight but effective
+    # Train two-branch network
     n_classes = len(EMOTION_CLASSES)
-    model_weights, model_bias, train_history = _train_softmax(
-        X_train, y_train, n_classes,
-        epochs=100, lr=0.01, reg=1e-4, batch_size=32,
+    params, train_history = _train_two_branch(
+        X_emb_train, X_age_train, y_train, n_classes,
+        epochs=50, lr=0.001, reg=1e-4, batch_size=32,
     )
 
     # Evaluate on validation set
-    val_logits = X_val @ model_weights + model_bias
+    val_logits = _forward_two_branch(params, X_emb_val, X_age_val)
     val_preds = np.argmax(val_logits, axis=1)
     val_accuracy = float(np.mean(val_preds == y_val))
 
     logger.info(f"Validation accuracy: {val_accuracy:.3f}")
 
     # Save model weights to S3
-    model_data = {
-        "weights": model_weights,
-        "bias": model_bias,
-    }
     model_key = f"{prefix}/model_weights.npz"
     buf = io.BytesIO()
-    np.savez(buf, weights=model_weights, bias=model_bias)
+    np.savez(buf, **params)
     buf.seek(0)
     s3_client.put_object(Bucket=bucket, Key=model_key, Body=buf.read())
 
@@ -246,8 +246,8 @@ def _step_train(event: Dict) -> Dict:
         "step": "validate",
         "model_key": model_key,
         "val_accuracy": val_accuracy,
-        "train_samples": len(X_train),
-        "val_samples": len(X_val),
+        "train_samples": len(X_emb_train),
+        "val_samples": len(X_emb_val),
         "train_loss_final": train_history[-1] if train_history else None,
     }
 
@@ -259,17 +259,14 @@ def _step_validate(event: Dict) -> Dict:
 
     val_accuracy = event.get("val_accuracy", 0)
 
-    # Get current active model accuracy
     current_accuracy = _get_active_model_accuracy()
     logger.info(
         f"Model comparison: new={val_accuracy:.3f} vs current={current_accuracy:.3f}"
     )
 
-    # Promotion requires improvement (with small margin for noise)
     PROMOTION_MARGIN = 0.02
     accuracy_improved = val_accuracy > (current_accuracy + PROMOTION_MARGIN)
 
-    # Special case: if no active model exists, any reasonable accuracy qualifies
     if current_accuracy == 0 and val_accuracy >= 0.3:
         accuracy_improved = True
 
@@ -289,11 +286,9 @@ def _step_promote(event: Dict) -> Dict:
     val_accuracy = event.get("val_accuracy", 0)
     prefix = event["temp_prefix"]
 
-    # Determine new version number
     current_version = _get_active_model_version()
     new_version = current_version + 1
 
-    # Copy model to permanent location
     permanent_key = f"models/emotion_classifier/v{new_version}/model_weights.npz"
     s3_client.copy_object(
         Bucket=bucket,
@@ -301,12 +296,10 @@ def _step_promote(event: Dict) -> Dict:
         Key=permanent_key,
     )
 
-    # Update ModelVersions table
     if MODEL_VERSIONS_TABLE:
         mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
         now = datetime.now(timezone.utc).isoformat()
 
-        # Deactivate current active model
         if current_version > 0:
             try:
                 mv_table.update_item(
@@ -318,7 +311,6 @@ def _step_promote(event: Dict) -> Dict:
             except Exception as e:
                 logger.warning(f"Failed to deactivate v{current_version}: {e}")
 
-        # Create new version record
         mv_table.put_item(Item={
             "model_type": "emotion_classifier",
             "version": Decimal(str(new_version)),
@@ -332,9 +324,9 @@ def _step_promote(event: Dict) -> Dict:
             "train_id": train_id,
             "trigger_reason": event.get("trigger_reason", ""),
             "label_counts": json.dumps(event.get("label_counts", {})),
+            "model_architecture": "two_branch_age_conditioned",
         })
 
-    # Mark training features as included
     _mark_features_as_trained(bucket, prefix, train_id)
 
     logger.info(
@@ -353,66 +345,165 @@ def _step_promote(event: Dict) -> Dict:
 
 
 # ---------------------------------------------------------------------------
-# Training implementation (numpy-only softmax regression)
+# Two-branch age-conditioned network (numpy-only backprop)
 # ---------------------------------------------------------------------------
 
-def _train_softmax(X, y, n_classes, epochs=100, lr=0.01, reg=1e-4, batch_size=32):
-    """Train softmax classifier using mini-batch gradient descent."""
-    n_features = X.shape[1]
+def _init_params(n_classes):
+    """Initialize two-branch network parameters.
+
+    Architecture (from PHASE_4_AGE_CLASSIFIER.md):
+      Embedding branch: 768 -> 256 (ReLU) -> 128 (ReLU)
+      Age branch:       4 -> 16 (ReLU) -> 8 (ReLU)
+      Concat:           136 -> 64 (ReLU) -> n_classes (softmax)
+    """
     np.random.seed(RANDOM_SEED)
 
-    # Xavier initialization
-    W = np.random.randn(n_features, n_classes).astype(np.float32) * np.sqrt(2.0 / n_features)
-    b = np.zeros(n_classes, dtype=np.float32)
+    def xavier(fan_in, fan_out):
+        return np.random.randn(fan_in, fan_out).astype(np.float32) * np.sqrt(2.0 / fan_in)
 
-    n_samples = len(X)
+    return {
+        "W_emb1": xavier(EMBEDDING_DIM, 256), "b_emb1": np.zeros(256, dtype=np.float32),
+        "W_emb2": xavier(256, 128),           "b_emb2": np.zeros(128, dtype=np.float32),
+        "W_age1": xavier(AGE_DIM, 16),        "b_age1": np.zeros(16, dtype=np.float32),
+        "W_age2": xavier(16, 8),              "b_age2": np.zeros(8, dtype=np.float32),
+        "W_fc1":  xavier(136, 64),            "b_fc1":  np.zeros(64, dtype=np.float32),
+        "W_fc2":  xavier(64, n_classes),      "b_fc2":  np.zeros(n_classes, dtype=np.float32),
+    }
+
+
+def _relu(x):
+    return np.maximum(0, x)
+
+
+def _softmax_batch(x):
+    x = x - x.max(axis=1, keepdims=True)
+    e = np.exp(x)
+    return e / (e.sum(axis=1, keepdims=True) + 1e-9)
+
+
+def _forward_two_branch(params, X_emb, X_age):
+    """Forward pass returning logits (before softmax)."""
+    h_emb1 = _relu(X_emb @ params["W_emb1"] + params["b_emb1"])
+    h_emb2 = _relu(h_emb1 @ params["W_emb2"] + params["b_emb2"])
+
+    h_age1 = _relu(X_age @ params["W_age1"] + params["b_age1"])
+    h_age2 = _relu(h_age1 @ params["W_age2"] + params["b_age2"])
+
+    h_concat = np.concatenate([h_emb2, h_age2], axis=1)
+    h_fc1 = _relu(h_concat @ params["W_fc1"] + params["b_fc1"])
+    logits = h_fc1 @ params["W_fc2"] + params["b_fc2"]
+    return logits
+
+
+def _train_two_branch(X_emb, X_age, y, n_classes, epochs=50, lr=0.001, reg=1e-4, batch_size=32):
+    """Train two-branch network with full manual backpropagation."""
+    params = _init_params(n_classes)
+    n_samples = len(X_emb)
     losses = []
 
     for epoch in range(epochs):
-        # Shuffle
         perm = np.random.permutation(n_samples)
-        X_shuffled = X[perm]
-        y_shuffled = y[perm]
+        X_emb_s = X_emb[perm]
+        X_age_s = X_age[perm]
+        y_s = y[perm]
 
         epoch_loss = 0.0
         n_batches = 0
 
         for start in range(0, n_samples, batch_size):
             end = min(start + batch_size, n_samples)
-            X_batch = X_shuffled[start:end]
-            y_batch = y_shuffled[start:end]
-            bs = len(X_batch)
+            xe = X_emb_s[start:end]
+            xa = X_age_s[start:end]
+            yb = y_s[start:end]
+            bs = len(xe)
 
-            # Forward: softmax
-            logits = X_batch @ W + b
-            logits -= logits.max(axis=1, keepdims=True)  # numerical stability
-            exp_logits = np.exp(logits)
-            probs = exp_logits / (exp_logits.sum(axis=1, keepdims=True) + 1e-9)
+            # Forward pass with activations cached
+            z_emb1 = xe @ params["W_emb1"] + params["b_emb1"]
+            h_emb1 = _relu(z_emb1)
+            z_emb2 = h_emb1 @ params["W_emb2"] + params["b_emb2"]
+            h_emb2 = _relu(z_emb2)
 
-            # Cross-entropy loss
-            correct_log_probs = -np.log(probs[np.arange(bs), y_batch] + 1e-9)
-            loss = correct_log_probs.mean() + 0.5 * reg * np.sum(W ** 2)
+            z_age1 = xa @ params["W_age1"] + params["b_age1"]
+            h_age1 = _relu(z_age1)
+            z_age2 = h_age1 @ params["W_age2"] + params["b_age2"]
+            h_age2 = _relu(z_age2)
+
+            h_concat = np.concatenate([h_emb2, h_age2], axis=1)
+            z_fc1 = h_concat @ params["W_fc1"] + params["b_fc1"]
+            h_fc1 = _relu(z_fc1)
+            logits = h_fc1 @ params["W_fc2"] + params["b_fc2"]
+
+            probs = _softmax_batch(logits)
+
+            # Loss
+            loss = -np.log(probs[np.arange(bs), yb] + 1e-9).mean()
+            for k in params:
+                if k.startswith("W_"):
+                    loss += 0.5 * reg * np.sum(params[k] ** 2)
             epoch_loss += loss
             n_batches += 1
 
             # Backward
             dlogits = probs.copy()
-            dlogits[np.arange(bs), y_batch] -= 1
+            dlogits[np.arange(bs), yb] -= 1
             dlogits /= bs
 
-            dW = X_batch.T @ dlogits + reg * W
-            db = dlogits.sum(axis=0)
+            # fc2
+            dW_fc2 = h_fc1.T @ dlogits + reg * params["W_fc2"]
+            db_fc2 = dlogits.sum(axis=0)
+            dh_fc1 = dlogits @ params["W_fc2"].T
 
-            W -= lr * dW
-            b -= lr * db
+            # fc1 (relu)
+            dz_fc1 = dh_fc1 * (z_fc1 > 0)
+            dW_fc1 = h_concat.T @ dz_fc1 + reg * params["W_fc1"]
+            db_fc1 = dz_fc1.sum(axis=0)
+            dh_concat = dz_fc1 @ params["W_fc1"].T
+
+            # Split concat gradient
+            dh_emb2 = dh_concat[:, :128]
+            dh_age2 = dh_concat[:, 128:]
+
+            # emb2 (relu)
+            dz_emb2 = dh_emb2 * (z_emb2 > 0)
+            dW_emb2 = h_emb1.T @ dz_emb2 + reg * params["W_emb2"]
+            db_emb2 = dz_emb2.sum(axis=0)
+            dh_emb1 = dz_emb2 @ params["W_emb2"].T
+
+            # emb1 (relu)
+            dz_emb1 = dh_emb1 * (z_emb1 > 0)
+            dW_emb1 = xe.T @ dz_emb1 + reg * params["W_emb1"]
+            db_emb1 = dz_emb1.sum(axis=0)
+
+            # age2 (relu)
+            dz_age2 = dh_age2 * (z_age2 > 0)
+            dW_age2 = h_age1.T @ dz_age2 + reg * params["W_age2"]
+            db_age2 = dz_age2.sum(axis=0)
+            dh_age1 = dz_age2 @ params["W_age2"].T
+
+            # age1 (relu)
+            dz_age1 = dh_age1 * (z_age1 > 0)
+            dW_age1 = xa.T @ dz_age1 + reg * params["W_age1"]
+            db_age1 = dz_age1.sum(axis=0)
+
+            # Update all params
+            grads = {
+                "W_emb1": dW_emb1, "b_emb1": db_emb1,
+                "W_emb2": dW_emb2, "b_emb2": db_emb2,
+                "W_age1": dW_age1, "b_age1": db_age1,
+                "W_age2": dW_age2, "b_age2": db_age2,
+                "W_fc1": dW_fc1,   "b_fc1": db_fc1,
+                "W_fc2": dW_fc2,   "b_fc2": db_fc2,
+            }
+            for k in params:
+                params[k] -= lr * grads[k]
 
         avg_loss = epoch_loss / max(1, n_batches)
         losses.append(float(avg_loss))
 
-        if (epoch + 1) % 20 == 0:
+        if (epoch + 1) % 10 == 0:
             logger.info(f"Epoch {epoch+1}/{epochs} loss={avg_loss:.4f}")
 
-    return W, b, losses
+    return params, losses
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +511,6 @@ def _train_softmax(X, y, n_classes, epochs=100, lr=0.01, reg=1e-4, batch_size=32
 # ---------------------------------------------------------------------------
 
 def _get_active_model_accuracy() -> float:
-    """Get accuracy of the currently active model."""
     if not MODEL_VERSIONS_TABLE:
         return 0.0
     try:
@@ -439,7 +529,6 @@ def _get_active_model_accuracy() -> float:
 
 
 def _get_active_model_version() -> int:
-    """Get version number of the currently active model."""
     if not MODEL_VERSIONS_TABLE:
         return 0
     try:
@@ -458,7 +547,6 @@ def _get_active_model_version() -> int:
 
 
 def _mark_features_as_trained(bucket, prefix, train_id):
-    """Mark training features as included in this training run."""
     try:
         obj = s3_client.get_object(Bucket=bucket, Key=f"{prefix}/feature_ids.json")
         feature_ids = json.loads(obj["Body"].read().decode("utf-8"))
@@ -480,7 +568,7 @@ def _mark_features_as_trained(bucket, prefix, train_id):
                     },
                 )
             except Exception:
-                pass  # Non-fatal
+                pass
 
         logger.info(f"Marked {len(feature_ids)} features as trained")
     except Exception as e:
@@ -488,7 +576,6 @@ def _mark_features_as_trained(bucket, prefix, train_id):
 
 
 def _upload_numpy(bucket, key, arr):
-    """Upload numpy array to S3."""
     buf = io.BytesIO()
     np.save(buf, arr)
     buf.seek(0)
@@ -496,7 +583,6 @@ def _upload_numpy(bucket, key, arr):
 
 
 def _download_numpy(bucket, key):
-    """Download numpy array from S3."""
     obj = s3_client.get_object(Bucket=bucket, Key=key)
     buf = io.BytesIO(obj["Body"].read())
     return np.load(buf, allow_pickle=True)

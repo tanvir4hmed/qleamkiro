@@ -1,18 +1,17 @@
 """
-Qleam — Insight Generator Lambda (Redesigned)
+Qleam — Insight Generator Lambda
 Decision-tree routing: classify first, then only run what's needed.
 
 Pipeline:
   1. Receive classified audio from feature_extraction
   2. Route based on sound type:
-     - SPEECH → Transcribe → Show words → Age match → Baby/Adult
-     - CRY → Emotion analysis (age-specific) → Show emotion + 3 cards
-     - LAUGH → Show happy → Baby/Adult
-     - SILENCE → "No sound detected"
-     - NOISE → "Unrecognized sound"
-  3. Always check: adult gate, words, age mismatch
-  4. Check training models (cry emotion)
-  5. Generate clean, simple insight for parent display
+     - SPEECH -> Transcribe -> Show words -> Age match -> Baby/Adult
+     - CRY -> ML classifier -> Display text -> Show emotion + insight cards
+     - LAUGH -> Show happy -> Baby/Adult
+     - SILENCE -> "No sound detected"
+     - NOISE -> "Unrecognized sound"
+  3. Always check: adult gate, words
+  4. Generate clean, simple insight for parent display
 
 Trigger: Step Function (after audio classifier)
 Input:  { child_id, session_id, ... from feature_extraction output }
@@ -32,14 +31,12 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     DISCLAIMER,
-    MODEL_REGISTRY_TABLE,
     S3_BUCKET_NAME,
     SESSION_TABLE,
 )
-from cry_analyzer import analyze_cry, get_age_bracket, get_emotions_for_age
+from cry_analyzer import analyze_cry
 from speech_transcriber import transcribe_audio, analyze_words_for_display
 from word_analyzer import analyze_words_by_age
-from cry_training_model import predict_cry_emotion
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -47,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource("dynamodb")
 session_table = dynamodb.Table(SESSION_TABLE)
-model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 CRY_ONLY_MAX_AGE_DAYS = 90
 
 
@@ -89,7 +85,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     logger.info(f"Insight generator started: session={event.get('session_id')}")
 
     session_id = event["session_id"]
-    # Core classification from feature extraction
     sound_type = event.get("sound_type", "noise")
     is_adult = event.get("is_adult", False)
     routing = event.get("routing", {})
@@ -100,7 +95,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     s3_audio_path = event.get("s3_audio_path", "")
     fast_reject = event.get("fast_reject", False)
 
-    # Build insight based on routing
     insight = {
         "sound_type": sound_type,
         "is_adult": is_adult,
@@ -110,13 +104,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
 
     # --- Fast reject path ---
     if fast_reject:
-        # insight["display_type"] = "silence"
         insight["display_type"] = event.get("sound_type", "silence")
-        # insight["headline"] = "No sound detected to analyze"
         insight["headline"] = event.get("fast_reject_title", "Recording rejected")
-        # insight["headline_icon"] = "🔇"
-        insight["headline_icon"] = "⚠️"
-        # insight["description"] = "The recording was too short or too quiet. Try recording closer to your baby."
+        insight["headline_icon"] = "\u26a0\ufe0f"
         insight["description"] = event.get(
             "fast_reject_message",
             "The recording could not be processed. Please try a clean baby recording.",
@@ -152,17 +142,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         insight = _build_laugh_insight(insight, is_adult, word_analysis, word_age_analysis)
 
     elif sound_type == "cry":
-        # Check trained cry model (legacy rule-based)
-        trained_cry = None
-        age_bracket = get_age_bracket(age_days)
-        try:
-            trained_cry = predict_cry_emotion(sound_features, age_bracket, model_registry_table)
-        except Exception as e:
-            logger.warning(f"Cry model prediction failed: {e}")
-
         insight = _build_cry_insight(
             insight, sound_features, age_days, is_adult,
-            trained_cry, word_analysis, word_age_analysis,
+            word_analysis, word_age_analysis,
             classifier_result=classifier_result,
         )
 
@@ -172,14 +154,12 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         )
 
     else:  # mixed
-        # For mixed: check which components are present
         insight = _build_mixed_insight(
             insight, sound_classification, sound_features,
             word_analysis, word_age_analysis, is_adult, age_days,
             classifier_result=classifier_result,
         )
 
-    # Save insight
     _save_insight(session_id, insight)
 
     logger.info(f"Insight generated: session={session_id} type={insight.get('display_type', 'unknown')}")
@@ -200,7 +180,7 @@ def _should_run_transcription(sound_type: str, routing: Dict, age_days: Optional
 def _build_silence_insight(insight: Dict) -> Dict:
     insight["display_type"] = "silence"
     insight["headline"] = "No sound detected"
-    insight["headline_icon"] = "🔇"
+    insight["headline_icon"] = "\U0001f507"
     insight["description"] = "No baby sounds were detected in this recording. Try recording when your baby is making sounds."
     return insight
 
@@ -208,7 +188,7 @@ def _build_silence_insight(insight: Dict) -> Dict:
 def _build_noise_insight(insight: Dict) -> Dict:
     insight["display_type"] = "noise"
     insight["headline"] = "Unrecognized sound"
-    insight["headline_icon"] = "🔊"
+    insight["headline_icon"] = "\U0001f50a"
     insight["description"] = "Background noise or unrecognized sounds were detected. Try recording in a quieter environment, closer to your baby."
     return insight
 
@@ -222,18 +202,16 @@ def _build_laugh_insight(
     insight["display_type"] = "laugh"
 
     if is_adult:
-        insight["headline"] = "Laughing detected — Adult voice"
-        insight["headline_icon"] = "😄"
+        insight["headline"] = "Laughing detected \u2014 Adult voice"
+        insight["headline_icon"] = "\U0001f604"
         insight["description"] = "Laughter was detected but it appears to be from an adult speaker."
         insight["adult_detected"] = True
     else:
         insight["headline"] = "Your baby is laughing!"
-        insight["headline_icon"] = "😄"
+        insight["headline_icon"] = "\U0001f604"
         insight["description"] = "Happy, joyful laughter detected. Your baby sounds content and delighted!"
 
-    # Add words if found (always show)
     _attach_word_info(insight, word_analysis, word_age_analysis)
-
     return insight
 
 
@@ -242,106 +220,42 @@ def _build_cry_insight(
     sound_features: Dict,
     age_days: Optional[int],
     is_adult: bool,
-    trained_cry: Optional[Dict],
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
     classifier_result: Optional[Dict] = None,
 ) -> Dict:
     insight["display_type"] = "cry"
 
-    # Adult check
     if is_adult:
-        insight["headline"] = "Crying detected — Adult voice"
-        insight["headline_icon"] = "🔊"
+        insight["headline"] = "Crying detected \u2014 Adult voice"
+        insight["headline_icon"] = "\U0001f50a"
         insight["description"] = "Crying or distress sounds were detected but they appear to be from an adult speaker."
         insight["adult_detected"] = True
         _attach_word_info(insight, word_analysis, word_age_analysis)
         return insight
 
-    # --- HuBERT classifier result (Phase 2) ---
-    # When the ML classifier ran successfully, use its emotion as primary.
-    # Fall through to cry_analyzer for Dunstan display text (what_hearing, etc.)
-    ml_emotion = None
-    ml_confidence = 0.0
-    if classifier_result and classifier_result.get("using_model"):
-        ml_emotion = classifier_result.get("primary_emotion")
-        ml_confidence = classifier_result.get("confidence", 0.0)
-        logger.info(
-            f"Using ML classifier: emotion={ml_emotion} conf={ml_confidence:.3f} "
-            f"version={classifier_result.get('model_version')}"
-        )
-
-    # Cry emotion analysis (rule-based — provides display text + Dunstan sounds)
+    # ML classifier output -> display text
     cry_result = analyze_cry(
         features=sound_features,
         age_days=age_days,
-        trained_model_result=trained_cry,
+        classifier_result=classifier_result,
     )
-    debug_trace = cry_result.get("debug_trace", {})
-    if debug_trace:
-        logger.info(
-            "Cry debug: primary=%s conf=%.3f rules=%s triggers=%s snapshot=%s",
-            cry_result.get("primary_emotion"),
-            float(cry_result.get("confidence", 0.0)),
-            debug_trace.get("applied_conflict_rules", []),
-            debug_trace.get("top_feature_triggers", {}),
-            debug_trace.get("feature_snapshot", {}),
-        )
-        top_emotions = cry_result.get("top_emotions", [])
-        second_key = top_emotions[1].get("key") if len(top_emotions) > 1 else None
-        margin = float(debug_trace.get("margin", 0.0))
-        dunstan_candidates = [
-            f"{c.get('sound')}:{c.get('score')}"
-            for c in cry_result.get("dunstan_candidates", [])[:3]
-        ]
-        logger.info(
-            "Cry decision: primary=%s second=%s margin=%.3f dunstan_candidates=%s",
-            cry_result.get("primary_emotion"),
-            second_key,
-            margin,
-            dunstan_candidates,
-        )
-
-    # If ML classifier gave a result, override the primary emotion but keep
-    # cry_analyzer's display text for the ML-selected emotion.
-    if ml_emotion and ml_confidence >= 0.30:
-        emotions_map = get_emotions_for_age(age_days)
-        ml_info = emotions_map.get(ml_emotion, {})
-        if ml_info:
-            cry_result["primary_emotion"] = ml_emotion
-            cry_result["emotion_label"] = ml_info.get("label", ml_emotion)
-            cry_result["emotion_icon"] = ml_info.get("icon", "😢")
-            cry_result["confidence"] = ml_confidence
-            cry_result["what_hearing"] = ml_info.get("what_hearing", cry_result["what_hearing"])
-            cry_result["what_means"] = ml_info.get("what_means", cry_result["what_means"])
-            cry_result["what_try"] = ml_info.get("what_try", cry_result["what_try"])
-            # Rebuild top_emotions from classifier probabilities
-            if classifier_result.get("top_emotions"):
-                ml_top = []
-                for e in classifier_result["top_emotions"]:
-                    emo = emotions_map.get(e["key"], {})
-                    ml_top.append({
-                        "key": e["key"],
-                        "label": emo.get("label", e["key"]),
-                        "icon": emo.get("icon", ""),
-                        "score": e["score"],
-                    })
-                cry_result["top_emotions"] = ml_top
-            logger.info(f"ML override: {ml_emotion} (conf={ml_confidence:.3f})")
+    logger.info(
+        "Cry result: primary=%s conf=%.3f model=%s",
+        cry_result.get("primary_emotion"),
+        float(cry_result.get("confidence", 0.0)),
+        cry_result.get("debug_trace", {}).get("model_version", "none"),
+    )
 
     insight["headline"] = f"{cry_result['emotion_icon']} {cry_result['emotion_label']}"
     insight["headline_icon"] = cry_result["emotion_icon"]
     insight["emotion"] = cry_result["primary_emotion"]
     insight["emotion_confidence"] = cry_result["confidence"]
     insight["top_emotions"] = cry_result.get("top_emotions", [])
-    insight["dunstan_candidates"] = cry_result.get("dunstan_candidates", [])
-    insight["decision_close_call"] = bool(cry_result.get("decision_close_call", False))
     insight["classifier_model_version"] = classifier_result.get("model_version") if classifier_result else None
     insight["debug_payload"] = {
         "emotion_scores": cry_result.get("emotion_scores", {}),
-        "debug_trace": debug_trace or {},
-        "dunstan_candidates": cry_result.get("dunstan_candidates", []),
-        "decision_close_call": bool(cry_result.get("decision_close_call", False)),
+        "debug_trace": cry_result.get("debug_trace", {}),
         "ml_classifier": classifier_result if classifier_result else None,
     }
 
@@ -351,38 +265,15 @@ def _build_cry_insight(
         "what_it_means": cry_result["what_means"],
         "what_to_try": cry_result["what_try"],
     }
-    if cry_result.get("hungry_discomfort_overlap"):
-        insight["insight_sections"]["note"] = (
-            "Hungry and discomfort signals overlap. Feeding cues appear stronger in this recording."
-        )
-    if cry_result.get("decision_close_call"):
-        base_note = insight["insight_sections"].get("note", "")
-        close_note = "Signals are mixed and close. Please use this as a guidance signal with your direct observation."
-        insight["insight_sections"]["note"] = f"{base_note} {close_note}".strip()
 
-    # Dunstan sound reference (0-3m runtime scope)
+    # Dunstan sound reference (0-3m)
     if cry_result.get("dunstan_sound"):
         insight["dunstan_sound"] = cry_result["dunstan_sound"]
-    if cry_result.get("dunstan_ambiguous"):
-        insight["dunstan_ambiguous"] = True
-
-    # Age cry match
-    age_cry_match = cry_result.get("age_cry_match", {})
-    if age_cry_match.get("mismatch"):
-        insight["age_mismatch"] = {
-            "type": "cry_frequency",
-            "message": (
-                f"Cry pattern suggests {age_cry_match.get('probable_age_bracket', 'unknown')} "
-                f"but child is registered as {age_cry_match.get('registered_age_bracket', 'unknown')}"
-            ),
-            "details": age_cry_match,
-        }
 
     # Also detected emotions (alternatives)
     top_emotions = cry_result.get("top_emotions", [])
     alt_emotions = []
     if len(top_emotions) > 1:
-        # Always show second-best as "also possible".
         alt_emotions.append(top_emotions[1])
     for e in top_emotions[2:3]:
         if e.get("score", 0) > 0.15:
@@ -390,9 +281,7 @@ def _build_cry_insight(
     if alt_emotions:
         insight["also_possible"] = alt_emotions
 
-    # Words found during cry (baby might be crying + talking)
     _attach_word_info(insight, word_analysis, word_age_analysis)
-
     return insight
 
 
@@ -405,44 +294,40 @@ def _build_speech_insight(
     insight["display_type"] = "speech"
 
     if not word_analysis or not word_analysis.get("has_words"):
-        # Speech-like sounds but no clear words
         if is_adult:
             insight["headline"] = "Adult speech detected"
-            insight["headline_icon"] = "🔊"
+            insight["headline_icon"] = "\U0001f50a"
             insight["description"] = "Speech sounds were detected from an adult speaker but no clear words could be transcribed."
             insight["adult_detected"] = True
         else:
             insight["headline"] = "Baby vocalizing"
-            insight["headline_icon"] = "🗣️"
+            insight["headline_icon"] = "\U0001f5e3\ufe0f"
             insight["description"] = "Your baby is making speech-like sounds. Babbling and vocal play are normal early vocal behaviors."
         return insight
 
-    # Words found
     words = word_analysis
     age_info = word_age_analysis or {}
     speaker = age_info.get("speaker_assessment", "uncertain")
 
     if is_adult or speaker == "adult":
         insight["headline"] = "Adult speech detected"
-        insight["headline_icon"] = "🔊"
+        insight["headline_icon"] = "\U0001f50a"
         insight["description"] = f"Speech detected with {words['word_count']} word(s). The voice characteristics suggest an adult speaker."
         insight["adult_detected"] = True
     else:
         if words.get("has_sentences"):
             insight["headline"] = "Your baby is forming sentences!"
-            insight["headline_icon"] = "🗣️"
+            insight["headline_icon"] = "\U0001f5e3\ufe0f"
         elif words["word_count"] > 1:
             insight["headline"] = f"Your baby said {words['word_count']} words!"
-            insight["headline_icon"] = "🗣️"
+            insight["headline_icon"] = "\U0001f5e3\ufe0f"
         else:
             insight["headline"] = "Word detected!"
-            insight["headline_icon"] = "🗣️"
+            insight["headline_icon"] = "\U0001f5e3\ufe0f"
 
         insight["description"] = age_info.get("display_summary", f"{words['word_count']} word(s) detected")
 
-    # Always attach word details
     _attach_word_info(insight, word_analysis, word_age_analysis)
-
     return insight
 
 
@@ -459,18 +344,16 @@ def _build_mixed_insight(
     """Handle mixed sound types — prioritize what to show."""
     insight["display_type"] = "mixed"
 
-    # Priority: words > cry > laugh > noise
     if word_analysis and word_analysis.get("has_words"):
         return _build_speech_insight(
             insight, word_analysis, word_age_analysis, is_adult,
         )
 
-    # Check for cry component
     scores = sound_classification.get("scores", {})
     if scores.get("cry", 0) > 0.3:
         return _build_cry_insight(
             insight, sound_features, age_days, is_adult,
-            None, word_analysis, word_age_analysis,
+            word_analysis, word_age_analysis,
             classifier_result=classifier_result,
         )
 
@@ -479,16 +362,15 @@ def _build_mixed_insight(
             insight, is_adult, word_analysis, word_age_analysis,
         )
 
-    # Fallback
     insight["headline"] = "Mixed sounds detected"
-    insight["headline_icon"] = "🔊"
+    insight["headline_icon"] = "\U0001f50a"
     insight["description"] = "Multiple sound types were detected. The recording contains a mix of sounds that couldn't be clearly classified."
     _attach_word_info(insight, word_analysis, word_age_analysis)
     return insight
 
 
 # ---------------------------------------------------------------------------
-# Helpers for attaching common info
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _attach_word_info(
@@ -522,11 +404,7 @@ def _attach_word_info(
 
 
 def _save_insight(session_id: str, insight: Dict):
-    """Save insight to session record.
-
-    The API handler (get_insight) reads ``session.get("insight")`` to determine
-    whether processing is complete, so we must store under the key ``insight``.
-    """
+    """Save insight to session record."""
     try:
         session_table.update_item(
             Key={"session_id": session_id},

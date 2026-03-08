@@ -3,16 +3,19 @@ Qleam — Emotion Classifier (BRAIN)
 Lightweight classifier that takes HuBERT embeddings and predicts cry emotions.
 
 Phase 2: Pre-trained on public datasets (Dunstan + DonateACry + Baby Chillanto).
-Phase 3: Fine-tuned with parent-confirmed data.
-Phase 4: age_days added as continuous input with sin encoding.
+Phase 3: Fine-tuned with parent-confirmed data (numpy softmax on embeddings).
+Phase 4: Age-conditioned two-branch network (embeddings + age encoding).
 
-Model format: TFLite (~2MB), loaded from S3 or bundled as Lambda layer.
+Model formats:
+- TFLite (~2MB): Phase 2 public dataset model
+- Numpy .npz: Phase 3/4 trained model (loaded from S3 via ModelVersions)
 """
 import logging
 import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from age_encoder import encode_age
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +46,14 @@ LABEL_MAP = {
 
 _interpreter = None
 _model_loaded = False
-_numpy_model = None  # Phase 3: numpy softmax model {weights, bias}
+_numpy_model = None  # Phase 3/4: numpy model dict
 _numpy_model_loaded = False
 _active_model_version = 0
 
 
 def load_model(model_path: Optional[str] = None) -> bool:
     """
-    Load TFLite emotion classifier model.
+    Load TFLite emotion classifier model (Phase 2).
 
     Args:
         model_path: Path to .tflite model file. If None, tries S3 or default path.
@@ -98,8 +101,9 @@ def load_model(model_path: Optional[str] = None) -> bool:
 
 def load_numpy_model(model_path: Optional[str] = None) -> bool:
     """
-    Load Phase 3 numpy softmax model (weights + bias .npz file).
-    This model is trained on parent-confirmed data.
+    Load Phase 3/4 numpy model (.npz file).
+    Phase 3: {weights, bias}
+    Phase 4: {W_emb1, b_emb1, W_emb2, b_emb2, W_age1, b_age1, W_age2, b_age2, W_fc1, b_fc1, W_fc2, b_fc2}
     """
     global _numpy_model, _numpy_model_loaded, _active_model_version
 
@@ -107,7 +111,6 @@ def load_numpy_model(model_path: Optional[str] = None) -> bool:
         model_path = os.environ.get("EMOTION_NUMPY_MODEL_PATH", "")
 
     if not model_path:
-        # Try loading from S3 via ModelVersions table
         return _load_active_model_from_s3()
 
     if not os.path.exists(model_path):
@@ -116,7 +119,7 @@ def load_numpy_model(model_path: Optional[str] = None) -> bool:
 
     try:
         data = np.load(model_path)
-        _numpy_model = {"weights": data["weights"], "bias": data["bias"]}
+        _numpy_model = {k: data[k] for k in data.files}
         _numpy_model_loaded = True
         logger.info(f"Numpy emotion model loaded from {model_path}")
         return True
@@ -164,10 +167,12 @@ def _load_active_model_from_s3() -> bool:
         buf = io.BytesIO(obj["Body"].read())
         data = np.load(buf)
 
-        _numpy_model = {"weights": data["weights"], "bias": data["bias"]}
+        # Load all keys — works for both Phase 3 and Phase 4 model formats
+        _numpy_model = {k: data[k] for k in data.files}
         _numpy_model_loaded = True
         _active_model_version = version
-        logger.info(f"Active model v{version} loaded from s3://{s3_bucket}/{s3_path}")
+        arch = "phase4-two-branch" if "W_emb1" in _numpy_model else "phase3-softmax"
+        logger.info(f"Active model v{version} ({arch}) loaded from s3://{s3_bucket}/{s3_path}")
         return True
     except Exception as e:
         logger.debug(f"Could not load active model from S3: {e}")
@@ -183,7 +188,7 @@ def predict_emotion(
 
     Args:
         embeddings: 768-dim HuBERT embeddings (mean-pooled)
-        age_days: Child age in days (used in Phase 4, ignored in Phase 2)
+        age_days: Child age in days (used by Phase 4 two-branch model)
 
     Returns:
         {
@@ -195,11 +200,11 @@ def predict_emotion(
             "using_model": bool,
         }
     """
-    # Try numpy model first (Phase 3 — trained on parent-confirmed data)
+    # Try numpy model first (Phase 4 age-conditioned or Phase 3 softmax)
     numpy_probs = None
     if _numpy_model_loaded and _numpy_model is not None:
         try:
-            numpy_probs = _predict_numpy(embeddings)
+            numpy_probs = _predict_numpy(embeddings, age_days=age_days)
         except Exception as e:
             logger.warning(f"Numpy model inference failed: {e}")
 
@@ -219,11 +224,11 @@ def predict_emotion(
 
     # No models available
     if numpy_probs is None and tflite_probs is None:
-        return _fallback_prediction(embeddings)
+        return _fallback_prediction()
 
     # Determine final probabilities (blend or single model)
     if numpy_probs is not None and tflite_probs is not None:
-        # Blend: Phase 3 model + Phase 2 model using weight schedule
+        # Blend: our trained model + Phase 2 public model using weight schedule
         from training_anonymizer import get_blend_weights, count_confirmed_samples
         try:
             if os.environ.get("TRAINING_FEATURES_TABLE"):
@@ -243,7 +248,7 @@ def predict_emotion(
         model_version = f"blended-v{_active_model_version}"
     elif numpy_probs is not None:
         probs = numpy_probs
-        model_version = f"phase3-v{_active_model_version}"
+        model_version = f"phase4-v{_active_model_version}"
     else:
         probs = tflite_probs
         model_version = "phase2-pretrained"
@@ -269,11 +274,36 @@ def predict_emotion(
     }
 
 
-def _predict_numpy(embeddings: np.ndarray) -> np.ndarray:
-    """Run inference with the Phase 3 numpy softmax model."""
-    x = embeddings.astype(np.float32).reshape(1, -1)
-    logits = x @ _numpy_model["weights"] + _numpy_model["bias"]
-    return _softmax(logits[0])
+def _predict_numpy(embeddings: np.ndarray, age_days: Optional[int] = None) -> np.ndarray:
+    """Run inference with the Phase 3/4 numpy model.
+
+    Phase 3: single-branch softmax (weights + bias)
+    Phase 4: two-branch age-conditioned (W_emb1, W_age1, etc.)
+    """
+    x_emb = embeddings.astype(np.float32).reshape(1, -1)
+
+    if "W_emb1" in _numpy_model:
+        # Phase 4: two-branch age-conditioned network
+        age = age_days if isinstance(age_days, int) else 0
+        x_age = encode_age(age).reshape(1, -1)
+
+        # Embedding branch: 768 -> 256 -> 128
+        h_emb1 = np.maximum(0, x_emb @ _numpy_model["W_emb1"] + _numpy_model["b_emb1"])
+        h_emb2 = np.maximum(0, h_emb1 @ _numpy_model["W_emb2"] + _numpy_model["b_emb2"])
+
+        # Age branch: 4 -> 16 -> 8
+        h_age1 = np.maximum(0, x_age @ _numpy_model["W_age1"] + _numpy_model["b_age1"])
+        h_age2 = np.maximum(0, h_age1 @ _numpy_model["W_age2"] + _numpy_model["b_age2"])
+
+        # Concat -> 136 -> 64 -> 7
+        h_concat = np.concatenate([h_emb2, h_age2], axis=1)
+        h_fc1 = np.maximum(0, h_concat @ _numpy_model["W_fc1"] + _numpy_model["b_fc1"])
+        logits = h_fc1 @ _numpy_model["W_fc2"] + _numpy_model["b_fc2"]
+        return _softmax(logits[0])
+    else:
+        # Phase 3: simple softmax regression
+        logits = x_emb @ _numpy_model["weights"] + _numpy_model["bias"]
+        return _softmax(logits[0])
 
 
 def _softmax(x: np.ndarray) -> np.ndarray:
@@ -281,11 +311,8 @@ def _softmax(x: np.ndarray) -> np.ndarray:
     return e / (e.sum() + 1e-9)
 
 
-def _fallback_prediction(embeddings: np.ndarray) -> Dict[str, Any]:
-    """
-    Fallback when model is not available.
-    Returns uniform distribution — lets cry_analyzer rule-based scoring handle it.
-    """
+def _fallback_prediction() -> Dict[str, Any]:
+    """Fallback when no model is available. Returns uniform distribution."""
     n = len(EMOTION_CLASSES)
     uniform = {c: round(1.0 / n, 3) for c in EMOTION_CLASSES}
     return {

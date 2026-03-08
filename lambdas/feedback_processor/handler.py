@@ -1,12 +1,13 @@
 """
-Qleam — Feedback Processor Lambda (Redesigned)
+Qleam — Feedback Processor Lambda
 Handles parent feedback for cry emotion training:
 
 1. CRY EMOTION FEEDBACK
    - Parent confirms/corrects the detected emotion
-   - Feeds into global cry emotion training model (age-stratified)
+   - Feeds into Phase 3 ML training pipeline (HuBERT embeddings)
 
-Legacy "general" feedback is stored for backward compatibility.
+2. GENERAL FEEDBACK
+   - Free-form notes stored for backward compatibility
 
 Trigger: POST /session/{id}/feedback
 Input:  API Gateway event with feedback body
@@ -30,17 +31,8 @@ sys.path.insert(0, "/var/task/shared")
 from constants import (
     CHILD_PROFILE_TABLE,
     FEEDBACK_TABLE,
-    MODEL_REGISTRY_TABLE,
     SESSION_TABLE,
-    TRAINING_CANDIDATE_TABLE,
     TRAINING_FEATURES_TABLE,
-)
-from cry_analyzer import get_age_bracket
-from cry_training_model import (
-    CANONICAL_AGE_BRACKET,
-    LEGACY_AGE_BRACKET,
-    store_cry_training_sample,
-    train_cry_model,
 )
 from training_anonymizer import apply_quality_gates, anonymize_and_confirm
 
@@ -52,12 +44,7 @@ dynamodb = boto3.resource("dynamodb")
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
-training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
-model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
 training_features_table = dynamodb.Table(TRAINING_FEATURES_TABLE) if TRAINING_FEATURES_TABLE else None
-
-# Retrain cry model after this many new samples per age bracket
-CRY_RETRAIN_THRESHOLD = 20
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -209,35 +196,8 @@ def _process_cry_emotion_feedback(
     feedback_record["confirmed_emotion"] = confirmed_emotion
     feedback_record["was_correct"] = was_correct
 
-    age_bracket = get_age_bracket(age_days)
-    sound_features = session.get("sound_features", {})
-
-    if not sound_features:
-        sound_features = session.get("sound_classification", {}).get("features", {})
-
-    # Store training sample (legacy cry_training_model — acoustic features)
-    result = {}
-    try:
-        store_result = store_cry_training_sample(
-            features=sound_features,
-            confirmed_emotion=confirmed_emotion,
-            age_bracket=age_bracket,
-            child_id=child_id,
-            session_id=session_id,
-            training_candidate_table=training_candidate_table,
-        )
-        feedback_record["cry_model_update"] = store_result
-
-        # Check if we should retrain the cry model
-        _check_and_retrain(age_bracket)
-
-        result["cry_training"] = store_result.get("status", "unknown")
-        result["candidate_id"] = store_result.get("candidate_id", "")
-    except Exception as e:
-        logger.error(f"Cry emotion feedback storage failed: {e}")
-        result["warning"] = f"Cry feedback storage failed: {e}"
-
     # Phase 3: Anonymized HuBERT training data
+    result = {}
     try:
         if training_features_table is not None:
             gate_result = apply_quality_gates(
@@ -279,30 +239,6 @@ def _process_general_feedback(body: Dict, feedback_record: Dict) -> Dict:
     feedback_record["effectiveness"] = body.get("effectiveness", "")
     feedback_record["notes"] = body.get("notes", "")
     return {"type": "general"}
-
-
-def _check_and_retrain(age_bracket: str):
-    """Check if enough new samples exist to trigger cry model retraining."""
-    try:
-        from boto3.dynamodb.conditions import Attr
-        age_filter = Attr("age_bracket").eq(age_bracket)
-        if age_bracket == CANONICAL_AGE_BRACKET:
-            age_filter = age_filter | Attr("age_bracket").eq(LEGACY_AGE_BRACKET)
-        response = training_candidate_table.scan(
-            FilterExpression=(
-                Attr("candidate_type").eq("cry_emotion") &
-                age_filter
-            ),
-            Select="COUNT",
-        )
-        count = response.get("Count", 0)
-
-        # Retrain if we have enough samples and count is a multiple of threshold
-        if count >= CRY_RETRAIN_THRESHOLD and count % CRY_RETRAIN_THRESHOLD == 0:
-            logger.info(f"Triggering cry model retrain for {age_bracket} (n={count})")
-            train_cry_model(age_bracket, training_candidate_table, model_registry_table)
-    except Exception as e:
-        logger.warning(f"Retrain check failed: {e}")
 
 
 # ---------------------------------------------------------------------------
