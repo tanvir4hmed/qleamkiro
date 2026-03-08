@@ -216,7 +216,8 @@ jobs:
           cd infrastructure/environments/dev
           echo "📦 Phase 1: Creating ECR repositories..."
           terraform apply -auto-approve -var-file=terraform.tfvars \
-            -target=module.ecr
+            -target=module.ecr \
+            -target=module.sagemaker
 
       # ────────────────────────────────────────────────────────────────────────
       # Phase 2: Push placeholder images to ECR
