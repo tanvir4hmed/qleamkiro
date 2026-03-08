@@ -271,6 +271,26 @@ jobs:
           echo "══════════════════════════════════════════════════════"
 
       # ────────────────────────────────────────────────────────────────────────
+      # Phase 2.1: Remove manually-managed S3 bucket from Terraform state
+      # The models bucket is now created outside Terraform so it survives destroy
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Remove models bucket from Terraform state (one-time migration)
+        run: |
+          cd infrastructure/environments/dev
+          # Remove all 3 bucket resources if they exist in state
+          for RESOURCE in \
+            "module.sagemaker.aws_s3_bucket.models" \
+            "module.sagemaker.aws_s3_bucket_server_side_encryption_configuration.models" \
+            "module.sagemaker.aws_s3_bucket_public_access_block.models"; do
+            if terraform state show "$RESOURCE" >/dev/null 2>&1; then
+              echo "🗑️ Removing $RESOURCE from state..."
+              terraform state rm "$RESOURCE"
+            else
+              echo "✅ $RESOURCE not in state (already removed)"
+            fi
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
       # Phase 2.5: Ensure SageMaker model artifact exists in S3
       # HuBERT model pulls weights from HuggingFace Hub at runtime,
       # but SageMaker requires a model_data_url — upload empty placeholder
