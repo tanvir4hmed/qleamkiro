@@ -33,7 +33,9 @@ sys.path.insert(0, "/var/task/shared")
 from constants import (
     CHILD_PROFILE_TABLE,
     S3_BUCKET_NAME,
+    SAGEMAKER_HUBERT_ENDPOINT,
     SESSION_TABLE,
+    TRAINING_FEATURES_TABLE,
 )
 from audio_utils import (
     audio_quality_gate,
@@ -46,6 +48,8 @@ from audio_utils import (
 from diarization import diarize, extract_baby_audio
 from age_classifier import classify_probabilistic
 from core_features import compute_core_features
+from hubert_client import extract_hubert_embeddings
+from emotion_classifier import predict_emotion, load_model as load_emotion_model
 from sound_classifier import classify_sound, classify_segments, aggregate_sound_types
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -53,9 +57,14 @@ logging.basicConfig(level=getattr(logging, log_level))
 logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource("dynamodb")
+s3_client = boto3.client("s3")
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
+training_features_table = dynamodb.Table(TRAINING_FEATURES_TABLE) if TRAINING_FEATURES_TABLE else None
 MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
+
+# Try loading emotion classifier at cold start
+_emotion_model_loaded = load_emotion_model()
 
 
 def _float_to_decimal(obj: Any) -> Any:
@@ -295,6 +304,34 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         age_days=age_days,
     )
 
+    # --- 7.5 HuBERT embeddings + emotion classifier (EARS + BRAIN) ---
+    hubert_result = {}
+    classifier_result = {}
+    if SAGEMAKER_HUBERT_ENDPOINT and sound_type in ("cry", "mixed"):
+        try:
+            hubert_result = extract_hubert_embeddings(
+                baby_audio, sample_rate, SAGEMAKER_HUBERT_ENDPOINT,
+            )
+            hubert_emb = hubert_result.get("embeddings")
+            if hubert_emb is not None and hubert_emb.shape[0] == 768:
+                classifier_result = predict_emotion(hubert_emb, age_days=age_days)
+                logger.info(
+                    f"Emotion classifier: {classifier_result.get('primary_emotion')} "
+                    f"conf={classifier_result.get('confidence', 0):.3f} "
+                    f"model={classifier_result.get('model_version', 'unknown')}"
+                )
+                # Store embeddings for Phase 3 training
+                _store_training_features(
+                    session_id=session_id,
+                    hubert_embeddings=hubert_emb,
+                    sound_type=sound_type,
+                    classifier_result=classifier_result,
+                    age_days=age_days,
+                    duration_s=duration_seconds,
+                )
+        except Exception as e:
+            logger.warning(f"HuBERT/classifier error (non-fatal): {e}")
+
     # --- 8. Save session ---
     now = datetime.now(timezone.utc).isoformat()
     session_item = {
@@ -317,6 +354,9 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "feature_scores": feature_scores,
         "embedding_vector": embedding_vector,
         "sound_features": sound_result.get("features", {}),
+        # HuBERT + classifier
+        "classifier_result": classifier_result if classifier_result else None,
+        "hubert_latency_ms": hubert_result.get("latency_ms"),
         # Metadata
         "quality_gate": quality_gate,
         "diarization": diarization_result,
@@ -338,6 +378,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "embedding_vector": embedding_vector,
         "feature_scores": feature_scores,
         "sound_features": sound_result.get("features", {}),
+        "classifier_result": classifier_result if classifier_result else None,
         "biological": bio_result,
         "age_classification": age_classification,
         "age_days": age_days,
@@ -697,3 +738,51 @@ def _save_and_return_fast_reject(
         "session_context": session_context,
         "s3_audio_path": s3_audio_path,
     }
+
+
+def _store_training_features(
+    session_id: str,
+    hubert_embeddings: np.ndarray,
+    sound_type: str,
+    classifier_result: Dict,
+    age_days: Optional[int],
+    duration_s: float,
+):
+    """
+    Store HuBERT embeddings in S3 and metadata in DynamoDB for Phase 3 training.
+    NOT linked to child_id (anonymization happens at feedback time).
+    """
+    import uuid
+
+    feature_id = str(uuid.uuid4())
+    bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
+    s3_key = f"training-features/{feature_id}/embeddings.npy"
+
+    try:
+        # Store embeddings in S3
+        import io
+        buf = io.BytesIO()
+        np.save(buf, hubert_embeddings.astype(np.float32))
+        buf.seek(0)
+        s3_client.put_object(Bucket=bucket, Key=s3_key, Body=buf.read())
+
+        # Store metadata in DynamoDB
+        if training_features_table is not None:
+            now = datetime.now(timezone.utc).isoformat()
+            item = {
+                "feature_id": feature_id,
+                "session_id": session_id,
+                "s3_embeddings_path": s3_key,
+                "sound_type": sound_type,
+                "predicted_emotion": classifier_result.get("primary_emotion", "unknown"),
+                "predicted_confidence": classifier_result.get("confidence", 0.0),
+                "model_version": classifier_result.get("model_version", "unknown"),
+                "age_days": age_days if isinstance(age_days, int) else 0,
+                "duration_s": duration_s,
+                "created_at": now,
+            }
+            training_features_table.put_item(Item=_float_to_decimal(item))
+
+        logger.info(f"Training features stored: {feature_id} -> s3://{bucket}/{s3_key}")
+    except Exception as e:
+        logger.warning(f"Failed to store training features (non-fatal): {e}")

@@ -17,6 +17,8 @@ locals {
     POPULATION_MODEL_TABLE       = var.population_model_table
     TRAINING_CANDIDATE_TABLE     = var.training_candidate_table
     MODEL_REGISTRY_TABLE         = var.model_registry_table
+    TRAINING_FEATURES_TABLE      = var.training_features_table
+    SAGEMAKER_HUBERT_ENDPOINT    = var.sagemaker_hubert_endpoint_name
     STEP_FUNCTION_ARN            = var.step_function_arn
     STEP_FUNCTION_ARN_PARAM_NAME = var.step_function_arn_param_name
     LOG_LEVEL                    = var.environment == "prod" ? "WARNING" : "DEBUG"

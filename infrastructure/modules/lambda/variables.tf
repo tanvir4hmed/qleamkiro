@@ -82,6 +82,18 @@ variable "model_registry_table" {
   type        = string
 }
 
+variable "training_features_table" {
+  description = "DynamoDB TrainingFeatures table name"
+  type        = string
+  default     = ""
+}
+
+variable "sagemaker_hubert_endpoint_name" {
+  description = "SageMaker HuBERT endpoint name for feature extraction"
+  type        = string
+  default     = ""
+}
+
 variable "step_function_arn" {
   description = "ARN of the processing Step Function state machine (deprecated - use SSM parameter)"
   type        = string

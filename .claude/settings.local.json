@@ -7,7 +7,9 @@
       "Bash(npx react-scripts build)",
       "Bash(npm ls react)",
       "Bash(npm install)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(pip install numpy -q)",
+      "Bash(python -c \":*)"
     ]
   }
 }

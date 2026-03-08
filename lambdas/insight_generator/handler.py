@@ -36,7 +36,7 @@ from constants import (
     S3_BUCKET_NAME,
     SESSION_TABLE,
 )
-from cry_analyzer import analyze_cry, get_age_bracket
+from cry_analyzer import analyze_cry, get_age_bracket, get_emotions_for_age
 from speech_transcriber import transcribe_audio, analyze_words_for_display
 from word_analyzer import analyze_words_by_age
 from cry_training_model import predict_cry_emotion
@@ -95,6 +95,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     routing = event.get("routing", {})
     sound_features = event.get("sound_features", {})
     sound_classification = event.get("sound_classification", {})
+    classifier_result = event.get("classifier_result") or {}
     age_days = event.get("age_days")
     s3_audio_path = event.get("s3_audio_path", "")
     fast_reject = event.get("fast_reject", False)
@@ -151,7 +152,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         insight = _build_laugh_insight(insight, is_adult, word_analysis, word_age_analysis)
 
     elif sound_type == "cry":
-        # Check trained cry model
+        # Check trained cry model (legacy rule-based)
         trained_cry = None
         age_bracket = get_age_bracket(age_days)
         try:
@@ -162,6 +163,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         insight = _build_cry_insight(
             insight, sound_features, age_days, is_adult,
             trained_cry, word_analysis, word_age_analysis,
+            classifier_result=classifier_result,
         )
 
     elif sound_type == "speech":
@@ -174,6 +176,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         insight = _build_mixed_insight(
             insight, sound_classification, sound_features,
             word_analysis, word_age_analysis, is_adult, age_days,
+            classifier_result=classifier_result,
         )
 
     # Save insight
@@ -242,6 +245,7 @@ def _build_cry_insight(
     trained_cry: Optional[Dict],
     word_analysis: Optional[Dict],
     word_age_analysis: Optional[Dict],
+    classifier_result: Optional[Dict] = None,
 ) -> Dict:
     insight["display_type"] = "cry"
 
@@ -254,7 +258,20 @@ def _build_cry_insight(
         _attach_word_info(insight, word_analysis, word_age_analysis)
         return insight
 
-    # Cry emotion analysis
+    # --- HuBERT classifier result (Phase 2) ---
+    # When the ML classifier ran successfully, use its emotion as primary.
+    # Fall through to cry_analyzer for Dunstan display text (what_hearing, etc.)
+    ml_emotion = None
+    ml_confidence = 0.0
+    if classifier_result and classifier_result.get("using_model"):
+        ml_emotion = classifier_result.get("primary_emotion")
+        ml_confidence = classifier_result.get("confidence", 0.0)
+        logger.info(
+            f"Using ML classifier: emotion={ml_emotion} conf={ml_confidence:.3f} "
+            f"version={classifier_result.get('model_version')}"
+        )
+
+    # Cry emotion analysis (rule-based — provides display text + Dunstan sounds)
     cry_result = analyze_cry(
         features=sound_features,
         age_days=age_days,
@@ -285,6 +302,33 @@ def _build_cry_insight(
             dunstan_candidates,
         )
 
+    # If ML classifier gave a result, override the primary emotion but keep
+    # cry_analyzer's display text for the ML-selected emotion.
+    if ml_emotion and ml_confidence >= 0.30:
+        emotions_map = get_emotions_for_age(age_days)
+        ml_info = emotions_map.get(ml_emotion, {})
+        if ml_info:
+            cry_result["primary_emotion"] = ml_emotion
+            cry_result["emotion_label"] = ml_info.get("label", ml_emotion)
+            cry_result["emotion_icon"] = ml_info.get("icon", "😢")
+            cry_result["confidence"] = ml_confidence
+            cry_result["what_hearing"] = ml_info.get("what_hearing", cry_result["what_hearing"])
+            cry_result["what_means"] = ml_info.get("what_means", cry_result["what_means"])
+            cry_result["what_try"] = ml_info.get("what_try", cry_result["what_try"])
+            # Rebuild top_emotions from classifier probabilities
+            if classifier_result.get("top_emotions"):
+                ml_top = []
+                for e in classifier_result["top_emotions"]:
+                    emo = emotions_map.get(e["key"], {})
+                    ml_top.append({
+                        "key": e["key"],
+                        "label": emo.get("label", e["key"]),
+                        "icon": emo.get("icon", ""),
+                        "score": e["score"],
+                    })
+                cry_result["top_emotions"] = ml_top
+            logger.info(f"ML override: {ml_emotion} (conf={ml_confidence:.3f})")
+
     insight["headline"] = f"{cry_result['emotion_icon']} {cry_result['emotion_label']}"
     insight["headline_icon"] = cry_result["emotion_icon"]
     insight["emotion"] = cry_result["primary_emotion"]
@@ -292,11 +336,13 @@ def _build_cry_insight(
     insight["top_emotions"] = cry_result.get("top_emotions", [])
     insight["dunstan_candidates"] = cry_result.get("dunstan_candidates", [])
     insight["decision_close_call"] = bool(cry_result.get("decision_close_call", False))
+    insight["classifier_model_version"] = classifier_result.get("model_version") if classifier_result else None
     insight["debug_payload"] = {
         "emotion_scores": cry_result.get("emotion_scores", {}),
         "debug_trace": debug_trace or {},
         "dunstan_candidates": cry_result.get("dunstan_candidates", []),
         "decision_close_call": bool(cry_result.get("decision_close_call", False)),
+        "ml_classifier": classifier_result if classifier_result else None,
     }
 
     # Three insight cards
@@ -408,6 +454,7 @@ def _build_mixed_insight(
     word_age_analysis: Optional[Dict],
     is_adult: bool,
     age_days: Optional[int],
+    classifier_result: Optional[Dict] = None,
 ) -> Dict:
     """Handle mixed sound types — prioritize what to show."""
     insight["display_type"] = "mixed"
@@ -424,6 +471,7 @@ def _build_mixed_insight(
         return _build_cry_insight(
             insight, sound_features, age_days, is_adult,
             None, word_analysis, word_age_analysis,
+            classifier_result=classifier_result,
         )
 
     if scores.get("laugh", 0) > 0.3:

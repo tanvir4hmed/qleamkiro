@@ -17,6 +17,8 @@ os.environ.setdefault("SOUND_CLUSTER_TABLE", "test-SoundCluster")
 os.environ.setdefault("SEMANTIC_BRIDGE_TABLE", "test-SemanticBridge")
 os.environ.setdefault("FEEDBACK_TABLE", "test-Feedback")
 os.environ.setdefault("S3_BUCKET_NAME", "test-audio-bucket")
+os.environ.setdefault("TRAINING_FEATURES_TABLE", "test-TrainingFeatures")
+os.environ.setdefault("SAGEMAKER_HUBERT_ENDPOINT", "")
 
 
 @pytest.fixture

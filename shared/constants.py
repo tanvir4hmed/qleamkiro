@@ -26,6 +26,7 @@ MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones
 POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
 TRAINING_CANDIDATE_TABLE: str = os.environ.get("TRAINING_CANDIDATE_TABLE", "qleam-dev-TrainingCandidate")
 MODEL_REGISTRY_TABLE: str = os.environ.get("MODEL_REGISTRY_TABLE", "qleam-dev-ModelRegistry")
+TRAINING_FEATURES_TABLE: str = os.environ.get("TRAINING_FEATURES_TABLE", "qleam-dev-TrainingFeatures")
 
 # =============================================================================
 # S3
@@ -49,6 +50,9 @@ USE_BEDROCK: bool = os.environ.get("USE_BEDROCK", "true").lower() == "true"
 # Cry/intent custom model endpoint (SageMaker real-time inference).
 USE_SAGEMAKER_INTENT_ENDPOINT: bool = os.environ.get("USE_SAGEMAKER_INTENT_ENDPOINT", "false").lower() == "true"
 SAGEMAKER_INTENT_ENDPOINT_NAME: str = os.environ.get("SAGEMAKER_INTENT_ENDPOINT_NAME", "")
+
+# HuBERT feature extraction endpoint (SageMaker Serverless).
+SAGEMAKER_HUBERT_ENDPOINT: str = os.environ.get("SAGEMAKER_HUBERT_ENDPOINT", "")
 
 # Speech transcription for linguistic sessions (Amazon Transcribe).
 USE_TRANSCRIBE_FOR_LINGUISTIC: bool = os.environ.get("USE_TRANSCRIBE_FOR_LINGUISTIC", "false").lower() == "true"

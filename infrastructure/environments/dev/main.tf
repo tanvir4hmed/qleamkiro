@@ -225,7 +225,21 @@ module "lambda" {
   image_tag           = var.lambda_image_tag
   allowed_origins     = local.allowed_origins
 
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions]
+  # HuBERT SageMaker endpoint
+  sagemaker_hubert_endpoint_name = module.sagemaker.endpoint_name
+  training_features_table        = module.dynamodb.training_features_table_name
+
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions, module.sagemaker]
+}
+
+# -----------------------------------------------------------------------------
+# SageMaker (HuBERT Feature Extraction)
+# -----------------------------------------------------------------------------
+module "sagemaker" {
+  source = "../../modules/sagemaker"
+
+  project     = var.project
+  environment = var.environment
 }
 
 # -----------------------------------------------------------------------------

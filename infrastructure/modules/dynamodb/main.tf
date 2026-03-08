@@ -427,3 +427,50 @@ resource "aws_dynamodb_table" "model_registry" {
     Table = "ModelRegistry"
   }
 }
+
+# -----------------------------------------------------------------------------
+# TrainingFeatures Table
+# HuBERT embedding metadata for each processed baby sound session
+# PK: feature_id
+# GSI: sound_type-age_days-index (query by emotion + age for training)
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "training_features" {
+  name         = "${var.project}-${var.environment}-TrainingFeatures"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "feature_id"
+
+  attribute {
+    name = "feature_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "sound_type"
+    type = "S"
+  }
+
+  attribute {
+    name = "age_days"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name            = "sound_type-age_days-index"
+    hash_key        = "sound_type"
+    range_key       = "age_days"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-TrainingFeatures"
+    Table = "TrainingFeatures"
+  }
+}
