@@ -35,6 +35,7 @@ from constants import (
     SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
     SOUND_CLUSTER_TABLE,
+    TRAINING_CANDIDATE_TABLE,
 )
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -70,6 +71,7 @@ semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
 milestones_table = dynamodb.Table(MILESTONES_TABLE)
+training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE) if TRAINING_CANDIDATE_TABLE else None
 
 
 def _decimal_to_float(obj: Any) -> Any:
@@ -289,23 +291,29 @@ def create_child(event: Dict) -> Dict:
 def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
     """
     Delete all direct personal data rows for a child.
-    Intentionally does not touch de-identified population/training aggregates.
+    Includes S3 audio files (biometric PII) and training candidates (PII-linked).
+    Intentionally does NOT touch de-identified training_features or trained models.
     """
     _key = boto3.dynamodb.conditions.Key
+    bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     deleted_sessions = 0
     deleted_feedback = 0
     deleted_clusters = 0
     deleted_bridges = 0
     deleted_concepts = 0
     deleted_milestones = 0
+    deleted_s3_objects = 0
+    deleted_training_candidates = 0
 
-    # Delete sessions + their feedback records
+    # Delete sessions + their feedback records + S3 audio
     sessions_resp = session_table.query(
         IndexName="child_id-timestamp-index",
         KeyConditionExpression=_key("child_id").eq(child_id)
     )
     for sess in sessions_resp.get("Items", []):
         sid = sess["session_id"]
+
+        # Delete feedback records for this session
         fb_resp = feedback_table.query(
             IndexName="session_id-created_at-index",
             KeyConditionExpression=_key("session_id").eq(sid)
@@ -313,6 +321,33 @@ def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
         for fb in fb_resp.get("Items", []):
             feedback_table.delete_item(Key={"feedback_id": fb["feedback_id"]})
             deleted_feedback += 1
+
+        # Delete S3 audio files for this session (child_id/session_id/*)
+        try:
+            s3_prefix = f"{child_id}/{sid}/"
+            s3_resp = s3_client.list_objects_v2(Bucket=bucket, Prefix=s3_prefix)
+            for obj in s3_resp.get("Contents", []):
+                s3_client.delete_object(Bucket=bucket, Key=obj["Key"])
+                deleted_s3_objects += 1
+        except Exception as e:
+            logger.warning(f"S3 cleanup for session {sid}: {e}")
+
+        # Delete training candidates linked to this session (PII-linked)
+        if training_candidate_table is not None:
+            try:
+                from boto3.dynamodb.conditions import Attr
+                tc_resp = training_candidate_table.scan(
+                    FilterExpression=Attr("session_id").eq(sid),
+                    ProjectionExpression="candidate_id",
+                )
+                for tc in tc_resp.get("Items", []):
+                    training_candidate_table.delete_item(
+                        Key={"candidate_id": tc["candidate_id"]}
+                    )
+                    deleted_training_candidates += 1
+            except Exception as e:
+                logger.warning(f"TrainingCandidate cleanup for session {sid}: {e}")
+
         session_table.delete_item(Key={"session_id": sid})
         deleted_sessions += 1
 
@@ -354,10 +389,14 @@ def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
         )
         deleted_milestones += 1
 
+    # Delete child profile last
     child_profile_table.delete_item(Key={"child_id": child_id})
+
     return {
         "deleted_sessions": deleted_sessions,
         "deleted_feedback": deleted_feedback,
+        "deleted_s3_objects": deleted_s3_objects,
+        "deleted_training_candidates": deleted_training_candidates,
         "deleted_clusters": deleted_clusters,
         "deleted_bridges": deleted_bridges,
         "deleted_concepts": deleted_concepts,
@@ -380,7 +419,21 @@ def delete_child(event: Dict) -> Dict:
 
     deleted = _delete_child_direct_data(child_id)
 
-    logger.info(f"Deleted all direct data for child {child_id} (population model retained)")
+    # Audit log (no PII — child_id is a UUID, no name/birth_date logged)
+    logger.info(
+        "AUDIT_CHILD_DELETE child_id=%s user_id=%s sessions=%d feedback=%d "
+        "s3_objects=%d training_candidates=%d clusters=%d bridges=%d "
+        "concepts=%d milestones=%d",
+        child_id, user_id,
+        deleted.get("deleted_sessions", 0),
+        deleted.get("deleted_feedback", 0),
+        deleted.get("deleted_s3_objects", 0),
+        deleted.get("deleted_training_candidates", 0),
+        deleted.get("deleted_clusters", 0),
+        deleted.get("deleted_bridges", 0),
+        deleted.get("deleted_concepts", 0),
+        deleted.get("deleted_milestones", 0),
+    )
     return response(
         200,
         {
@@ -416,6 +469,8 @@ def delete_account(event: Dict) -> Dict:
     aggregate = {
         "deleted_sessions": 0,
         "deleted_feedback": 0,
+        "deleted_s3_objects": 0,
+        "deleted_training_candidates": 0,
         "deleted_clusters": 0,
         "deleted_bridges": 0,
         "deleted_concepts": 0,
@@ -430,9 +485,14 @@ def delete_account(event: Dict) -> Dict:
         for k in aggregate:
             aggregate[k] += int(deleted.get(k, 0) or 0)
 
+    # Audit log (no PII — user_id is a Cognito sub, no names logged)
     logger.info(
-        f"Deleted account-scoped child data for parent={user_id} "
-        f"children={total_deleted_children} (de-identified training/population retained)"
+        "AUDIT_ACCOUNT_DELETE user_id=%s children=%d sessions=%d "
+        "s3_objects=%d training_candidates=%d",
+        user_id, total_deleted_children,
+        aggregate.get("deleted_sessions", 0),
+        aggregate.get("deleted_s3_objects", 0),
+        aggregate.get("deleted_training_candidates", 0),
     )
     return response(
         200,
