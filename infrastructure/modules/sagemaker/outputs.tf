@@ -1,11 +1,11 @@
 output "endpoint_name" {
-  description = "SageMaker HuBERT endpoint name"
-  value       = aws_sagemaker_endpoint.hubert.name
+  description = "SageMaker HuBERT endpoint name (empty if disabled)"
+  value       = var.enabled ? aws_sagemaker_endpoint.hubert[0].name : ""
 }
 
 output "endpoint_arn" {
-  description = "SageMaker HuBERT endpoint ARN"
-  value       = aws_sagemaker_endpoint.hubert.arn
+  description = "SageMaker HuBERT endpoint ARN (empty if disabled)"
+  value       = var.enabled ? aws_sagemaker_endpoint.hubert[0].arn : ""
 }
 
 output "models_bucket_name" {

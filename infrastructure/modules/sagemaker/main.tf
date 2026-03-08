@@ -1,6 +1,7 @@
 # =============================================================================
 # Module: SageMaker
 # HuBERT feature extraction endpoint (Serverless Inference)
+# Set enabled = false to skip all SageMaker resources (saves cost)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -16,7 +17,8 @@ locals {
 # IAM Role for SageMaker
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "sagemaker" {
-  name = "${var.project}-${var.environment}-sagemaker-hubert-role"
+  count = var.enabled ? 1 : 0
+  name  = "${var.project}-${var.environment}-sagemaker-hubert-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -35,8 +37,9 @@ resource "aws_iam_role" "sagemaker" {
 }
 
 resource "aws_iam_role_policy" "sagemaker_s3" {
-  name = "${var.project}-${var.environment}-sagemaker-s3-policy"
-  role = aws_iam_role.sagemaker.id
+  count = var.enabled ? 1 : 0
+  name  = "${var.project}-${var.environment}-sagemaker-s3-policy"
+  role  = aws_iam_role.sagemaker[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -57,8 +60,9 @@ resource "aws_iam_role_policy" "sagemaker_s3" {
 }
 
 resource "aws_iam_role_policy" "sagemaker_ecr" {
-  name = "${var.project}-${var.environment}-sagemaker-ecr-policy"
-  role = aws_iam_role.sagemaker.id
+  count = var.enabled ? 1 : 0
+  name  = "${var.project}-${var.environment}-sagemaker-ecr-policy"
+  role  = aws_iam_role.sagemaker[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -78,8 +82,9 @@ resource "aws_iam_role_policy" "sagemaker_ecr" {
 }
 
 resource "aws_iam_role_policy" "sagemaker_cloudwatch" {
-  name = "${var.project}-${var.environment}-sagemaker-cw-policy"
-  role = aws_iam_role.sagemaker.id
+  count = var.enabled ? 1 : 0
+  name  = "${var.project}-${var.environment}-sagemaker-cw-policy"
+  role  = aws_iam_role.sagemaker[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -103,17 +108,18 @@ resource "aws_iam_role_policy" "sagemaker_cloudwatch" {
 # SageMaker Model — HuBERT Base (HuggingFace container)
 # -----------------------------------------------------------------------------
 resource "aws_sagemaker_model" "hubert" {
+  count              = var.enabled ? 1 : 0
   name               = "${var.project}-${var.environment}-hubert"
-  execution_role_arn = aws_iam_role.sagemaker.arn
+  execution_role_arn = aws_iam_role.sagemaker[0].arn
 
   primary_container {
     # HuggingFace PyTorch Inference container (CPU)
-    image          = "${var.huggingface_inference_image}"
+    image          = var.huggingface_inference_image
     model_data_url = "s3://${local.models_bucket_name}/hubert/model.tar.gz"
     environment = {
-      HF_MODEL_ID = "facebook/hubert-base-ls960"
-      HF_TASK     = "feature-extraction"
-      SAGEMAKER_CONTAINER_LOG_LEVEL = "20"
+      HF_MODEL_ID                    = "facebook/hubert-base-ls960"
+      HF_TASK                        = "feature-extraction"
+      SAGEMAKER_CONTAINER_LOG_LEVEL  = "20"
     }
   }
 
@@ -127,16 +133,17 @@ resource "aws_sagemaker_model" "hubert" {
 # SageMaker Endpoint Configuration (Serverless — scales to zero)
 # -----------------------------------------------------------------------------
 resource "aws_sagemaker_endpoint_configuration" "hubert" {
-  name = "${var.project}-${var.environment}-hubert-config"
+  count = var.enabled ? 1 : 0
+  name  = "${var.project}-${var.environment}-hubert-config"
 
   production_variants {
     variant_name           = "default"
-    model_name             = aws_sagemaker_model.hubert.name
+    model_name             = aws_sagemaker_model.hubert[0].name
     initial_variant_weight = 1.0
 
     serverless_config {
-      memory_size_in_mb       = var.sagemaker_memory_mb
-      max_concurrency         = var.sagemaker_max_concurrency
+      memory_size_in_mb = var.sagemaker_memory_mb
+      max_concurrency   = var.sagemaker_max_concurrency
     }
   }
 
@@ -150,8 +157,9 @@ resource "aws_sagemaker_endpoint_configuration" "hubert" {
 # SageMaker Endpoint
 # -----------------------------------------------------------------------------
 resource "aws_sagemaker_endpoint" "hubert" {
+  count                = var.enabled ? 1 : 0
   name                 = "${var.project}-${var.environment}-hubert-endpoint"
-  endpoint_config_name = aws_sagemaker_endpoint_configuration.hubert.name
+  endpoint_config_name = aws_sagemaker_endpoint_configuration.hubert[0].name
 
   tags = {
     Name      = "${var.project}-${var.environment}-hubert-endpoint"

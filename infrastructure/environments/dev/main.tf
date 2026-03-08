@@ -240,6 +240,7 @@ module "lambda" {
 module "sagemaker" {
   source = "../../modules/sagemaker"
 
+  enabled     = true  # Endpoint at $0 idle; calls controlled by use_sagemaker_intent_endpoint in tfvars
   project     = var.project
   environment = var.environment
 }

@@ -1,3 +1,9 @@
+variable "enabled" {
+  description = "Set to false to skip all SageMaker resources (saves cost)"
+  type        = bool
+  default     = true
+}
+
 variable "project" {
   description = "Project name"
   type        = string
