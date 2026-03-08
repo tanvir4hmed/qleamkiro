@@ -61,6 +61,18 @@ variable "audio_retention_days" {
 }
 
 # Lambda
+variable "alpha_value" {
+  description = "Alpha blending value for model scoring"
+  type        = number
+  default     = 0.3
+}
+
+variable "cluster_similarity_threshold" {
+  description = "Similarity threshold for sound clustering"
+  type        = number
+  default     = 0.85
+}
+
 variable "use_bedrock" {
   description = "Use Amazon Bedrock for insight generation"
   type        = bool
