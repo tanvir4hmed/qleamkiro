@@ -16,7 +16,10 @@
       "Bash(pip install boto3 moto -q)",
       "Bash(python -m pip install boto3 moto pytest)",
       "Bash(python -m pip install boto3 moto pytest --no-cache-dir --user)",
-      "Bash(terraform validate)"
+      "Bash(terraform validate)",
+      "Bash(git add .github/workflows/1-infra-deploy.yml infrastructure/modules/sagemaker/main.tf infrastructure/modules/sagemaker/outputs.tf)",
+      "Bash(git commit:*)",
+      "Bash(git push origin master-copy-ml)"
     ]
   }
 }
