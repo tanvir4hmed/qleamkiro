@@ -183,6 +183,11 @@ module "step_functions" {
   enable_s3_event_trigger          = var.enable_s3_event_trigger
   log_retention_days               = var.log_retention_days
 
+  # Training pipeline
+  enable_training_pipeline  = true
+  training_check_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-training-check"
+  model_trainer_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-model-trainer"
+
   depends_on = [module.iam]
 }
 
@@ -229,7 +234,7 @@ module "lambda" {
   sagemaker_hubert_endpoint_name = module.sagemaker.endpoint_name
   training_features_table        = module.dynamodb.training_features_table_name
   model_versions_table           = module.dynamodb.model_versions_table_name
-  training_step_function_arn     = ""
+  training_step_function_arn     = module.step_functions.training_state_machine_arn
 
   depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions, module.sagemaker]
 }
@@ -293,6 +298,8 @@ module "cloudwatch" {
     module.lambda.insight_generator_function_name,
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,
+    module.lambda.training_check_function_name,
+    module.lambda.model_trainer_function_name,
   ]
 
   state_machine_arn            = module.step_functions.state_machine_arn

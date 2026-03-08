@@ -205,3 +205,87 @@ resource "aws_cloudwatch_log_group" "api_handler" {
   name              = "/aws/lambda/${aws_lambda_function.api_handler.function_name}"
   retention_in_days = var.log_retention_days
 }
+
+# -----------------------------------------------------------------------------
+# Training Check Lambda (Phase 3 — daily check if retraining is needed)
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "training_check" {
+  function_name = "${var.project}-${var.environment}-training-check"
+  description   = "Checks if model retraining conditions are met and triggers training pipeline"
+
+  package_type = "Image"
+  image_uri    = "${var.ecr_repository_urls["training_check"]}:${var.image_tag}"
+
+  role        = var.lambda_execution_role_arn
+  timeout     = 30
+  memory_size = 256
+
+  environment {
+    variables = local.common_env_vars
+  }
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.lambda_security_group_id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  tags = {
+    Name      = "${var.project}-${var.environment}-training-check"
+    Component = "training-check"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "training_check" {
+  name              = "/aws/lambda/${aws_lambda_function.training_check.function_name}"
+  retention_in_days = var.log_retention_days
+}
+
+# -----------------------------------------------------------------------------
+# Model Trainer Lambda (Phase 3/4 — trains age-conditioned classifier)
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "model_trainer" {
+  function_name = "${var.project}-${var.environment}-model-trainer"
+  description   = "Trains two-branch age-conditioned emotion classifier from confirmed data"
+
+  package_type = "Image"
+  image_uri    = "${var.ecr_repository_urls["model_trainer"]}:${var.image_tag}"
+
+  role        = var.lambda_execution_role_arn
+  timeout     = 300
+  memory_size = 1024
+
+  environment {
+    variables = local.common_env_vars
+  }
+
+  vpc_config {
+    subnet_ids         = var.private_subnet_ids
+    security_group_ids = [var.lambda_security_group_id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  tags = {
+    Name      = "${var.project}-${var.environment}-model-trainer"
+    Component = "model-trainer"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "model_trainer" {
+  name              = "/aws/lambda/${aws_lambda_function.model_trainer.function_name}"
+  retention_in_days = var.log_retention_days
+}

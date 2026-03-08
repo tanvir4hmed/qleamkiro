@@ -137,6 +137,40 @@ def dynamodb_tables(aws_credentials):
             BillingMode="PAY_PER_REQUEST",
         )
 
+        # TrainingFeatures
+        dynamodb.create_table(
+            TableName="test-TrainingFeatures",
+            KeySchema=[{"AttributeName": "feature_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "feature_id", "AttributeType": "S"},
+                {"AttributeName": "sound_type", "AttributeType": "S"},
+                {"AttributeName": "age_days", "AttributeType": "N"},
+            ],
+            GlobalSecondaryIndexes=[{
+                "IndexName": "sound_type-age_days-index",
+                "KeySchema": [
+                    {"AttributeName": "sound_type", "KeyType": "HASH"},
+                    {"AttributeName": "age_days", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            }],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        # ModelVersions
+        dynamodb.create_table(
+            TableName="test-ModelVersions",
+            KeySchema=[
+                {"AttributeName": "model_type", "KeyType": "HASH"},
+                {"AttributeName": "version", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "model_type", "AttributeType": "S"},
+                {"AttributeName": "version", "AttributeType": "N"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
         yield dynamodb
 
 

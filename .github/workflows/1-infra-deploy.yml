@@ -234,7 +234,7 @@ jobs:
           echo "📦 Phase 2: Checking which Lambda functions need placeholder images..."
 
           # List of Lambda function names (matching ECR repo names, underscores)
-          LAMBDA_FUNCTIONS="feature_extraction insight_generator feedback_processor api_handler"
+          LAMBDA_FUNCTIONS="feature_extraction insight_generator feedback_processor api_handler training_check model_trainer"
 
           PUSHED_ANY=false
 

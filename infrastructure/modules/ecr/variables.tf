@@ -22,5 +22,7 @@ variable "lambda_functions" {
     api_handler          = "API handler Lambda"
     cluster_engine       = "Cluster engine Lambda"
     reinforcement_engine = "Reinforcement engine Lambda"
+    training_check       = "Training check Lambda"
+    model_trainer        = "Model trainer Lambda"
   }
 }

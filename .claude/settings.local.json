@@ -21,7 +21,8 @@
       "Bash(git commit:*)",
       "Bash(git push origin master-copy-ml)",
       "Bash(git add infrastructure/modules/sagemaker/variables.tf)",
-      "Bash(git add .github/workflows/1-infra-deploy.yml)"
+      "Bash(git add .github/workflows/1-infra-deploy.yml)",
+      "Bash(xargs grep -l \"Phase 3\\\\|training\\\\|retrain\")"
     ]
   }
 }

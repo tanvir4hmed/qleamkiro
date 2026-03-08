@@ -42,3 +42,23 @@ output "api_handler_invoke_arn" {
   description = "API handler Lambda invoke ARN (for API Gateway)"
   value       = aws_lambda_function.api_handler.invoke_arn
 }
+
+output "training_check_function_name" {
+  description = "Training check Lambda function name"
+  value       = aws_lambda_function.training_check.function_name
+}
+
+output "training_check_function_arn" {
+  description = "Training check Lambda function ARN"
+  value       = aws_lambda_function.training_check.arn
+}
+
+output "model_trainer_function_name" {
+  description = "Model trainer Lambda function name"
+  value       = aws_lambda_function.model_trainer.function_name
+}
+
+output "model_trainer_function_arn" {
+  description = "Model trainer Lambda function ARN"
+  value       = aws_lambda_function.model_trainer.arn
+}

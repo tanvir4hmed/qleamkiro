@@ -92,7 +92,7 @@ jobs:
           ECR_URLS: ${{ steps.ecr-urls.outputs.ecr_urls }}
         run: |
           # Define Lambda functions
-          LAMBDA_FUNCTIONS="feature_extraction insight_generator feedback_processor api_handler"
+          LAMBDA_FUNCTIONS="feature_extraction insight_generator feedback_processor api_handler training_check model_trainer"
           
           # Generate image tag based on commit SHA
           IMAGE_TAG="${{ github.sha }}"
@@ -136,6 +136,8 @@ jobs:
           LAMBDA_NAMES["insight_generator"]="qleam-dev-insight-generator"
           LAMBDA_NAMES["feedback_processor"]="qleam-dev-feedback-processor"
           LAMBDA_NAMES["api_handler"]="qleam-dev-api-handler"
+          LAMBDA_NAMES["training_check"]="qleam-dev-training-check"
+          LAMBDA_NAMES["model_trainer"]="qleam-dev-model-trainer"
           
           for fn in "${!LAMBDA_NAMES[@]}"; do
             ECR_URL=$(echo "$ECR_URLS" | jq -r ".\"$fn\"")

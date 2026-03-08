@@ -45,3 +45,22 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+# Training pipeline variables
+variable "training_check_lambda_arn" {
+  description = "ARN of the training check Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "model_trainer_lambda_arn" {
+  description = "ARN of the model trainer Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "enable_training_pipeline" {
+  description = "Whether to create the training Step Function and daily EventBridge schedule"
+  type        = bool
+  default     = false
+}
