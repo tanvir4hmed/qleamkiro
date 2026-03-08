@@ -108,6 +108,16 @@ output "training_features_table_arn" {
   value       = aws_dynamodb_table.training_features.arn
 }
 
+output "model_versions_table_name" {
+  description = "ModelVersions DynamoDB table name"
+  value       = aws_dynamodb_table.model_versions.name
+}
+
+output "model_versions_table_arn" {
+  description = "ModelVersions DynamoDB table ARN"
+  value       = aws_dynamodb_table.model_versions.arn
+}
+
 output "all_table_names" {
   description = "Map of all DynamoDB table names"
   value = {
@@ -122,5 +132,6 @@ output "all_table_names" {
     training_candidate = aws_dynamodb_table.training_candidate.name
     model_registry     = aws_dynamodb_table.model_registry.name
     training_features  = aws_dynamodb_table.training_features.name
+    model_versions     = aws_dynamodb_table.model_versions.name
   }
 }

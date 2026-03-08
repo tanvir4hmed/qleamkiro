@@ -1,0 +1,502 @@
+"""
+Qleam — Model Trainer Lambda (Phase 3)
+Orchestrated by Step Function. Each invocation handles one step:
+
+Steps:
+  load     — Query confirmed training data, load embeddings from S3
+  train    — Train Dense classifier on HuBERT embeddings
+  validate — Evaluate on held-out split, compare to current active model
+  promote  — Upload new model to S3, update ModelVersions table
+
+Input: { "step": "load|train|validate|promote", ...context from previous step }
+Output: Step result merged with context for next step.
+"""
+import io
+import json
+import logging
+import os
+import sys
+import tempfile
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, List
+
+import boto3
+import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../shared"))
+sys.path.insert(0, "/var/task/shared")
+
+from constants import S3_BUCKET_NAME, TRAINING_FEATURES_TABLE
+from emotion_classifier import EMOTION_CLASSES
+
+log_level = os.environ.get("LOG_LEVEL", "INFO")
+logging.basicConfig(level=getattr(logging, log_level))
+logger = logging.getLogger(__name__)
+
+dynamodb = boto3.resource("dynamodb")
+s3_client = boto3.client("s3")
+
+MODEL_VERSIONS_TABLE = os.environ.get("MODEL_VERSIONS_TABLE", "")
+EMBEDDING_DIM = 768
+RANDOM_SEED = 42
+MIN_SAMPLES = 30
+MIN_SAMPLES_PER_CLASS = 3
+VAL_SPLIT = 0.2
+
+
+def lambda_handler(event, context):
+    """Route to the appropriate training step."""
+    step = event.get("step", "load")
+    logger.info(f"Model trainer step: {step}")
+
+    try:
+        if step == "load":
+            return _step_load(event)
+        elif step == "train":
+            return _step_train(event)
+        elif step == "validate":
+            return _step_validate(event)
+        elif step == "promote":
+            return _step_promote(event)
+        else:
+            return {"error": f"Unknown step: {step}"}
+    except Exception as e:
+        logger.error(f"Model trainer error at step={step}: {e}", exc_info=True)
+        return {"error": str(e), "step": step}
+
+
+def _step_load(event: Dict) -> Dict:
+    """Load confirmed training data from DynamoDB + S3."""
+    if not TRAINING_FEATURES_TABLE:
+        return {"error": "TRAINING_FEATURES_TABLE not configured"}
+
+    table = dynamodb.Table(TRAINING_FEATURES_TABLE)
+    bucket = S3_BUCKET_NAME
+
+    # Query all confirmed samples
+    from boto3.dynamodb.conditions import Attr
+    response = table.scan(
+        FilterExpression=Attr("is_confirmed").eq(True),
+    )
+    items = response.get("Items", [])
+
+    # Handle pagination
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression=Attr("is_confirmed").eq(True),
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+
+    logger.info(f"Found {len(items)} confirmed training samples")
+
+    if len(items) < MIN_SAMPLES:
+        return {
+            "step": "train",
+            "skip": True,
+            "reason": f"insufficient_samples:{len(items)}<{MIN_SAMPLES}",
+            "accuracy_improved": False,
+        }
+
+    # Load embeddings from S3
+    embeddings = []
+    labels = []
+    feature_ids = []
+    skipped = 0
+
+    for item in items:
+        s3_key = item.get("s3_embeddings_path", "")
+        emotion = item.get("confirmed_emotion", "")
+        if not s3_key or emotion not in EMOTION_CLASSES:
+            skipped += 1
+            continue
+
+        try:
+            obj = s3_client.get_object(Bucket=bucket, Key=s3_key)
+            buf = io.BytesIO(obj["Body"].read())
+            emb = np.load(buf)
+            if emb.shape[0] == EMBEDDING_DIM:
+                embeddings.append(emb)
+                labels.append(emotion)
+                feature_ids.append(str(item.get("feature_id", "")))
+        except Exception as e:
+            logger.warning(f"Failed to load embedding {s3_key}: {e}")
+            skipped += 1
+
+    logger.info(f"Loaded {len(embeddings)} embeddings, skipped {skipped}")
+
+    if len(embeddings) < MIN_SAMPLES:
+        return {
+            "step": "train",
+            "skip": True,
+            "reason": f"insufficient_valid_embeddings:{len(embeddings)}",
+            "accuracy_improved": False,
+        }
+
+    # Check class balance
+    label_counts = {}
+    for l in labels:
+        label_counts[l] = label_counts.get(l, 0) + 1
+
+    # Filter out classes with too few samples
+    valid_classes = [c for c in EMOTION_CLASSES if label_counts.get(c, 0) >= MIN_SAMPLES_PER_CLASS]
+    if len(valid_classes) < 2:
+        return {
+            "step": "train",
+            "skip": True,
+            "reason": f"too_few_classes:{len(valid_classes)}",
+            "accuracy_improved": False,
+        }
+
+    # Save loaded data to S3 temp location for train step
+    train_id = f"train-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    temp_prefix = f"training-runs/{train_id}"
+
+    embeddings_array = np.array(embeddings, dtype=np.float32)
+    labels_array = np.array(labels)
+
+    # Upload to S3
+    _upload_numpy(bucket, f"{temp_prefix}/embeddings.npy", embeddings_array)
+    _upload_numpy(bucket, f"{temp_prefix}/labels.npy", labels_array)
+
+    # Save feature_ids for marking as trained later
+    feature_ids_bytes = json.dumps(feature_ids).encode("utf-8")
+    s3_client.put_object(Bucket=bucket, Key=f"{temp_prefix}/feature_ids.json",
+                         Body=feature_ids_bytes)
+
+    return {
+        "step": "train",
+        "skip": False,
+        "train_id": train_id,
+        "temp_prefix": temp_prefix,
+        "bucket": bucket,
+        "n_samples": len(embeddings),
+        "n_classes": len(valid_classes),
+        "valid_classes": valid_classes,
+        "label_counts": label_counts,
+        "trigger_reason": event.get("trigger_reason", ""),
+    }
+
+
+def _step_train(event: Dict) -> Dict:
+    """Train classifier on loaded embeddings."""
+    if event.get("skip"):
+        return event
+
+    bucket = event["bucket"]
+    prefix = event["temp_prefix"]
+    train_id = event["train_id"]
+
+    # Load data from S3
+    embeddings = _download_numpy(bucket, f"{prefix}/embeddings.npy")
+    labels = _download_numpy(bucket, f"{prefix}/labels.npy")
+
+    # Encode labels
+    label_to_idx = {c: i for i, c in enumerate(EMOTION_CLASSES)}
+    y = np.array([label_to_idx.get(str(l), -1) for l in labels])
+
+    valid_mask = y >= 0
+    embeddings = embeddings[valid_mask]
+    y = y[valid_mask]
+
+    # Train/val split
+    np.random.seed(RANDOM_SEED)
+    indices = np.arange(len(embeddings))
+    np.random.shuffle(indices)
+    n_val = max(1, int(len(indices) * VAL_SPLIT))
+
+    val_idx = indices[:n_val]
+    train_idx = indices[n_val:]
+
+    X_train, y_train = embeddings[train_idx], y[train_idx]
+    X_val, y_val = embeddings[val_idx], y[val_idx]
+
+    logger.info(f"Training: {len(X_train)} samples, Validation: {len(X_val)} samples")
+
+    # Train using numpy-only approach (no TF dependency in Lambda)
+    # Simple softmax regression with L2 regularization — lightweight but effective
+    n_classes = len(EMOTION_CLASSES)
+    model_weights, model_bias, train_history = _train_softmax(
+        X_train, y_train, n_classes,
+        epochs=100, lr=0.01, reg=1e-4, batch_size=32,
+    )
+
+    # Evaluate on validation set
+    val_logits = X_val @ model_weights + model_bias
+    val_preds = np.argmax(val_logits, axis=1)
+    val_accuracy = float(np.mean(val_preds == y_val))
+
+    logger.info(f"Validation accuracy: {val_accuracy:.3f}")
+
+    # Save model weights to S3
+    model_data = {
+        "weights": model_weights,
+        "bias": model_bias,
+    }
+    model_key = f"{prefix}/model_weights.npz"
+    buf = io.BytesIO()
+    np.savez(buf, weights=model_weights, bias=model_bias)
+    buf.seek(0)
+    s3_client.put_object(Bucket=bucket, Key=model_key, Body=buf.read())
+
+    return {
+        **event,
+        "step": "validate",
+        "model_key": model_key,
+        "val_accuracy": val_accuracy,
+        "train_samples": len(X_train),
+        "val_samples": len(X_val),
+        "train_loss_final": train_history[-1] if train_history else None,
+    }
+
+
+def _step_validate(event: Dict) -> Dict:
+    """Compare new model accuracy to current active model."""
+    if event.get("skip"):
+        return event
+
+    val_accuracy = event.get("val_accuracy", 0)
+
+    # Get current active model accuracy
+    current_accuracy = _get_active_model_accuracy()
+    logger.info(
+        f"Model comparison: new={val_accuracy:.3f} vs current={current_accuracy:.3f}"
+    )
+
+    # Promotion requires improvement (with small margin for noise)
+    PROMOTION_MARGIN = 0.02
+    accuracy_improved = val_accuracy > (current_accuracy + PROMOTION_MARGIN)
+
+    # Special case: if no active model exists, any reasonable accuracy qualifies
+    if current_accuracy == 0 and val_accuracy >= 0.3:
+        accuracy_improved = True
+
+    return {
+        **event,
+        "step": "promote",
+        "accuracy_improved": accuracy_improved,
+        "current_accuracy": current_accuracy,
+    }
+
+
+def _step_promote(event: Dict) -> Dict:
+    """Promote new model: copy to permanent S3 path, update ModelVersions."""
+    bucket = event["bucket"]
+    model_key = event["model_key"]
+    train_id = event["train_id"]
+    val_accuracy = event.get("val_accuracy", 0)
+    prefix = event["temp_prefix"]
+
+    # Determine new version number
+    current_version = _get_active_model_version()
+    new_version = current_version + 1
+
+    # Copy model to permanent location
+    permanent_key = f"models/emotion_classifier/v{new_version}/model_weights.npz"
+    s3_client.copy_object(
+        Bucket=bucket,
+        CopySource={"Bucket": bucket, "Key": model_key},
+        Key=permanent_key,
+    )
+
+    # Update ModelVersions table
+    if MODEL_VERSIONS_TABLE:
+        mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Deactivate current active model
+        if current_version > 0:
+            try:
+                mv_table.update_item(
+                    Key={"model_type": "emotion_classifier",
+                         "version": Decimal(str(current_version))},
+                    UpdateExpression="SET active = :f",
+                    ExpressionAttributeValues={":f": False},
+                )
+            except Exception as e:
+                logger.warning(f"Failed to deactivate v{current_version}: {e}")
+
+        # Create new version record
+        mv_table.put_item(Item={
+            "model_type": "emotion_classifier",
+            "version": Decimal(str(new_version)),
+            "s3_path": permanent_key,
+            "s3_bucket": bucket,
+            "accuracy": Decimal(str(round(val_accuracy, 4))),
+            "train_samples": Decimal(str(event.get("train_samples", 0))),
+            "val_samples": Decimal(str(event.get("val_samples", 0))),
+            "active": True,
+            "trained_at": now,
+            "train_id": train_id,
+            "trigger_reason": event.get("trigger_reason", ""),
+            "label_counts": json.dumps(event.get("label_counts", {})),
+        })
+
+    # Mark training features as included
+    _mark_features_as_trained(bucket, prefix, train_id)
+
+    logger.info(
+        f"Model promoted: v{new_version} accuracy={val_accuracy:.3f} "
+        f"s3={permanent_key}"
+    )
+
+    return {
+        "status": "promoted",
+        "version": new_version,
+        "accuracy": val_accuracy,
+        "s3_path": permanent_key,
+        "train_id": train_id,
+        "accuracy_improved": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Training implementation (numpy-only softmax regression)
+# ---------------------------------------------------------------------------
+
+def _train_softmax(X, y, n_classes, epochs=100, lr=0.01, reg=1e-4, batch_size=32):
+    """Train softmax classifier using mini-batch gradient descent."""
+    n_features = X.shape[1]
+    np.random.seed(RANDOM_SEED)
+
+    # Xavier initialization
+    W = np.random.randn(n_features, n_classes).astype(np.float32) * np.sqrt(2.0 / n_features)
+    b = np.zeros(n_classes, dtype=np.float32)
+
+    n_samples = len(X)
+    losses = []
+
+    for epoch in range(epochs):
+        # Shuffle
+        perm = np.random.permutation(n_samples)
+        X_shuffled = X[perm]
+        y_shuffled = y[perm]
+
+        epoch_loss = 0.0
+        n_batches = 0
+
+        for start in range(0, n_samples, batch_size):
+            end = min(start + batch_size, n_samples)
+            X_batch = X_shuffled[start:end]
+            y_batch = y_shuffled[start:end]
+            bs = len(X_batch)
+
+            # Forward: softmax
+            logits = X_batch @ W + b
+            logits -= logits.max(axis=1, keepdims=True)  # numerical stability
+            exp_logits = np.exp(logits)
+            probs = exp_logits / (exp_logits.sum(axis=1, keepdims=True) + 1e-9)
+
+            # Cross-entropy loss
+            correct_log_probs = -np.log(probs[np.arange(bs), y_batch] + 1e-9)
+            loss = correct_log_probs.mean() + 0.5 * reg * np.sum(W ** 2)
+            epoch_loss += loss
+            n_batches += 1
+
+            # Backward
+            dlogits = probs.copy()
+            dlogits[np.arange(bs), y_batch] -= 1
+            dlogits /= bs
+
+            dW = X_batch.T @ dlogits + reg * W
+            db = dlogits.sum(axis=0)
+
+            W -= lr * dW
+            b -= lr * db
+
+        avg_loss = epoch_loss / max(1, n_batches)
+        losses.append(float(avg_loss))
+
+        if (epoch + 1) % 20 == 0:
+            logger.info(f"Epoch {epoch+1}/{epochs} loss={avg_loss:.4f}")
+
+    return W, b, losses
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_active_model_accuracy() -> float:
+    """Get accuracy of the currently active model."""
+    if not MODEL_VERSIONS_TABLE:
+        return 0.0
+    try:
+        mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
+        from boto3.dynamodb.conditions import Key, Attr
+        response = mv_table.scan(
+            FilterExpression=Attr("model_type").eq("emotion_classifier") & Attr("active").eq(True),
+            Limit=1,
+        )
+        items = response.get("Items", [])
+        if items:
+            return float(items[0].get("accuracy", 0))
+    except Exception as e:
+        logger.warning(f"Failed to get active model accuracy: {e}")
+    return 0.0
+
+
+def _get_active_model_version() -> int:
+    """Get version number of the currently active model."""
+    if not MODEL_VERSIONS_TABLE:
+        return 0
+    try:
+        mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
+        from boto3.dynamodb.conditions import Key, Attr
+        response = mv_table.scan(
+            FilterExpression=Attr("model_type").eq("emotion_classifier") & Attr("active").eq(True),
+            Limit=1,
+        )
+        items = response.get("Items", [])
+        if items:
+            return int(items[0].get("version", 0))
+    except Exception as e:
+        logger.warning(f"Failed to get active model version: {e}")
+    return 0
+
+
+def _mark_features_as_trained(bucket, prefix, train_id):
+    """Mark training features as included in this training run."""
+    try:
+        obj = s3_client.get_object(Bucket=bucket, Key=f"{prefix}/feature_ids.json")
+        feature_ids = json.loads(obj["Body"].read().decode("utf-8"))
+
+        if not TRAINING_FEATURES_TABLE:
+            return
+
+        table = dynamodb.Table(TRAINING_FEATURES_TABLE)
+        now = datetime.now(timezone.utc).isoformat()
+
+        for fid in feature_ids:
+            try:
+                table.update_item(
+                    Key={"feature_id": fid},
+                    UpdateExpression="SET included_in_training = :tid, trained_at = :ts",
+                    ExpressionAttributeValues={
+                        ":tid": train_id,
+                        ":ts": now,
+                    },
+                )
+            except Exception:
+                pass  # Non-fatal
+
+        logger.info(f"Marked {len(feature_ids)} features as trained")
+    except Exception as e:
+        logger.warning(f"Failed to mark features as trained: {e}")
+
+
+def _upload_numpy(bucket, key, arr):
+    """Upload numpy array to S3."""
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    buf.seek(0)
+    s3_client.put_object(Bucket=bucket, Key=key, Body=buf.read())
+
+
+def _download_numpy(bucket, key):
+    """Download numpy array from S3."""
+    obj = s3_client.get_object(Bucket=bucket, Key=key)
+    buf = io.BytesIO(obj["Body"].read())
+    return np.load(buf, allow_pickle=True)

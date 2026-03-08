@@ -207,6 +207,8 @@ module "lambda" {
   # HuBERT SageMaker endpoint
   sagemaker_hubert_endpoint_name = module.sagemaker.endpoint_name
   training_features_table        = module.dynamodb.training_features_table_name
+  model_versions_table           = module.dynamodb.model_versions_table_name
+  training_step_function_arn     = ""
 
   depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions, module.sagemaker]
 }

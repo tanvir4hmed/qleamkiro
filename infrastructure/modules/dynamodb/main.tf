@@ -474,3 +474,38 @@ resource "aws_dynamodb_table" "training_features" {
     Table = "TrainingFeatures"
   }
 }
+
+# -----------------------------------------------------------------------------
+# ModelVersions Table
+# Tracks trained model versions for emotion classifier (Phase 3)
+# PK: model_type (e.g. "emotion_classifier"), SK: version (number)
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "model_versions" {
+  name         = "${var.project}-${var.environment}-ModelVersions"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "model_type"
+  range_key    = "version"
+
+  attribute {
+    name = "model_type"
+    type = "S"
+  }
+
+  attribute {
+    name = "version"
+    type = "N"
+  }
+
+  point_in_time_recovery {
+    enabled = var.enable_pitr
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name  = "${var.project}-${var.environment}-ModelVersions"
+    Table = "ModelVersions"
+  }
+}

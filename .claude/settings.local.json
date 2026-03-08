@@ -9,7 +9,14 @@
       "Bash(npm install)",
       "WebSearch",
       "Bash(pip install numpy -q)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(python -m pytest tests/ -x -q --tb=short)",
+      "Bash(pip install pytest moto boto3 -q)",
+      "Bash(pip install pytest -q)",
+      "Bash(pip install boto3 moto -q)",
+      "Bash(python -m pip install boto3 moto pytest)",
+      "Bash(python -m pip install boto3 moto pytest --no-cache-dir --user)",
+      "Bash(terraform validate)"
     ]
   }
 }

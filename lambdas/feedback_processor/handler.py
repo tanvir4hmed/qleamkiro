@@ -33,6 +33,7 @@ from constants import (
     MODEL_REGISTRY_TABLE,
     SESSION_TABLE,
     TRAINING_CANDIDATE_TABLE,
+    TRAINING_FEATURES_TABLE,
 )
 from cry_analyzer import get_age_bracket
 from cry_training_model import (
@@ -41,6 +42,7 @@ from cry_training_model import (
     store_cry_training_sample,
     train_cry_model,
 )
+from training_anonymizer import apply_quality_gates, anonymize_and_confirm
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -52,6 +54,7 @@ session_table = dynamodb.Table(SESSION_TABLE)
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE)
 model_registry_table = dynamodb.Table(MODEL_REGISTRY_TABLE)
+training_features_table = dynamodb.Table(TRAINING_FEATURES_TABLE) if TRAINING_FEATURES_TABLE else None
 
 # Retrain cry model after this many new samples per age bracket
 CRY_RETRAIN_THRESHOLD = 20
@@ -212,7 +215,8 @@ def _process_cry_emotion_feedback(
     if not sound_features:
         sound_features = session.get("sound_classification", {}).get("features", {})
 
-    # Store training sample
+    # Store training sample (legacy cry_training_model — acoustic features)
+    result = {}
     try:
         store_result = store_cry_training_sample(
             features=sound_features,
@@ -227,13 +231,46 @@ def _process_cry_emotion_feedback(
         # Check if we should retrain the cry model
         _check_and_retrain(age_bracket)
 
-        return {
-            "cry_training": store_result.get("status", "unknown"),
-            "candidate_id": store_result.get("candidate_id", ""),
-        }
+        result["cry_training"] = store_result.get("status", "unknown")
+        result["candidate_id"] = store_result.get("candidate_id", "")
     except Exception as e:
         logger.error(f"Cry emotion feedback storage failed: {e}")
-        return {"warning": f"Cry feedback storage failed: {e}"}
+        result["warning"] = f"Cry feedback storage failed: {e}"
+
+    # Phase 3: Anonymized HuBERT training data
+    try:
+        if training_features_table is not None:
+            gate_result = apply_quality_gates(
+                session=session,
+                confirmed_emotion=confirmed_emotion,
+                was_correct=was_correct,
+                training_features_table=training_features_table,
+            )
+
+            if gate_result["accepted"]:
+                anon_result = anonymize_and_confirm(
+                    feature_id=gate_result["feature_id"],
+                    confirmed_emotion=confirmed_emotion,
+                    was_correct=was_correct,
+                    session=session,
+                    training_features_table=training_features_table,
+                )
+                result["ml_training"] = anon_result.get("status", "unknown")
+                result["ml_feature_id"] = anon_result.get("feature_id", "")
+                feedback_record["ml_training_result"] = anon_result
+                logger.info(
+                    f"ML training data confirmed: {anon_result.get('feature_id')} "
+                    f"emotion={confirmed_emotion}"
+                )
+            else:
+                reason = gate_result.get("rejection_reason", "unknown")
+                result["ml_training"] = "rejected"
+                result["ml_rejection_reason"] = reason
+                logger.info(f"ML training data rejected: {reason}")
+    except Exception as e:
+        logger.warning(f"ML training anonymization failed (non-fatal): {e}")
+
+    return result
 
 
 def _process_general_feedback(body: Dict, feedback_record: Dict) -> Dict:

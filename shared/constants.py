@@ -54,6 +54,10 @@ SAGEMAKER_INTENT_ENDPOINT_NAME: str = os.environ.get("SAGEMAKER_INTENT_ENDPOINT_
 # HuBERT feature extraction endpoint (SageMaker Serverless).
 SAGEMAKER_HUBERT_ENDPOINT: str = os.environ.get("SAGEMAKER_HUBERT_ENDPOINT", "")
 
+# Model version management (Phase 3).
+MODEL_VERSIONS_TABLE: str = os.environ.get("MODEL_VERSIONS_TABLE", "")
+TRAINING_STEP_FUNCTION_ARN: str = os.environ.get("TRAINING_STEP_FUNCTION_ARN", "")
+
 # Speech transcription for linguistic sessions (Amazon Transcribe).
 USE_TRANSCRIBE_FOR_LINGUISTIC: bool = os.environ.get("USE_TRANSCRIBE_FOR_LINGUISTIC", "false").lower() == "true"
 TRANSCRIBE_TIMEOUT_SECONDS: int = int(os.environ.get("TRANSCRIBE_TIMEOUT_SECONDS", "25"))

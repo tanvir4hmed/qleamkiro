@@ -19,6 +19,8 @@ os.environ.setdefault("FEEDBACK_TABLE", "test-Feedback")
 os.environ.setdefault("S3_BUCKET_NAME", "test-audio-bucket")
 os.environ.setdefault("TRAINING_FEATURES_TABLE", "test-TrainingFeatures")
 os.environ.setdefault("SAGEMAKER_HUBERT_ENDPOINT", "")
+os.environ.setdefault("MODEL_VERSIONS_TABLE", "test-ModelVersions")
+os.environ.setdefault("TRAINING_STEP_FUNCTION_ARN", "")
 
 
 @pytest.fixture

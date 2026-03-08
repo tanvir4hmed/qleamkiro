@@ -88,6 +88,18 @@ variable "training_features_table" {
   default     = ""
 }
 
+variable "model_versions_table" {
+  description = "DynamoDB ModelVersions table name (Phase 3)"
+  type        = string
+  default     = ""
+}
+
+variable "training_step_function_arn" {
+  description = "ARN of the training Step Function (Phase 3)"
+  type        = string
+  default     = ""
+}
+
 variable "sagemaker_hubert_endpoint_name" {
   description = "SageMaker HuBERT endpoint name for feature extraction"
   type        = string

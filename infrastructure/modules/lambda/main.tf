@@ -19,6 +19,8 @@ locals {
     MODEL_REGISTRY_TABLE         = var.model_registry_table
     TRAINING_FEATURES_TABLE      = var.training_features_table
     SAGEMAKER_HUBERT_ENDPOINT    = var.sagemaker_hubert_endpoint_name
+    MODEL_VERSIONS_TABLE         = var.model_versions_table
+    TRAINING_STEP_FUNCTION_ARN   = var.training_step_function_arn
     STEP_FUNCTION_ARN            = var.step_function_arn
     STEP_FUNCTION_ARN_PARAM_NAME = var.step_function_arn_param_name
     LOG_LEVEL                    = var.environment == "prod" ? "WARNING" : "DEBUG"
