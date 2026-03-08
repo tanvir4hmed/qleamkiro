@@ -159,7 +159,6 @@ resource "aws_sagemaker_endpoint_configuration" "hubert" {
     serverless_config {
       memory_size_in_mb       = var.sagemaker_memory_mb
       max_concurrency         = var.sagemaker_max_concurrency
-      provisioned_concurrency = 0  # Scale to zero when idle
     }
   }
 
