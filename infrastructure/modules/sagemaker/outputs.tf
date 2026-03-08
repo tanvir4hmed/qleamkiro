@@ -10,10 +10,10 @@ output "endpoint_arn" {
 
 output "models_bucket_name" {
   description = "S3 bucket name for model artifacts"
-  value       = aws_s3_bucket.models.id
+  value       = local.models_bucket_name
 }
 
 output "models_bucket_arn" {
   description = "S3 bucket ARN for model artifacts"
-  value       = aws_s3_bucket.models.arn
+  value       = local.models_bucket_arn
 }

@@ -271,6 +271,34 @@ jobs:
           echo "══════════════════════════════════════════════════════"
 
       # ────────────────────────────────────────────────────────────────────────
+      # Phase 2.5: Ensure SageMaker model artifact exists in S3
+      # HuBERT model pulls weights from HuggingFace Hub at runtime,
+      # but SageMaker requires a model_data_url — upload empty placeholder
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload SageMaker placeholder model artifact
+        run: |
+          BUCKET="qleam-dev-models"
+          KEY="hubert/model.tar.gz"
+
+          # Create bucket if it doesn't exist yet (Terraform may not have created it)
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "📦 Creating models bucket: $BUCKET"
+            aws s3api create-bucket --bucket "$BUCKET" --region ${{ env.AWS_REGION }}
+          fi
+
+          # Only upload if the artifact doesn't already exist
+          if aws s3api head-object --bucket "$BUCKET" --key "$KEY" 2>/dev/null; then
+            echo "✅ Model artifact already exists at s3://$BUCKET/$KEY"
+          else
+            echo "📦 Uploading placeholder model.tar.gz..."
+            mkdir -p /tmp/hubert_placeholder
+            echo '{"HF_MODEL_ID": "facebook/hubert-base-ls960"}' > /tmp/hubert_placeholder/config.json
+            tar -czf /tmp/model.tar.gz -C /tmp/hubert_placeholder .
+            aws s3 cp /tmp/model.tar.gz "s3://$BUCKET/$KEY"
+            echo "✅ Placeholder uploaded to s3://$BUCKET/$KEY"
+          fi
+
+      # ────────────────────────────────────────────────────────────────────────
       # Phase 3: Create all remaining resources (including Lambda functions)
       # ────────────────────────────────────────────────────────────────────────
 

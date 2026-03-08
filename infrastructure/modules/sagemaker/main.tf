@@ -4,34 +4,12 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# S3 bucket for model artifacts
+# S3 bucket for model artifacts is created MANUALLY (outside Terraform)
+# so it survives `terraform destroy`. Bucket: ${var.project}-${var.environment}-models
 # -----------------------------------------------------------------------------
-resource "aws_s3_bucket" "models" {
-  bucket = "${var.project}-${var.environment}-models"
-
-  tags = {
-    Name      = "${var.project}-${var.environment}-models"
-    Component = "sagemaker"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "models" {
-  bucket = aws_s3_bucket.models.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "models" {
-  bucket = aws_s3_bucket.models.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
+locals {
+  models_bucket_name = "${var.project}-${var.environment}-models"
+  models_bucket_arn  = "arn:aws:s3:::${var.project}-${var.environment}-models"
 }
 
 # -----------------------------------------------------------------------------
@@ -70,8 +48,8 @@ resource "aws_iam_role_policy" "sagemaker_s3" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.models.arn,
-          "${aws_s3_bucket.models.arn}/*"
+          local.models_bucket_arn,
+          "${local.models_bucket_arn}/*"
         ]
       }
     ]
@@ -131,7 +109,7 @@ resource "aws_sagemaker_model" "hubert" {
   primary_container {
     # HuggingFace PyTorch Inference container (CPU)
     image          = "${var.huggingface_inference_image}"
-    model_data_url = "s3://${aws_s3_bucket.models.id}/hubert/model.tar.gz"
+    model_data_url = "s3://${local.models_bucket_name}/hubert/model.tar.gz"
     environment = {
       HF_MODEL_ID = "facebook/hubert-base-ls960"
       HF_TASK     = "feature-extraction"
