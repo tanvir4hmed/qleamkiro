@@ -18,7 +18,7 @@ variable "huggingface_inference_image" {
 variable "sagemaker_memory_mb" {
   description = "Memory for SageMaker Serverless endpoint (MB)"
   type        = number
-  default     = 4096
+  default     = 3072
 }
 
 variable "sagemaker_max_concurrency" {
