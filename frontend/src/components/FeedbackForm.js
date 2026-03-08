@@ -1,46 +1,15 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 
-// Age-specific emotion lists matching cry_analyzer.py brackets
-const EMOTIONS_0_6M = [
+// 7-class emotion taxonomy matching cry_analyzer.py / emotion_classifier.py
+const EMOTIONS = [
   { key: 'hungry', label: 'Hungry', icon: '🍼' },
   { key: 'tired', label: 'Tired', icon: '😴' },
   { key: 'discomfort', label: 'Uncomfortable', icon: '😟' },
   { key: 'gas', label: 'Gas / Colic', icon: '💨' },
   { key: 'burp', label: 'Needs Burp', icon: '🫧' },
   { key: 'pain', label: 'In Pain', icon: '🩹' },
-  { key: 'closeness', label: 'Wants Closeness', icon: '🤗' },
+  { key: 'content', label: 'Content / Settling', icon: '😊' },
 ];
-
-// const EMOTIONS_6_12M = [
-//   ...EMOTIONS_0_6M,
-//   { key: 'frustration', label: 'Frustrated', icon: '😣' },
-//   { key: 'separation_anxiety', label: 'Separation Anxiety', icon: '😢' },
-//   { key: 'boredom', label: 'Bored', icon: '😐' },
-// ];
-//
-// const EMOTIONS_12_18M = [
-//   ...EMOTIONS_6_12M,
-//   { key: 'tantrum', label: 'Tantrum', icon: '😤' },
-//   { key: 'fear', label: 'Scared', icon: '😰' },
-// ];
-//
-// const EMOTIONS_18_24M = [
-//   ...EMOTIONS_12_18M,
-//   { key: 'jealousy', label: 'Jealous', icon: '😒' },
-// ];
-
-function getEmotionsForAge(ageDays) {
-  // if (!ageDays || ageDays < 0) return EMOTIONS_18_24M;
-  if (!ageDays || ageDays < 0) return EMOTIONS_0_6M;
-  const months = ageDays / 30.44;
-  // if (months < 6) return EMOTIONS_0_6M;
-  if (months <= 3) return EMOTIONS_0_6M;
-  // if (months < 12) return EMOTIONS_6_12M;
-  // if (months < 18) return EMOTIONS_12_18M;
-  // if (months < 24) return EMOTIONS_18_24M;
-  // return EMOTIONS_18_24M;
-  return EMOTIONS_0_6M;
-}
 
 function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
   const [open, setOpen] = useState(false);
@@ -49,7 +18,7 @@ function FeedbackForm({ onSubmit, displayType, detectedEmotion, ageDays }) {
   const [notes, setNotes] = useState('');
 
   const showEmotionFeedback = displayType === 'cry' || displayType === 'mixed';
-  const emotions = useMemo(() => getEmotionsForAge(ageDays), [ageDays]);
+  const emotions = EMOTIONS;
   const confirmedEmotion = wasCorrect ? detectedEmotion : selectedEmotion;
   const canSubmit = !!confirmedEmotion;
 

@@ -6,12 +6,14 @@ import InsightPanel from '../components/InsightPanel';
 import FeedbackForm from '../components/FeedbackForm';
 
 /**
- * SessionDetail — Clean, simple session analysis page.
+ * SessionDetail — Session analysis page (Phase 5).
  *
- * Shows only what's available:
- * 1. Insight (dynamic based on sound type)
- * 2. Feedback form (cry emotion, age-appropriate)
+ * Shows:
+ * 1. Insight (dynamic narrative for cry, generic for others)
+ * 2. Feedback form (cry emotion)
  * 3. Disclaimer
+ *
+ * Pulsing waveform loading animation, progressive reveal.
  */
 
 function SessionDetail() {
@@ -41,6 +43,21 @@ function SessionDetail() {
       }
     } catch (_) {}
     return null;
+  };
+
+  const getSessionCount = (childId) => {
+    try {
+      const key = `qleam_session_count_${childId}`;
+      return parseInt(localStorage.getItem(key) || '0', 10);
+    } catch (_) { return 0; }
+  };
+
+  const incrementSessionCount = (childId) => {
+    try {
+      const key = `qleam_session_count_${childId}`;
+      const current = parseInt(localStorage.getItem(key) || '0', 10);
+      localStorage.setItem(key, String(current + 1));
+    } catch (_) {}
   };
 
   const getAuthHeaders = async () => {
@@ -74,12 +91,13 @@ function SessionDetail() {
             setLoading(false);
             return;
           }
-          // Progressive backoff: 2s, 2s, 3s, 3s, 4s, 5s...
           const delay = pollCount <= 2 ? 2000 : pollCount <= 4 ? 3000 : Math.min(pollCount * 1000, 5000);
           pollTimeout = setTimeout(fetchInsight, delay);
         } else {
           setSession(data);
           setLoading(false);
+          // Track session count per child
+          if (data?.child_id) incrementSessionCount(data.child_id);
         }
       } catch (err) {
         if (!cancelled) {
@@ -114,12 +132,15 @@ function SessionDetail() {
 
   const childName = session?.child_name || getChildName(session?.child_id || '');
   const ageDays = getChildAgeDays(session?.child_id || '');
+  const sessionCount = getSessionCount(session?.child_id || '');
 
   if (loading) {
     return (
       <div className="session-detail loading-state">
-        <div className="spinner" />
-        <p>Analyzing your baby's sounds...</p>
+        <div className="waveform-loader">
+          <span /><span /><span /><span /><span />
+        </div>
+        <p className="loading-text">Analyzing your baby's sounds...</p>
         <p className="loading-sub">This usually takes 10-20 seconds</p>
       </div>
     );
@@ -144,16 +165,23 @@ function SessionDetail() {
         ← Back
       </button>
 
-      <h1>{childName ? `${childName}'s Session` : 'Session Analysis'}</h1>
+      <h1 className="session-title">
+        {childName ? `${childName}'s Session` : 'Session Analysis'}
+      </h1>
       <p className="session-time">
         {new Date(session?.timestamp).toLocaleString()}
       </p>
 
-      {/* Main Insight */}
       {hasInsight ? (
         <>
           <section className="insight-section">
-            <InsightPanel insight={insight} />
+            <InsightPanel
+              insight={insight}
+              childName={childName}
+              childId={session?.child_id}
+              ageDays={ageDays}
+              sessionCount={sessionCount}
+            />
           </section>
 
           {/* Feedback */}

@@ -259,7 +259,16 @@ def _build_cry_insight(
         "ml_classifier": classifier_result if classifier_result else None,
     }
 
-    # Three insight cards
+    # All 7 emotion scores for radar chart
+    insight["emotion_scores"] = cry_result.get("emotion_scores", {})
+
+    # Acoustic features (normalized 0-100) for radar chart
+    insight["acoustic_features"] = _normalize_acoustic_features(sound_features)
+
+    # Narrative slot data for dynamic template filling
+    insight["narrative_data"] = _compute_narrative_data(sound_features)
+
+    # Three insight cards (fallback for old frontend)
     insight["insight_sections"] = {
         "what_i_hear": cry_result["what_hearing"],
         "what_it_means": cry_result["what_means"],
@@ -269,6 +278,7 @@ def _build_cry_insight(
     # Dunstan sound reference (0-3m)
     if cry_result.get("dunstan_sound"):
         insight["dunstan_sound"] = cry_result["dunstan_sound"]
+        insight["dunstan_description"] = cry_result.get("dunstan_description", "")
 
     # Also detected emotions (alternatives)
     top_emotions = cry_result.get("top_emotions", [])
@@ -401,6 +411,97 @@ def _attach_word_info(
             "summary": word_age_analysis.get("display_summary", ""),
             "mismatch_warning": word_age_analysis.get("mismatch_warning"),
         }
+
+
+def _normalize_acoustic_features(sf: Dict) -> Dict:
+    """Normalize raw acoustic features to 0-100 scale for radar chart."""
+    def _clamp(val, lo, hi):
+        return max(0, min(100, int(100 * (float(val) - lo) / max(hi - lo, 1e-6))))
+
+    f0 = float(sf.get("f0_mean", 0))
+    rms = float(sf.get("rms_mean", 0))
+    instab = float(sf.get("f0_instability", 0))
+    voiced = float(sf.get("voiced_fraction", 0))
+    centroid = float(sf.get("spectral_centroid", 0))
+    energy_var = float(sf.get("energy_variability", 0))
+
+    return {
+        "pitch_hz": round(f0, 1),
+        "pitch_normalized": _clamp(f0, 100, 800),
+        "energy_normalized": _clamp(rms, 0, 0.2),
+        "stability_normalized": max(0, 100 - _clamp(instab, 0, 0.5)),
+        "voicing_pct": min(100, int(voiced * 100)),
+        "brightness_normalized": _clamp(centroid, 500, 4000),
+        "variation_normalized": _clamp(energy_var, 0, 1),
+    }
+
+
+def _compute_narrative_data(sf: Dict) -> Dict:
+    """Compute narrative slot values from acoustic measurements."""
+    rms = float(sf.get("rms_mean", 0))
+    f0 = float(sf.get("f0_mean", 0))
+    f0_std = float(sf.get("f0_std", 0))
+    instab = float(sf.get("f0_instability", 0))
+    energy_var = float(sf.get("energy_variability", 0))
+    syllable_rate = float(sf.get("syllable_rate", 0))
+
+    # Intensity from RMS energy
+    if rms > 0.12:
+        intensity = "strong"
+    elif rms > 0.05:
+        intensity = "moderate"
+    else:
+        intensity = "gentle"
+
+    # Pitch description from F0
+    parts = []
+    if f0 > 500:
+        parts.append("high-pitched")
+    elif f0 > 350:
+        parts.append("mid-range")
+    else:
+        parts.append("low-pitched")
+    if f0_std > 80:
+        parts.append("rising")
+    elif instab > 0.3:
+        parts.append("wavering")
+    else:
+        parts.append("steady")
+    pitch_desc = ", ".join(parts)
+
+    # Pattern description from syllable rate + energy variability
+    if syllable_rate > 4:
+        pattern_desc = "rapid, repetitive"
+    elif syllable_rate > 2:
+        pattern_desc = "rhythmic"
+    elif energy_var > 0.5:
+        pattern_desc = "intermittent"
+    else:
+        pattern_desc = "continuous"
+
+    # Duration description from energy variability
+    if energy_var > 0.6:
+        duration_desc = "comes in waves with pauses between bursts"
+    elif energy_var > 0.3:
+        duration_desc = "builds in waves with regular pauses"
+    else:
+        duration_desc = "stays relatively sustained throughout"
+
+    # Builds or steady
+    if energy_var > 0.4:
+        builds_or_steady = "builds in intensity"
+    elif instab > 0.2:
+        builds_or_steady = "comes and goes"
+    else:
+        builds_or_steady = "stays relatively steady"
+
+    return {
+        "intensity": intensity,
+        "pitch_desc": pitch_desc,
+        "pattern_desc": pattern_desc,
+        "duration_desc": duration_desc,
+        "builds_or_steady": builds_or_steady,
+    }
 
 
 def _save_insight(session_id: str, insight: Dict):

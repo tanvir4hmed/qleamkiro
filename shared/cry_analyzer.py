@@ -215,6 +215,7 @@ def analyze_cry(
             })
 
     dunstan_sound = get_dunstan_sound(primary_key, age_days)
+    dunstan_description = emotion_info.get("description", "") if dunstan_sound else ""
     secondary_emotion = top_emotions[1] if len(top_emotions) > 1 else None
 
     return {
@@ -230,6 +231,7 @@ def analyze_cry(
         "what_means": emotion_info.get("what_means", "Your baby is expressing a need"),
         "what_try": emotion_info.get("what_try", ["Observe and respond to your baby's cues"]),
         "dunstan_sound": dunstan_sound,
+        "dunstan_description": dunstan_description,
         "debug_trace": {
             "model_version": classifier_result.get("model_version") if classifier_result else "none",
         },
