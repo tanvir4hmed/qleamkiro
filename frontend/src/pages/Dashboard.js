@@ -239,7 +239,7 @@ function Dashboard({ onAiModeChange }) {
   const [trainingStats, setTrainingStats] = useState(null);
   const notificationTimerRef = useRef(null);
   const settingsCloseTimerRef = useRef(null);
-  const settingsBtnRef = useRef(null);
+  const childSectionRef = useRef(null);
   const SETTINGS_GUTTER = 12;
   const SETTINGS_MAX_WIDTH = 360;
   const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
@@ -253,9 +253,7 @@ function Dashboard({ onAiModeChange }) {
   const calculateSettingsAnchor = useCallback(() => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const rect = settingsBtnRef.current?.getBoundingClientRect();
-    const isMobile = vw <= 640;
-    const panelWidth = Math.min(SETTINGS_MAX_WIDTH, vw - (SETTINGS_GUTTER * 2));
+    const rect = childSectionRef.current?.getBoundingClientRect();
 
     if (!rect) {
       return {
@@ -265,22 +263,14 @@ function Dashboard({ onAiModeChange }) {
       };
     }
 
-    const desiredTop = Math.round(rect.bottom + 8);
+    const desiredTop = Math.round(rect.top);
     const top = Math.max(SETTINGS_GUTTER, Math.min(desiredTop, vh - 220));
     const maxHeight = Math.max(260, vh - top - SETTINGS_GUTTER);
 
-    if (isMobile) {
-      return {
-        top,
-        left: SETTINGS_GUTTER,
-        right: SETTINGS_GUTTER,
-        maxHeight,
-      };
-    }
-
-    const rightFromButton = Math.round(vw - rect.right);
-    const maxRight = Math.max(SETTINGS_GUTTER, vw - panelWidth - SETTINGS_GUTTER);
-    const right = Math.max(SETTINGS_GUTTER, Math.min(rightFromButton, maxRight));
+    const panelWidth = Math.min(SETTINGS_MAX_WIDTH, vw - (SETTINGS_GUTTER * 2));
+    const rightFromSection = Math.round(vw - rect.right);
+    const maxRightForViewport = Math.max(0, vw - panelWidth);
+    const right = Math.max(0, Math.min(rightFromSection, maxRightForViewport));
 
     return {
       top,
@@ -474,7 +464,7 @@ function Dashboard({ onAiModeChange }) {
       )}
 
       {/* ── Child Selector ── */}
-      <section className="child-section">
+      <section className="child-section" ref={childSectionRef}>
         <div className="child-section-header">
           <div className="child-selector">
             {children.map(child => (
@@ -493,12 +483,13 @@ function Dashboard({ onAiModeChange }) {
             )}
           </div>
           <button
-            ref={settingsBtnRef}
-            className={`settings-icon-btn${showSettings && !isSettingsClosing ? ' active' : ''}`}
+            className={`settings-icon-btn${showSettings ? ' is-hidden' : ''}${showSettings && !isSettingsClosing ? ' active' : ''}`}
             onClick={toggleSettings}
             title={showSettings && !isSettingsClosing ? 'Close settings' : 'Settings'}
             aria-label={showSettings && !isSettingsClosing ? 'Close settings' : 'Open settings'}
             aria-expanded={showSettings && !isSettingsClosing}
+            aria-hidden={showSettings}
+            tabIndex={showSettings ? -1 : 0}
           >
             ⚙
           </button>

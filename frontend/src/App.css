@@ -369,6 +369,7 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .settings-icon-btn { position: relative; z-index: 240; background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 16px; color: var(--text-muted); line-height: 1; flex-shrink: 0; transition: background 0.15s, border-color 0.15s, color 0.15s; }
 .settings-icon-btn:hover { background: var(--bg); color: var(--text); }
 .settings-icon-btn.active { background: none; border-color: var(--border); color: var(--text-muted); }
+.settings-icon-btn.is-hidden { visibility: hidden; pointer-events: none; }
 
 /* Child navigation bar (Journey / Language) */
 .child-nav-bar { display: flex; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -377,7 +378,7 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .child-nav-btn--language { border-color: #a29bfe; color: #6c5ce7; }
 .child-nav-btn--language:hover { background: #a29bfe; color: white; }
 
-/* Settings overlay + panel - anchored to settings button */
+/* Settings overlay + panel - anchored to child section top-right */
 .settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 200; transition: background 0.14s ease-out; }
 .settings-overlay.closing { background: rgba(0,0,0,0); }
 .settings-panel { position: fixed; top: 70px; right: 16px; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: 0 10px 28px rgba(0,0,0,0.14); width: min(360px, 94vw); max-height: calc(100vh - 100px); overflow-y: auto; display: flex; flex-direction: column; transform-origin: top right; animation: settings-pop-in 0.16s ease-out; }
