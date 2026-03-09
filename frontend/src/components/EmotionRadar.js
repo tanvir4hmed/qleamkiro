@@ -50,6 +50,14 @@ function normalizeEmotionScores(emotionScores) {
   return normalized;
 }
 
+function describeEmotionScore(scorePct, isPrimary) {
+  if (isPrimary) return `${scorePct}% (top match)`;
+  if (scorePct >= 60) return `${scorePct}% (strong signal)`;
+  if (scorePct >= 35) return `${scorePct}% (moderate signal)`;
+  if (scorePct >= 15) return `${scorePct}% (weak signal)`;
+  return `${scorePct}% (very low signal)`;
+}
+
 function EmotionRadar({ emotionScores, topEmotions, primaryEmotion }) {
   const normalized = normalizeEmotionScores(emotionScores);
   if (Array.isArray(topEmotions)) {
@@ -67,6 +75,10 @@ function EmotionRadar({ emotionScores, topEmotions, primaryEmotion }) {
     emotion: EMOTION_LABELS[key] || key,
     score: Math.round((normalized[key] || 0) * 100),
     key,
+  }));
+  const descriptions = data.map((item) => ({
+    label: item.emotion,
+    text: describeEmotionScore(item.score, item.key === primaryEmotion),
   }));
 
   const accentColor = primaryEmotion === 'pain' ? '#FF6B6B'
@@ -109,6 +121,14 @@ function EmotionRadar({ emotionScores, topEmotions, primaryEmotion }) {
           />
         </RadarChart>
       </ResponsiveContainer>
+      <div className="acoustic-descriptions">
+        {descriptions.map((d) => (
+          <div key={d.label} className="acoustic-desc-row">
+            <span className="acoustic-desc-label">{d.label}:</span>
+            <span className="acoustic-desc-value">{d.text}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
