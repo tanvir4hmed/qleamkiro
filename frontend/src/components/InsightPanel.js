@@ -294,6 +294,7 @@ function InsightPanel({ insight, childName, childId, ageDays, sessionCount }) {
 
   const { display_type, headline, headline_icon, adult_detected, raw_debug } = insight;
   const displayHeadline = stripDuplicateIconFromHeadline(headline, headline_icon);
+  const showRawData = false;
 
   // Backward compat for old sessions
   const isOldFormat = !display_type && insight.probable_intent;
@@ -304,8 +305,7 @@ function InsightPanel({ insight, childName, childId, ageDays, sessionCount }) {
 
   return (
     <div className="insight-panel" style={{ borderLeftColor: borderColor }}>
-      {/* Debug dump (collapsible) */}
-      {raw_debug && <DebugPanel raw_debug={raw_debug} />}
+      {showRawData && raw_debug && <DebugPanel raw_debug={raw_debug} />}
 
       {/* Headline badge */}
       {displayHeadline && (
