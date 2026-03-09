@@ -84,15 +84,14 @@ const CONFIDENCE_MESSAGES = {
  */
 function fillTemplate(template, narrativeData, childName) {
   const name = childName || 'your baby';
+  const data = narrativeData || {};
   let text = template;
   text = text.replace(/\{childName\}/g, name);
-  if (narrativeData) {
-    text = text.replace(/\{intensity\}/g, narrativeData.intensity || 'moderate');
-    text = text.replace(/\{pitch_desc\}/g, narrativeData.pitch_desc || 'mid-range');
-    text = text.replace(/\{duration_desc\}/g, narrativeData.duration_desc || 'varies in intensity');
-    text = text.replace(/\{pattern_desc\}/g, narrativeData.pattern_desc || 'rhythmic');
-    text = text.replace(/\{builds_or_steady\}/g, narrativeData.builds_or_steady || 'varies');
-  }
+  text = text.replace(/\{intensity\}/g, data.intensity || 'moderate');
+  text = text.replace(/\{pitch_desc\}/g, data.pitch_desc || 'mid-range');
+  text = text.replace(/\{duration_desc\}/g, data.duration_desc || 'varies in intensity');
+  text = text.replace(/\{pattern_desc\}/g, data.pattern_desc || 'rhythmic');
+  text = text.replace(/\{builds_or_steady\}/g, data.builds_or_steady || 'varies');
   return text;
 }
 
