@@ -303,21 +303,12 @@ function Dashboard() {
     setLatestInsight(null);
 
     apiCall(`/child/${selectedChild.child_id}/sessions`)
-      .then(async (data) => {
+      .then(data => {
         if (cancelled) return;
         const s = data.sessions || [];
         setSessions(s);
         const latest = s.find(sess => sess.insight_summary);
-        if (!latest) return;
-
-        // Fetch full insight for the latest session so confidence/radars are accurate.
-        try {
-          const latestDetail = await apiCall(`/session/${latest.session_id}/insight`);
-          if (cancelled) return;
-          setLatestInsight(latestDetail?.insight || latest.insight_summary);
-        } catch (_) {
-          if (!cancelled) setLatestInsight(latest.insight_summary);
-        }
+        if (latest) setLatestInsight(latest.insight_summary);
       })
       .catch(err => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -498,11 +489,7 @@ function Dashboard() {
           {latestInsight && (
             <section className="insight-section">
               <h2>Latest Insight</h2>
-              <InsightPanel
-                insight={latestInsight}
-                childName={selectedChild?.name}
-                childId={selectedChild?.child_id}
-              />
+              <InsightPanel insight={latestInsight} />
             </section>
           )}
 

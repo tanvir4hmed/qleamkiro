@@ -537,8 +537,9 @@ def list_sessions(event: Dict) -> Dict:
                 "display_type": s.get("insight", {}).get("display_type"),
                 "headline": s.get("insight", {}).get("headline"),
                 "headline_icon": s.get("insight", {}).get("headline_icon"),
-                "is_adult": s.get("insight", {}).get("is_adult", False),
+                "is_adult": bool(s.get("insight", {}).get("is_adult", False)),
                 "emotion": s.get("insight", {}).get("emotion"),
+                "emotion_confidence": s.get("insight", {}).get("emotion_confidence"),
                 # Backward compat for old sessions
                 "probable_intent": s.get("insight", {}).get("probable_intent"),
                 "suggested_response": s.get("insight", {}).get("suggested_response"),

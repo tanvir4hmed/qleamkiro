@@ -18,6 +18,11 @@ function SessionCard({ session, onClick }) {
   const headline = summary?.headline;
   const icon = summary?.headline_icon;
   const isAdult = Boolean(summary?.is_adult);
+  const hasConfidenceValue = summary?.emotion_confidence !== null && summary?.emotion_confidence !== undefined;
+  const rawConfidence = hasConfidenceValue ? Number(summary?.emotion_confidence) : Number.NaN;
+  const confidencePct = Number.isFinite(rawConfidence)
+    ? Math.round(rawConfidence > 1 ? rawConfidence : rawConfidence * 100)
+    : null;
 
   // Old format fallback
   const oldIntent = summary?.probable_intent;
@@ -54,6 +59,9 @@ function SessionCard({ session, onClick }) {
 
       {isAdult && (
         <span className="session-card-adult-tag">Adult voice</span>
+      )}
+      {confidencePct !== null && (
+        <div className="intent-confidence">{confidencePct}% confidence</div>
       )}
     </div>
   );
