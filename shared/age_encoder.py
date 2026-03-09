@@ -44,4 +44,6 @@ def encode_age_batch(age_days_list: List[int]) -> np.ndarray:
     Returns:
         np.ndarray of shape (N, 4), dtype float32
     """
+    if not age_days_list:
+        return np.empty((0, AGE_DIM), dtype=np.float32)
     return np.array([encode_age(a) for a in age_days_list], dtype=np.float32)
