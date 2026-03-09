@@ -368,7 +368,7 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 /* Settings icon */
 .settings-icon-btn { position: relative; z-index: 240; background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 16px; color: var(--text-muted); line-height: 1; flex-shrink: 0; transition: background 0.15s, border-color 0.15s, color 0.15s; }
 .settings-icon-btn:hover { background: var(--bg); color: var(--text); }
-.settings-icon-btn.active { background: var(--bg); border-color: var(--primary); color: var(--primary); }
+.settings-icon-btn.active { background: none; border-color: var(--border); color: var(--text-muted); }
 
 /* Child navigation bar (Journey / Language) */
 .child-nav-bar { display: flex; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
