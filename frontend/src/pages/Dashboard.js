@@ -33,7 +33,7 @@ function isBirthDateInSupportedRange(dateString) {
 
 // ─── Settings Panel ──────────────────────────────────────────────────────────
 
-function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess }) {
+function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess, anchor, isClosing }) {
   const [panel, setPanel] = useState(null); // null | 'add' | 'remove'
   const [addName, setAddName] = useState('');
   const [addDob, setAddDob] = useState('');
@@ -88,9 +88,11 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
     setAddError(''); setDeleteError('');
   };
 
+  const panelStyle = anchor ? { top: `${anchor.top}px`, right: `${anchor.right}px` } : undefined;
+
   return (
-    <div className="settings-overlay" onClick={e => { if (e.target === overlayRef.current) onClose(); }} ref={overlayRef}>
-      <div className="settings-panel" role="dialog" aria-label="Settings">
+    <div className={`settings-overlay${isClosing ? ' closing' : ''}`} onClick={e => { if (e.target === overlayRef.current) onClose(); }} ref={overlayRef}>
+      <div className={`settings-panel${isClosing ? ' closing' : ''}`} role="dialog" aria-label="Settings" style={panelStyle}>
         <div className="settings-header">
           <h2>Settings</h2>
           <button className="settings-close-btn" onClick={onClose} aria-label="Close">✕</button>
@@ -213,7 +215,7 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard() {
+function Dashboard({ onAiModeChange }) {
   const navigate = useNavigate();
   const [children, setChildren] = useState([]);
   const [selectedChild, setSelectedChild] = useState(null);
@@ -222,19 +224,49 @@ function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [isSettingsClosing, setIsSettingsClosing] = useState(false);
   const [showAddFirst, setShowAddFirst] = useState(false);
   const [newChildName, setNewChildName] = useState('');
   const [newChildBirthDate, setNewChildBirthDate] = useState('');
   const [notification, setNotification] = useState(null);
-  const [aiMode, setAiMode] = useState(null);
+  const [settingsAnchor, setSettingsAnchor] = useState({ top: 70, right: 16 });
   const [trainingStats, setTrainingStats] = useState(null);
   const notificationTimerRef = useRef(null);
+  const settingsCloseTimerRef = useRef(null);
+  const settingsBtnRef = useRef(null);
   const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
   const showNotification = useCallback((msg) => {
     setNotification(msg);
     clearTimeout(notificationTimerRef.current);
     notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
+  }, []);
+
+  const openSettings = useCallback(() => {
+    clearTimeout(settingsCloseTimerRef.current);
+    setIsSettingsClosing(false);
+    const rect = settingsBtnRef.current?.getBoundingClientRect();
+    if (rect) {
+      setSettingsAnchor({
+        top: Math.round(rect.bottom + 8),
+        right: Math.max(12, Math.round(window.innerWidth - rect.right)),
+      });
+    }
+    setShowSettings(true);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    setIsSettingsClosing(true);
+    clearTimeout(settingsCloseTimerRef.current);
+    settingsCloseTimerRef.current = setTimeout(() => {
+      setShowSettings(false);
+      setIsSettingsClosing(false);
+    }, 140);
+  }, []);
+
+  useEffect(() => () => {
+    clearTimeout(notificationTimerRef.current);
+    clearTimeout(settingsCloseTimerRef.current);
   }, []);
 
   const getAuthHeaders = async () => {
@@ -275,8 +307,8 @@ function Dashboard() {
     }
 
     apiCall('/status')
-      .then(data => setAiMode(data.ai_mode))
-      .catch(() => {});
+      .then(data => onAiModeChange?.(data.ai_mode || null))
+      .catch(() => onAiModeChange?.(null));
 
     apiCall('/child')
       .then(data => {
@@ -292,7 +324,7 @@ function Dashboard() {
         });
       })
       .catch(err => setError(err.message));
-  }, [apiCall]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [apiCall, onAiModeChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load sessions — cancel stale requests to prevent wrong child's insight bleeding through
   useEffect(() => {
@@ -405,8 +437,9 @@ function Dashboard() {
             )}
           </div>
           <button
+            ref={settingsBtnRef}
             className="settings-icon-btn"
-            onClick={() => setShowSettings(true)}
+            onClick={openSettings}
             title="Settings"
             aria-label="Open settings"
           >
@@ -442,21 +475,17 @@ function Dashboard() {
 
       </section>
 
-      {/* ── AI Mode Badge ── */}
-      {aiMode && (
-        <div className={`ai-mode-badge ai-mode-badge--${aiMode.toLowerCase()}`}>
-          AI Mode: {aiMode}
-        </div>
-      )}
 
       {/* ── Settings Panel ── */}
       {showSettings && (
         <SettingsPanel
           children={children}
-          onClose={() => setShowSettings(false)}
+          onClose={closeSettings}
           onAddChild={addChild}
           onDeleteChild={handleDeleteChild}
-          onSuccess={(msg) => { showNotification(msg); setShowSettings(false); }}
+          onSuccess={(msg) => { showNotification(msg); closeSettings(); }}
+          anchor={settingsAnchor}
+          isClosing={isSettingsClosing}
         />
       )}
 
