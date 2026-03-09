@@ -9,6 +9,12 @@ const TYPE_COLORS = {
   mixed: '#FFE66D',
 };
 
+function stripDuplicateIconFromHeadline(headline, icon) {
+  if (!headline || !icon || typeof headline !== 'string') return headline || '';
+  if (!headline.startsWith(icon)) return headline;
+  return headline.slice(icon.length).replace(/^[\s\-–—:]+/, '');
+}
+
 function SessionCard({ session, onClick }) {
   const ts = session.timestamp ? new Date(session.timestamp) : null;
   const summary = session.insight_summary;
@@ -17,6 +23,7 @@ function SessionCard({ session, onClick }) {
   const displayType = summary?.display_type;
   const headline = summary?.headline;
   const icon = summary?.headline_icon;
+  const displayHeadline = stripDuplicateIconFromHeadline(headline, icon);
   const isAdult = Boolean(summary?.is_adult);
   const hasConfidenceValue = summary?.emotion_confidence !== null && summary?.emotion_confidence !== undefined;
   const rawConfidence = hasConfidenceValue ? Number(summary?.emotion_confidence) : Number.NaN;
@@ -41,10 +48,10 @@ function SessionCard({ session, onClick }) {
       </div>
 
       {/* New format: headline from insight */}
-      {headline ? (
+      {displayHeadline ? (
         <div className="session-card-summary">
           {icon && <span className="session-card-icon">{icon}</span>}
-          <span className="session-card-headline">{headline}</span>
+          <span className="session-card-headline">{displayHeadline}</span>
         </div>
       ) : oldIntent?.label ? (
         /* Old format fallback */

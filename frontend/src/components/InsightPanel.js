@@ -32,6 +32,12 @@ const PRIMARY_ACTIONS = {
   content: 'what you\'re doing',
 };
 
+function stripDuplicateIconFromHeadline(headline, icon) {
+  if (!headline || !icon || typeof headline !== 'string') return headline || '';
+  if (!headline.startsWith(icon)) return headline;
+  return headline.slice(icon.length).replace(/^[\s\-–—:]+/, '');
+}
+
 function hasVisibleData(value) {
   if (value === null || value === undefined) return false;
   if (Array.isArray(value)) return value.length > 0;
@@ -52,7 +58,10 @@ function useReveal(sectionCount, baseDelay = 150) {
 }
 
 function ConfidenceBar({ confidence, message }) {
-  const pct = Math.round((confidence || 0) * 100);
+  const raw = Number(confidence);
+  if (!Number.isFinite(raw)) return null;
+  const normalized = raw > 1 ? raw / 100 : raw;
+  const pct = Math.max(0, Math.min(100, Math.round(normalized * 100)));
   const color = pct >= 60 ? '#4ECDC4' : pct >= 30 ? '#FFE66D' : '#C7C7C7';
   return (
     <div className="confidence-section">
@@ -284,6 +293,7 @@ function InsightPanel({ insight, childName, childId, ageDays, sessionCount }) {
   if (!insight) return null;
 
   const { display_type, headline, headline_icon, adult_detected, raw_debug } = insight;
+  const displayHeadline = stripDuplicateIconFromHeadline(headline, headline_icon);
 
   // Backward compat for old sessions
   const isOldFormat = !display_type && insight.probable_intent;
@@ -298,10 +308,10 @@ function InsightPanel({ insight, childName, childId, ageDays, sessionCount }) {
       {raw_debug && <DebugPanel raw_debug={raw_debug} />}
 
       {/* Headline badge */}
-      {headline && (
+      {displayHeadline && (
         <div className="insight-headline insight-headline--animated">
           {headline_icon && <span className="headline-icon">{headline_icon}</span>}
-          <h2 className="headline-text">{headline}</h2>
+          <h2 className="headline-text">{displayHeadline}</h2>
         </div>
       )}
 

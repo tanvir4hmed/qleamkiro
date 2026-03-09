@@ -527,6 +527,11 @@ def list_sessions(event: Dict) -> Dict:
     # Return summary (no embedding vectors)
     summaries = []
     for s in sessions:
+        insight_obj = s.get("insight", {}) if isinstance(s.get("insight"), dict) else {}
+        emotion_confidence = insight_obj.get("emotion_confidence")
+        if emotion_confidence is None:
+            emotion_confidence = (insight_obj.get("probable_intent") or {}).get("confidence")
+
         summaries.append({
             "session_id": s["session_id"],
             "timestamp": s.get("timestamp"),
@@ -534,16 +539,16 @@ def list_sessions(event: Dict) -> Dict:
             "feature_scores": s.get("feature_scores", {}),
             "cluster_id": s.get("cluster_id"),
             "insight_summary": {
-                "display_type": s.get("insight", {}).get("display_type"),
-                "headline": s.get("insight", {}).get("headline"),
-                "headline_icon": s.get("insight", {}).get("headline_icon"),
-                "is_adult": bool(s.get("insight", {}).get("is_adult", False)),
-                "emotion": s.get("insight", {}).get("emotion"),
-                "emotion_confidence": s.get("insight", {}).get("emotion_confidence"),
+                "display_type": insight_obj.get("display_type"),
+                "headline": insight_obj.get("headline"),
+                "headline_icon": insight_obj.get("headline_icon"),
+                "is_adult": bool(insight_obj.get("is_adult", False)),
+                "emotion": insight_obj.get("emotion"),
+                "emotion_confidence": emotion_confidence,
                 # Backward compat for old sessions
-                "probable_intent": s.get("insight", {}).get("probable_intent"),
-                "suggested_response": s.get("insight", {}).get("suggested_response"),
-            } if s.get("insight") else None,
+                "probable_intent": insight_obj.get("probable_intent"),
+                "suggested_response": insight_obj.get("suggested_response"),
+            } if insight_obj else None,
         })
 
     return response(200, {"sessions": summaries, "count": len(summaries)}, event)
