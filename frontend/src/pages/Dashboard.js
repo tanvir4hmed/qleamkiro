@@ -88,7 +88,13 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
     setAddError(''); setDeleteError('');
   };
 
-  const panelStyle = anchor ? { top: `${anchor.top}px`, right: `${anchor.right}px` } : undefined;
+  const panelStyle = anchor ? {
+    top: `${anchor.top}px`,
+    right: anchor.right !== undefined ? `${anchor.right}px` : undefined,
+    left: anchor.left !== undefined ? `${anchor.left}px` : undefined,
+    width: anchor.left !== undefined ? 'auto' : undefined,
+    maxHeight: anchor.maxHeight ? `${anchor.maxHeight}px` : undefined,
+  } : undefined;
 
   return (
     <div className={`settings-overlay${isClosing ? ' closing' : ''}`} onClick={e => { if (e.target === overlayRef.current) onClose(); }} ref={overlayRef}>
@@ -229,11 +235,13 @@ function Dashboard({ onAiModeChange }) {
   const [newChildName, setNewChildName] = useState('');
   const [newChildBirthDate, setNewChildBirthDate] = useState('');
   const [notification, setNotification] = useState(null);
-  const [settingsAnchor, setSettingsAnchor] = useState({ top: 70, right: 16 });
+  const [settingsAnchor, setSettingsAnchor] = useState({ top: 70, right: 16, maxHeight: 420 });
   const [trainingStats, setTrainingStats] = useState(null);
   const notificationTimerRef = useRef(null);
   const settingsCloseTimerRef = useRef(null);
   const settingsBtnRef = useRef(null);
+  const SETTINGS_GUTTER = 12;
+  const SETTINGS_MAX_WIDTH = 360;
   const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
   const showNotification = useCallback((msg) => {
@@ -242,18 +250,51 @@ function Dashboard({ onAiModeChange }) {
     notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
   }, []);
 
+  const calculateSettingsAnchor = useCallback(() => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rect = settingsBtnRef.current?.getBoundingClientRect();
+    const isMobile = vw <= 640;
+    const panelWidth = Math.min(SETTINGS_MAX_WIDTH, vw - (SETTINGS_GUTTER * 2));
+
+    if (!rect) {
+      return {
+        top: 70,
+        right: SETTINGS_GUTTER,
+        maxHeight: Math.max(260, vh - 84),
+      };
+    }
+
+    const desiredTop = Math.round(rect.top + 12);
+    const top = Math.max(SETTINGS_GUTTER, Math.min(desiredTop, vh - 220));
+    const maxHeight = Math.max(260, vh - top - SETTINGS_GUTTER);
+
+    if (isMobile) {
+      return {
+        top,
+        left: SETTINGS_GUTTER,
+        right: SETTINGS_GUTTER,
+        maxHeight,
+      };
+    }
+
+    const rightFromButton = Math.round(vw - rect.right);
+    const maxRight = Math.max(SETTINGS_GUTTER, vw - panelWidth - SETTINGS_GUTTER);
+    const right = Math.max(SETTINGS_GUTTER, Math.min(rightFromButton, maxRight));
+
+    return {
+      top,
+      right,
+      maxHeight,
+    };
+  }, [SETTINGS_GUTTER, SETTINGS_MAX_WIDTH]);
+
   const openSettings = useCallback(() => {
     clearTimeout(settingsCloseTimerRef.current);
     setIsSettingsClosing(false);
-    const rect = settingsBtnRef.current?.getBoundingClientRect();
-    if (rect) {
-      setSettingsAnchor({
-        top: Math.round(rect.bottom + 8),
-        right: Math.max(12, Math.round(window.innerWidth - rect.right)),
-      });
-    }
+    setSettingsAnchor(calculateSettingsAnchor());
     setShowSettings(true);
-  }, []);
+  }, [calculateSettingsAnchor]);
 
   const closeSettings = useCallback(() => {
     setIsSettingsClosing(true);
@@ -263,6 +304,21 @@ function Dashboard({ onAiModeChange }) {
       setIsSettingsClosing(false);
     }, 140);
   }, []);
+
+  const toggleSettings = useCallback(() => {
+    if (showSettings && !isSettingsClosing) {
+      closeSettings();
+      return;
+    }
+    openSettings();
+  }, [showSettings, isSettingsClosing, openSettings, closeSettings]);
+
+  useEffect(() => {
+    if (!showSettings) return undefined;
+    const handleResize = () => setSettingsAnchor(calculateSettingsAnchor());
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [showSettings, calculateSettingsAnchor]);
 
   useEffect(() => () => {
     clearTimeout(notificationTimerRef.current);
@@ -438,10 +494,11 @@ function Dashboard({ onAiModeChange }) {
           </div>
           <button
             ref={settingsBtnRef}
-            className="settings-icon-btn"
-            onClick={openSettings}
-            title="Settings"
-            aria-label="Open settings"
+            className={`settings-icon-btn${showSettings && !isSettingsClosing ? ' active' : ''}`}
+            onClick={toggleSettings}
+            title={showSettings && !isSettingsClosing ? 'Close settings' : 'Settings'}
+            aria-label={showSettings && !isSettingsClosing ? 'Close settings' : 'Open settings'}
+            aria-expanded={showSettings && !isSettingsClosing}
           >
             ⚙
           </button>
