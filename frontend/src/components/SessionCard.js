@@ -17,7 +17,7 @@ function SessionCard({ session, onClick }) {
   const displayType = summary?.display_type;
   const headline = summary?.headline;
   const icon = summary?.headline_icon;
-  const isAdult = summary?.is_adult;
+  const isAdult = Boolean(summary?.is_adult);
 
   // Old format fallback
   const oldIntent = summary?.probable_intent;
