@@ -265,7 +265,7 @@ function Dashboard({ onAiModeChange }) {
       };
     }
 
-    const desiredTop = Math.round(rect.top + 12);
+    const desiredTop = Math.round(rect.bottom + 8);
     const top = Math.max(SETTINGS_GUTTER, Math.min(desiredTop, vh - 220));
     const maxHeight = Math.max(260, vh - top - SETTINGS_GUTTER);
 
