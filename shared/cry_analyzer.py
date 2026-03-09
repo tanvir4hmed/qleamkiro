@@ -18,6 +18,8 @@ Dunstan Baby Language (0-3 months, applicable up to 6 months):
 import logging
 from typing import Any, Dict, Optional
 
+from cry_rules import analyze_cry_rules
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -171,16 +173,27 @@ def analyze_cry(
     Returns:
         Full cry analysis result with display text for insight_generator.
     """
+    debug_trace: Dict[str, Any] = {}
     if classifier_result and classifier_result.get("using_model"):
         primary_key = classifier_result.get("primary_emotion", "discomfort")
         confidence = float(classifier_result.get("confidence", 0.5))
         emotion_scores = classifier_result.get("emotion_probabilities", {})
         top_emotions_raw = classifier_result.get("top_emotions", [])
+        debug_trace = {
+            "model_version": classifier_result.get("model_version", "unknown"),
+            "ml_classifier": classifier_result,
+        }
     else:
-        primary_key = "discomfort"
-        confidence = 0.35
-        emotion_scores = {e: 1.0 / len(EMOTIONS) for e in EMOTIONS}
-        top_emotions_raw = []
+        # Basic-mode / ML-failure path: use handmade rule scoring (not constant discomfort).
+        rule_result = analyze_cry_rules(features or {})
+        primary_key = rule_result.get("primary_emotion", "discomfort")
+        confidence = float(rule_result.get("confidence", 0.35))
+        emotion_scores = rule_result.get("emotion_probabilities", {})
+        top_emotions_raw = rule_result.get("top_emotions", [])
+        debug_trace = {
+            "model_version": rule_result.get("model_version", "rule_based_basic"),
+            "rule_debug": rule_result.get("debug_trace", {}),
+        }
 
     if primary_key not in EMOTIONS:
         primary_key = "discomfort"
@@ -232,7 +245,5 @@ def analyze_cry(
         "what_try": emotion_info.get("what_try", ["Observe and respond to your baby's cues"]),
         "dunstan_sound": dunstan_sound,
         "dunstan_description": dunstan_description,
-        "debug_trace": {
-            "model_version": classifier_result.get("model_version") if classifier_result else "none",
-        },
+        "debug_trace": debug_trace,
     }

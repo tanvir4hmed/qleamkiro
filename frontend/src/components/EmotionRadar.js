@@ -15,13 +15,57 @@ const EMOTION_LABELS = {
 };
 
 const EMOTION_ORDER = ['hungry', 'tired', 'discomfort', 'gas', 'pain', 'burp', 'content'];
+const EMOTION_ALIASES = {
+  hunger: 'hungry',
+  fatigue: 'tired',
+  belly_pain: 'gas',
+  normal: 'content',
+  happy: 'content',
+};
 
-function EmotionRadar({ emotionScores, primaryEmotion }) {
-  if (!emotionScores || Object.keys(emotionScores).length === 0) return null;
+function toRatio(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  if (num > 1) return Math.max(0, Math.min(1, num / 100));
+  return Math.max(0, Math.min(1, num));
+}
+
+function normalizeEmotionScores(emotionScores) {
+  if (!emotionScores || typeof emotionScores !== 'object') return {};
+
+  let source = emotionScores;
+  if (source.emotion_scores && typeof source.emotion_scores === 'object') {
+    source = source.emotion_scores;
+  } else if (source.emotion_probabilities && typeof source.emotion_probabilities === 'object') {
+    source = source.emotion_probabilities;
+  }
+
+  const normalized = {};
+  Object.entries(source || {}).forEach(([rawKey, rawValue]) => {
+    const key = EMOTION_ALIASES[rawKey] || rawKey;
+    const ratio = toRatio(rawValue);
+    if (ratio !== null) normalized[key] = ratio;
+  });
+
+  return normalized;
+}
+
+function EmotionRadar({ emotionScores, topEmotions, primaryEmotion }) {
+  const normalized = normalizeEmotionScores(emotionScores);
+  if (Array.isArray(topEmotions)) {
+    topEmotions.forEach((entry) => {
+      const key = EMOTION_ALIASES[entry?.key] || entry?.key;
+      if (!key || normalized[key] !== undefined) return;
+      const ratio = toRatio(entry?.score);
+      if (ratio !== null) normalized[key] = ratio;
+    });
+  }
+
+  if (Object.keys(normalized).length === 0) return null;
 
   const data = EMOTION_ORDER.map((key) => ({
     emotion: EMOTION_LABELS[key] || key,
-    score: Math.round((emotionScores[key] || 0) * 100),
+    score: Math.round((normalized[key] || 0) * 100),
     key,
   }));
 

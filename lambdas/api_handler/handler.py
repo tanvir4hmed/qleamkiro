@@ -38,6 +38,7 @@ from constants import (
     SOUND_CLUSTER_TABLE,
     TRAINING_CANDIDATE_TABLE,
     TRAINING_FEATURES_TABLE,
+    USE_SAGEMAKER_INTENT_ENDPOINT,
 )
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -833,9 +834,12 @@ def submit_feedback(event: Dict) -> Dict:
 # GET /status — System status (AI mode, feature flags)
 # =============================================================================
 def get_status(event: Dict) -> Dict:
-    sagemaker_enabled = bool(SAGEMAKER_HUBERT_ENDPOINT)
+    endpoint_configured = bool(SAGEMAKER_HUBERT_ENDPOINT)
+    sagemaker_enabled = bool(USE_SAGEMAKER_INTENT_ENDPOINT and endpoint_configured)
     return response(200, {
         "sagemaker_enabled": sagemaker_enabled,
+        "sagemaker_flag_enabled": bool(USE_SAGEMAKER_INTENT_ENDPOINT),
+        "hubert_endpoint_configured": endpoint_configured,
         "ai_mode": "Advanced" if sagemaker_enabled else "Basic",
     }, event)
 

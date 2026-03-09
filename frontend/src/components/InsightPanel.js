@@ -83,6 +83,7 @@ function CryInsight({ insight, childName, childId, ageDays, sessionCount }) {
     emotion,
     emotion_confidence,
     emotion_scores,
+    top_emotions,
     acoustic_features,
     narrative_data,
     also_possible,
@@ -149,7 +150,11 @@ function CryInsight({ insight, childName, childId, ageDays, sessionCount }) {
       {/* 5. Radar charts */}
       <div className={`insight-reveal ${revealed >= 5 ? 'revealed' : ''}`}>
         <div className="radar-charts-row">
-          <EmotionRadar emotionScores={emotion_scores} primaryEmotion={emotion} />
+          <EmotionRadar
+            emotionScores={emotion_scores}
+            topEmotions={top_emotions}
+            primaryEmotion={emotion}
+          />
           <AcousticRadar acousticFeatures={acoustic_features} />
         </div>
       </div>

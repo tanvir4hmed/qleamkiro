@@ -19,6 +19,8 @@ locals {
     MODEL_REGISTRY_TABLE         = var.model_registry_table
     TRAINING_FEATURES_TABLE      = var.training_features_table
     SAGEMAKER_HUBERT_ENDPOINT    = var.sagemaker_hubert_endpoint_name
+    USE_SAGEMAKER_INTENT_ENDPOINT  = tostring(var.use_sagemaker_intent_endpoint)
+    SAGEMAKER_INTENT_ENDPOINT_NAME = var.sagemaker_intent_endpoint_name
     MODEL_VERSIONS_TABLE         = var.model_versions_table
     TRAINING_STEP_FUNCTION_ARN   = var.training_step_function_arn
     STEP_FUNCTION_ARN            = var.step_function_arn
@@ -89,8 +91,6 @@ resource "aws_lambda_function" "insight_generator" {
     variables = merge(local.common_env_vars, {
       BEDROCK_MODEL_ID               = var.bedrock_model_id
       USE_BEDROCK                    = tostring(var.use_bedrock)
-      USE_SAGEMAKER_INTENT_ENDPOINT  = tostring(var.use_sagemaker_intent_endpoint)
-      SAGEMAKER_INTENT_ENDPOINT_NAME = var.sagemaker_intent_endpoint_name
       USE_TRANSCRIBE_FOR_LINGUISTIC  = tostring(var.use_transcribe_for_linguistic)
       TRANSCRIBE_TIMEOUT_SECONDS     = tostring(var.transcribe_timeout_seconds)
     })

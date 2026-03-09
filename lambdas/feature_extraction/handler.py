@@ -36,6 +36,7 @@ from constants import (
     SAGEMAKER_HUBERT_ENDPOINT,
     SESSION_TABLE,
     TRAINING_FEATURES_TABLE,
+    USE_SAGEMAKER_INTENT_ENDPOINT,
 )
 from audio_utils import (
     audio_quality_gate,
@@ -305,7 +306,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     # --- 7.5 HuBERT embeddings + emotion classifier (EARS + BRAIN) ---
     hubert_result = {}
     classifier_result = {}
-    if SAGEMAKER_HUBERT_ENDPOINT and sound_type in ("cry", "mixed"):
+    if USE_SAGEMAKER_INTENT_ENDPOINT and SAGEMAKER_HUBERT_ENDPOINT and sound_type in ("cry", "mixed"):
         try:
             hubert_result = extract_hubert_embeddings(
                 baby_audio, sample_rate, SAGEMAKER_HUBERT_ENDPOINT,
@@ -329,6 +330,8 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 )
         except Exception as e:
             logger.warning(f"HuBERT/classifier error (non-fatal): {e}")
+    elif sound_type in ("cry", "mixed") and not USE_SAGEMAKER_INTENT_ENDPOINT:
+        logger.info("HuBERT call skipped: USE_SAGEMAKER_INTENT_ENDPOINT=false")
 
     # --- 8. Save session ---
     now = datetime.now(timezone.utc).isoformat()
