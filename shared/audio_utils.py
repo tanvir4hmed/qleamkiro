@@ -655,7 +655,7 @@ def audio_quality_gate(
     duration_seconds: float,
     min_duration: float = 3.0,
     max_duration: float = 60.0,
-    min_snr_db: float = 10.0,
+    min_snr_db: float = 6.0,
     max_silence_ratio: float = 0.80,
     max_clipping_ratio: float = 0.005,
     lombard_floor_db: float = -30.0,
@@ -664,7 +664,7 @@ def audio_quality_gate(
     Layer 0: Audio quality gate — run before any feature extraction.
 
     Thresholds per TECHNICAL_PIPELINE.md Layer 0:
-        min_duration=3.0s, min_snr=10dB, silence<0.80, clipping<0.005 (0.5%)
+        min_duration=3.0s, min_snr=6dB, silence<0.80, clipping<0.005 (0.5%)
 
     Checks duration, SNR, silence ratio, clipping, and Lombard noise flag.
     Lombard flag is a warning only and does not fail the gate.
@@ -712,14 +712,14 @@ def audio_quality_gate(
 
     # --- Voiced energy fraction ---
     # Fraction of frames with RMS significantly above the noise floor.
-    # Flat ambient noise has few peaks → fraction < 0.08 means no vocal content.
+    # Flat ambient noise has few peaks → fraction < 0.05 means no vocal content.
     voiced_energy_fraction = 0.0
     if max_rms > 0 and len(rms) > 0:
         n_noise = max(1, len(rms) // 10)
         noise_floor_rms = float(np.mean(np.sort(rms)[:n_noise])) + 1e-10
         voiced_frames = int(np.sum(rms > 3.0 * noise_floor_rms))
         voiced_energy_fraction = float(voiced_frames / max(len(rms), 1))
-        if voiced_energy_fraction < 0.08:
+        if voiced_energy_fraction < 0.05:
             issues.append("no_vocal_activity_detected")
 
     # --- Clipping ---

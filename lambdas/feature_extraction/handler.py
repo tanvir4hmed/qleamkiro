@@ -12,7 +12,7 @@ Simplified pipeline:
   7. Route decision for downstream lambdas
 
 Trigger: Step Function first state (after S3 upload)
-Input:  { child_id, session_id, s3_audio_path, session_context? }
+Input:  { child_id, session_id, s3_audio_path }
 Output: { status, session_id, sound_type, is_adult, features, routing }
 """
 import json
@@ -152,8 +152,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     child_id = event["child_id"]
     session_id = event["session_id"]
     s3_audio_path = event["s3_audio_path"]
-    session_context = event.get("session_context") or {}
-
     # --- 1. Download and decode audio ---
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     audio_bytes = download_audio_from_s3(bucket, s3_audio_path)
@@ -180,7 +178,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if critical:
         return _save_and_return_fast_reject(
             child_id, session_id, s3_audio_path, duration_seconds,
-            quality_gate, session_context, critical, reject_title, reject_message,
+            quality_gate, critical, reject_title, reject_message,
         )
 
     # --- 2.1 Fetch child profile early so all downstream decisions use DOB age ---
@@ -213,7 +211,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if early_reject:
         return _save_and_return_fast_reject(
             child_id, session_id, s3_audio_path, duration_seconds,
-            quality_gate, session_context, early_reject["reasons"],
+            quality_gate, early_reject["reasons"],
             early_reject["title"], early_reject["message"],
         )
 
@@ -292,7 +290,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     if post_reject_reasons:
         return _save_and_return_fast_reject(
             child_id, session_id, s3_audio_path, duration_seconds,
-            quality_gate, session_context, post_reject_reasons, post_reject_title, post_reject_message,
+            quality_gate, post_reject_reasons, post_reject_title, post_reject_message,
             reject_sound_type=sound_type, reject_is_adult=is_adult,
         )
 
@@ -361,7 +359,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "quality_gate": quality_gate,
         "diarization": diarization_result,
         "age_days_at_recording": age_days,
-        "session_context": session_context,
         "routing": routing,
     }
     session_table.put_item(Item=_float_to_decimal(session_item))
@@ -385,7 +382,6 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "duration_seconds": duration_seconds,
         "quality_gate": quality_gate,
         "routing": routing,
-        "session_context": session_context,
         "s3_audio_path": s3_audio_path,
         "fast_reject": False,
     }
@@ -671,7 +667,7 @@ def _get_child_profile(child_id: str) -> Dict:
 
 def _save_and_return_fast_reject(
     child_id, session_id, s3_audio_path, duration_seconds,
-    quality_gate, session_context, critical_issues,
+    quality_gate, critical_issues,
     reject_title: Optional[str] = None,
     reject_message: Optional[str] = None,
     reject_sound_type: str = "silence",
@@ -698,7 +694,6 @@ def _save_and_return_fast_reject(
         "is_adult": reject_is_adult,
         "quality_gate": quality_gate,
         "age_days_at_recording": age_days,
-        "session_context": session_context,
         # "routing": {"sound_type": "silence", "is_adult": False,
         #              "run_transcription": False, "run_cry_analysis": False,
         #              "run_laugh_detection": False},
@@ -735,7 +730,6 @@ def _save_and_return_fast_reject(
         "age_classification": {},
         "age_days": age_days,
         "quality_gate": quality_gate,
-        "session_context": session_context,
         "s3_audio_path": s3_audio_path,
     }
 

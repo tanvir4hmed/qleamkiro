@@ -259,22 +259,15 @@ section h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .notes-input:focus { outline: none; border-color: var(--primary); }
 .feedback-error { font-size: 13px; color: #c0392b; margin-bottom: 8px; }
 
-/* ── Session Context Card ── */
-.context-card { width: 100%; max-width: 420px; border: 1px dashed var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 4px; background: var(--surface); }
-.context-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 10px 14px; background: none; border: none; cursor: pointer; font-size: 13px; color: var(--text-muted); text-align: left; transition: background 0.15s; }
-.context-toggle:hover { background: var(--bg); }
-.context-toggle.open { color: var(--primary); border-bottom: 1px dashed var(--border); }
-.context-toggle-icon { font-size: 11px; flex-shrink: 0; }
-.context-toggle-hint { font-size: 11px; color: var(--text-muted); margin-left: 2px; opacity: 0.75; }
-.context-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
-.context-fields { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
-.context-group { display: flex; flex-direction: column; gap: 6px; }
-.context-group-label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
-.context-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.context-chip { padding: 5px 12px; border: 1.5px solid var(--border); border-radius: 16px; background: var(--bg); font-size: 12px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-.context-chip:hover { border-color: var(--primary); color: var(--primary); }
-.context-chip.selected { border-color: var(--primary); background: rgba(78,205,196,0.10); color: var(--primary); font-weight: 600; }
-.context-inspire { font-size: 11px; color: var(--text-muted); font-style: italic; line-height: 1.5; padding-top: 4px; }
+/* ── AI Mode Badge ── */
+.ai-mode-badge { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 16px; margin: 0 auto 8px; width: fit-content; letter-spacing: 0.3px; }
+.ai-mode-badge--basic { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+.ai-mode-badge--advanced { background: rgba(78,205,196,0.12); color: var(--primary); }
+
+/* ── Training Stats ── */
+.training-stats { font-size: 13px; color: var(--text-muted); text-align: center; padding: 8px 16px; margin-bottom: 12px; }
+.training-stats strong { color: var(--primary); }
+.training-stats-total { opacity: 0.7; }
 
 /* Concept chips — personal concept graph picker (Phase 5, LINGUISTIC stage) */
 .concept-chips-row { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -21,7 +21,6 @@ resource "aws_sfn_state_machine" "processing_pipeline" {
           "child_id.$"        = "$.child_id"
           "session_id.$"      = "$.session_id"
           "s3_audio_path.$"   = "$.s3_audio_path"
-          "session_context.$" = "$.session_context"
         }
         ResultPath = "$.classifier_result"
         Retry = [

@@ -226,6 +226,8 @@ function Dashboard() {
   const [newChildName, setNewChildName] = useState('');
   const [newChildBirthDate, setNewChildBirthDate] = useState('');
   const [notification, setNotification] = useState(null);
+  const [aiMode, setAiMode] = useState(null);
+  const [trainingStats, setTrainingStats] = useState(null);
   const notificationTimerRef = useRef(null);
   const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
@@ -272,6 +274,10 @@ function Dashboard() {
       } catch (_) {}
     }
 
+    apiCall('/status')
+      .then(data => setAiMode(data.ai_mode))
+      .catch(() => {});
+
     apiCall('/child')
       .then(data => {
         const fetched = data.children || [];
@@ -306,6 +312,10 @@ function Dashboard() {
       })
       .catch(err => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
+
+    apiCall(`/child/${selectedChild.child_id}/training-stats`)
+      .then(data => { if (!cancelled) setTrainingStats(data); })
+      .catch(() => { if (!cancelled) setTrainingStats(null); });
 
     return () => { cancelled = true; };
   }, [selectedChild, apiCall]);
@@ -432,6 +442,13 @@ function Dashboard() {
 
       </section>
 
+      {/* ── AI Mode Badge ── */}
+      {aiMode && (
+        <div className={`ai-mode-badge ai-mode-badge--${aiMode.toLowerCase()}`}>
+          AI Mode: {aiMode}
+        </div>
+      )}
+
       {/* ── Settings Panel ── */}
       {showSettings && (
         <SettingsPanel
@@ -453,11 +470,20 @@ function Dashboard() {
             </p>
             <RecordButton
               childId={selectedChild.child_id}
-              childBirthDate={selectedChild.birth_date}
               apiCall={apiCall}
               onComplete={handleSessionComplete}
             />
           </section>
+
+          {/* Training Contribution — only shown when count > 0 */}
+          {trainingStats && trainingStats.child_count > 0 && (
+            <div className="training-stats">
+              Your baby contributed <strong>{trainingStats.child_count}</strong> sample{trainingStats.child_count !== 1 ? 's' : ''} to our AI
+              {trainingStats.total_count > 0 && (
+                <span className="training-stats-total"> ({trainingStats.total_count} total across all families)</span>
+              )}
+            </div>
+          )}
 
           {/* Latest Insight — only shown when there IS a real insight */}
           {latestInsight && (

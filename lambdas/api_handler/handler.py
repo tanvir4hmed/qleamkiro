@@ -32,10 +32,12 @@ from constants import (
     FEEDBACK_TABLE,
     MILESTONES_TABLE,
     S3_BUCKET_NAME,
+    SAGEMAKER_HUBERT_ENDPOINT,
     SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
     SOUND_CLUSTER_TABLE,
     TRAINING_CANDIDATE_TABLE,
+    TRAINING_FEATURES_TABLE,
 )
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -72,6 +74,7 @@ feedback_table = dynamodb.Table(FEEDBACK_TABLE)
 concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
 milestones_table = dynamodb.Table(MILESTONES_TABLE)
 training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE) if TRAINING_CANDIDATE_TABLE else None
+training_features_table = dynamodb.Table(TRAINING_FEATURES_TABLE) if TRAINING_FEATURES_TABLE else None
 
 
 def _decimal_to_float(obj: Any) -> Any:
@@ -548,78 +551,6 @@ def list_sessions(event: Dict) -> Dict:
 # POST /session/upload — Get presigned URL and create session record
 # =============================================================================
 
-_VALID_HEALTH_STATES = {"healthy", "sick", "teething", "other", "unknown"}
-_VALID_ENVIRONMENTS = {"home_quiet", "home_noisy", "outdoor", "car", "other", "unknown"}
-
-_HEALTH_STATE_ALIASES = {
-    "well": "healthy",
-    "healthy": "healthy",
-    "fussy": "other",
-    "tired": "other",
-    "sick": "sick",
-    "teething": "teething",
-    "other": "other",
-    "unknown": "unknown",
-}
-
-_ENVIRONMENT_ALIASES = {
-    "quiet": "home_quiet",
-    "home_quiet": "home_quiet",
-    "noisy": "home_noisy",
-    "home_noisy": "home_noisy",
-    "travel": "car",
-    "car": "car",
-    "outdoor": "outdoor",
-    "other": "other",
-    "unknown": "unknown",
-}
-
-
-def _validate_context(raw: Any) -> Dict:
-    """
-    Validate and sanitize optional session context provided by the parent.
-
-    Accepted fields:
-        feeding_minutes_ago  — int 0-999, minutes since last feeding
-        health_state         — str: healthy|sick|teething|other|unknown
-        environment          — str: home_quiet|home_noisy|outdoor|car|other|unknown
-        notes                — str, max 500 chars (free text)
-
-    Unknown keys are silently dropped.  Invalid values are replaced with None.
-    Returns a clean dict (may be empty if raw is missing/invalid).
-    """
-    if not isinstance(raw, dict):
-        return {}
-
-    ctx: Dict = {}
-
-    # feeding_minutes_ago
-    fma = raw.get("feeding_minutes_ago")
-    if isinstance(fma, (int, float)) and 0 <= int(fma) <= 999:
-        ctx["feeding_minutes_ago"] = int(fma)
-
-    # health_state
-    hs = raw.get("health_state", "")
-    if isinstance(hs, str):
-        normalized_hs = _HEALTH_STATE_ALIASES.get(hs.strip().lower())
-        if normalized_hs in _VALID_HEALTH_STATES:
-            ctx["health_state"] = normalized_hs
-
-    # environment
-    env = raw.get("environment", "")
-    if isinstance(env, str):
-        normalized_env = _ENVIRONMENT_ALIASES.get(env.strip().lower())
-        if normalized_env in _VALID_ENVIRONMENTS:
-            ctx["environment"] = normalized_env
-
-    # notes (free text, capped at 500 chars)
-    notes = raw.get("notes", "")
-    if isinstance(notes, str) and notes.strip():
-        ctx["notes"] = notes.strip()[:500]
-
-    return ctx
-
-
 def upload_session(event: Dict) -> Dict:
     user_id = get_user_id(event)
     body = json.loads(event.get("body") or "{}")
@@ -653,12 +584,6 @@ def upload_session(event: Dict) -> Dict:
             event,
         )
 
-    # [Phase 3] Optional session context (feeding time, health, environment)
-    # Frontend sends the key as "session_context"; accept both for backward compat
-    session_context = _validate_context(
-        body.get("session_context") or body.get("context")
-    )
-
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
@@ -676,7 +601,7 @@ def upload_session(event: Dict) -> Dict:
         ExpiresIn=300,  # 5 minutes
     )
 
-    # Create pending session record (includes context if provided)
+    # Create pending session record
     session_item = {
         "session_id": session_id,
         "child_id": child_id,
@@ -685,15 +610,10 @@ def upload_session(event: Dict) -> Dict:
         "processed": False,
         "timestamp": now,
     }
-    if session_context:
-        session_item["session_context"] = session_context
 
     session_table.put_item(Item=session_item)
 
-    logger.info(
-        f"Created upload session {session_id} for child {child_id}"
-        f"{' with context' if session_context else ''}"
-    )
+    logger.info(f"Created upload session {session_id} for child {child_id}")
 
     return response(200, {
         "session_id": session_id,
@@ -758,8 +678,6 @@ def start_processing(event: Dict) -> Dict:
         "child_id": child_id,
         "session_id": session_id,
         "s3_audio_path": s3_audio_path,
-        # [Phase 3] Session context (feeding time, health, environment) — may be absent
-        "session_context": session.get("session_context") or {},
     }
 
     sfn_client.start_execution(
@@ -798,7 +716,6 @@ def _build_raw_debug_from_session(session: Dict, insight: Dict) -> Dict[str, Any
         "diarization": session.get("diarization", {}),
         "biological": session.get("biological", {}),
         "age_classification": session.get("age_classification", {}),
-        "session_context": session.get("session_context", {}),
         "analysis_output": {
             "display_type": insight.get("display_type"),
             "headline": insight.get("headline"),
@@ -857,8 +774,6 @@ def get_insight(event: Dict) -> Dict:
         "child_name": child_name,
         "insight": insight,
         "timestamp": session.get("timestamp"),
-        # Phase 3: Session context (feeding time, health state, environment)
-        "session_context": session.get("session_context"),
         # Phase 1: Biological validation summary
         "biological": {
             k: v for k, v in (session.get("biological") or {}).items()
@@ -915,6 +830,73 @@ def submit_feedback(event: Dict) -> Dict:
 
 
 # =============================================================================
+# GET /status — System status (AI mode, feature flags)
+# =============================================================================
+def get_status(event: Dict) -> Dict:
+    sagemaker_enabled = bool(SAGEMAKER_HUBERT_ENDPOINT)
+    return response(200, {
+        "sagemaker_enabled": sagemaker_enabled,
+        "ai_mode": "Advanced" if sagemaker_enabled else "Basic",
+    }, event)
+
+
+# =============================================================================
+# GET /child/{child_id}/training-stats — Training contribution counts
+# =============================================================================
+def get_training_stats(event: Dict) -> Dict:
+    child_id = event["pathParameters"]["child_id"]
+    user_id = get_user_id(event)
+
+    # Verify ownership
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    if profile_resp["Item"].get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized"}, event)
+
+    child_count = 0
+    total_count = 0
+
+    if training_features_table:
+        try:
+            # Scan for confirmed samples — count child-specific and total
+            scan_kwargs = {
+                "Select": "COUNT",
+                "FilterExpression": "is_confirmed = :true",
+                "ExpressionAttributeValues": {":true": True},
+            }
+            # Total count
+            resp = training_features_table.scan(**scan_kwargs)
+            total_count = resp.get("Count", 0)
+            while resp.get("LastEvaluatedKey"):
+                resp = training_features_table.scan(
+                    **scan_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"]
+                )
+                total_count += resp.get("Count", 0)
+
+            # Child-specific count
+            child_kwargs = {
+                "Select": "COUNT",
+                "FilterExpression": "is_confirmed = :true AND child_id = :cid",
+                "ExpressionAttributeValues": {":true": True, ":cid": child_id},
+            }
+            resp = training_features_table.scan(**child_kwargs)
+            child_count = resp.get("Count", 0)
+            while resp.get("LastEvaluatedKey"):
+                resp = training_features_table.scan(
+                    **child_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"]
+                )
+                child_count += resp.get("Count", 0)
+        except Exception as e:
+            logger.warning(f"Training stats query failed: {e}")
+
+    return response(200, {
+        "child_count": child_count,
+        "total_count": total_count,
+    }, event)
+
+
+# =============================================================================
 # Router
 # =============================================================================
 ROUTES = {
@@ -923,6 +905,8 @@ ROUTES = {
     ("DELETE", "/child/{child_id}"): delete_child,
     ("DELETE", "/account"): delete_account,
     ("GET", "/child/{child_id}/sessions"): list_sessions,
+    ("GET", "/child/{child_id}/training-stats"): get_training_stats,
+    ("GET", "/status"): get_status,
     ("POST", "/session/upload"): upload_session,
     ("POST", "/session/{session_id}/start"): start_processing,
     ("GET", "/session/{session_id}/insight"): get_insight,

@@ -50,7 +50,10 @@
       "Bash(__NEW_LINE_11d6dc228defb806__ echo -e \"\\\\nDELETE /account endpoint:\")",
       "Bash(__NEW_LINE_11d6dc228defb806__ echo -e \"\\\\nCascade deletion \\(S3 + DynamoDB\\):\")",
       "Bash(__NEW_LINE_11d6dc228defb806__ echo -e \"\\\\nS3 lifecycle rules \\(GDPR belt-and-suspenders\\):\")",
-      "Bash(__NEW_LINE_11d6dc228defb806__ echo -e \"\\\\nAudit logging:\")"
+      "Bash(__NEW_LINE_11d6dc228defb806__ echo -e \"\\\\nAudit logging:\")",
+      "Bash(xargs grep -l \"sagemaker\\\\|SAGEMAKER\\\\|SageMaker\")",
+      "Bash(xargs grep -l \"REACT_APP\\\\|frontend\\\\|environment_variables\")",
+      "Bash(python -m pytest tests/ -v --tb=short)"
     ]
   }
 }
