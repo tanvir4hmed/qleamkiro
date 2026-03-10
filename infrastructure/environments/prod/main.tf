@@ -153,14 +153,14 @@ module "cognito" {
 module "step_functions" {
   source = "../../modules/step_functions"
 
-  project                          = var.project
-  environment                      = var.environment
-  step_functions_role_arn          = module.iam.step_functions_role_arn
-  feature_extraction_lambda_arn    = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
-  insight_generator_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
-  audio_bucket_name                = local.audio_bucket_name
-  enable_s3_event_trigger          = var.enable_s3_event_trigger
-  log_retention_days               = var.log_retention_days
+  project                       = var.project
+  environment                   = var.environment
+  step_functions_role_arn       = module.iam.step_functions_role_arn
+  feature_extraction_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
+  insight_generator_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
+  audio_bucket_name             = local.audio_bucket_name
+  enable_s3_event_trigger       = var.enable_s3_event_trigger
+  log_retention_days            = var.log_retention_days
 
   depends_on = [module.iam]
 }
@@ -177,17 +177,12 @@ module "lambda" {
   private_subnet_ids        = module.vpc.private_subnet_ids
   lambda_security_group_id  = module.vpc.lambda_security_group_id
 
-  s3_bucket_name           = local.audio_bucket_name
-  child_profile_table      = module.dynamodb.child_profile_table_name
-  session_table            = module.dynamodb.session_table_name
-  sound_cluster_table      = module.dynamodb.sound_cluster_table_name
-  semantic_bridge_table    = module.dynamodb.semantic_bridge_table_name
-  feedback_table           = module.dynamodb.feedback_table_name
-  concept_graph_table      = module.dynamodb.concept_graph_table_name
-  milestones_table         = module.dynamodb.milestones_table_name
-  population_model_table   = module.dynamodb.population_model_table_name
-  training_candidate_table = module.dynamodb.training_candidate_table_name
-  model_registry_table     = module.dynamodb.model_registry_table_name
+  s3_bucket_name         = local.audio_bucket_name
+  child_profile_table    = module.dynamodb.child_profile_table_name
+  session_table          = module.dynamodb.session_table_name
+  feedback_table         = module.dynamodb.feedback_table_name
+  population_model_table = module.dynamodb.population_model_table_name
+  model_registry_table   = module.dynamodb.model_registry_table_name
 
   step_function_arn              = module.step_functions.state_machine_arn
   step_function_arn_param_name   = ""

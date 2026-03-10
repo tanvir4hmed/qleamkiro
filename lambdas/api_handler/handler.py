@@ -28,15 +28,10 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     CHILD_PROFILE_TABLE,
-    CONCEPT_GRAPH_TABLE,
     FEEDBACK_TABLE,
-    MILESTONES_TABLE,
     S3_BUCKET_NAME,
     SAGEMAKER_HUBERT_ENDPOINT,
-    SEMANTIC_BRIDGE_TABLE,
     SESSION_TABLE,
-    SOUND_CLUSTER_TABLE,
-    TRAINING_CANDIDATE_TABLE,
     TRAINING_FEATURES_TABLE,
     USE_SAGEMAKER_INTENT_ENDPOINT,
 )
@@ -69,12 +64,7 @@ def get_step_function_arn() -> str:
 
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
-sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
-semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
-concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
-milestones_table = dynamodb.Table(MILESTONES_TABLE)
-training_candidate_table = dynamodb.Table(TRAINING_CANDIDATE_TABLE) if TRAINING_CANDIDATE_TABLE else None
 training_features_table = dynamodb.Table(TRAINING_FEATURES_TABLE) if TRAINING_FEATURES_TABLE else None
 
 
@@ -295,19 +285,13 @@ def create_child(event: Dict) -> Dict:
 def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
     """
     Delete all direct personal data rows for a child.
-    Includes S3 audio files (biometric PII) and training candidates (PII-linked).
     Intentionally does NOT touch de-identified training_features or trained models.
     """
     _key = boto3.dynamodb.conditions.Key
     bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     deleted_sessions = 0
     deleted_feedback = 0
-    deleted_clusters = 0
-    deleted_bridges = 0
-    deleted_concepts = 0
-    deleted_milestones = 0
     deleted_s3_objects = 0
-    deleted_training_candidates = 0
 
     # Delete sessions + their feedback records + S3 audio
     sessions_resp = session_table.query(
@@ -336,62 +320,8 @@ def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
         except Exception as e:
             logger.warning(f"S3 cleanup for session {sid}: {e}")
 
-        # Delete training candidates linked to this session (PII-linked)
-        if training_candidate_table is not None:
-            try:
-                from boto3.dynamodb.conditions import Attr
-                tc_resp = training_candidate_table.scan(
-                    FilterExpression=Attr("session_id").eq(sid),
-                    ProjectionExpression="candidate_id",
-                )
-                for tc in tc_resp.get("Items", []):
-                    training_candidate_table.delete_item(
-                        Key={"candidate_id": tc["candidate_id"]}
-                    )
-                    deleted_training_candidates += 1
-            except Exception as e:
-                logger.warning(f"TrainingCandidate cleanup for session {sid}: {e}")
-
         session_table.delete_item(Key={"session_id": sid})
         deleted_sessions += 1
-
-    # Delete sound clusters
-    clusters_resp = sound_cluster_table.query(
-        IndexName="child_id-last_updated-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for cluster in clusters_resp.get("Items", []):
-        sound_cluster_table.delete_item(Key={"cluster_id": cluster["cluster_id"]})
-        deleted_clusters += 1
-
-    # Delete semantic bridges
-    bridges_resp = semantic_bridge_table.query(
-        IndexName="child_id-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for bridge in bridges_resp.get("Items", []):
-        semantic_bridge_table.delete_item(Key={"bridge_id": bridge["bridge_id"]})
-        deleted_bridges += 1
-
-    # Delete personal concept graph (child_id is PK)
-    concepts_resp = concept_graph_table.query(
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for concept in concepts_resp.get("Items", []):
-        concept_graph_table.delete_item(
-            Key={"child_id": child_id, "concept_id": concept["concept_id"]}
-        )
-        deleted_concepts += 1
-
-    # Delete milestones (child_id is PK)
-    milestones_resp = milestones_table.query(
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for milestone in milestones_resp.get("Items", []):
-        milestones_table.delete_item(
-            Key={"child_id": child_id, "milestone_id": milestone["milestone_id"]}
-        )
-        deleted_milestones += 1
 
     # Delete child profile last
     child_profile_table.delete_item(Key={"child_id": child_id})
@@ -400,11 +330,6 @@ def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
         "deleted_sessions": deleted_sessions,
         "deleted_feedback": deleted_feedback,
         "deleted_s3_objects": deleted_s3_objects,
-        "deleted_training_candidates": deleted_training_candidates,
-        "deleted_clusters": deleted_clusters,
-        "deleted_bridges": deleted_bridges,
-        "deleted_concepts": deleted_concepts,
-        "deleted_milestones": deleted_milestones,
     }
 
 
@@ -426,17 +351,11 @@ def delete_child(event: Dict) -> Dict:
     # Audit log (no PII — child_id is a UUID, no name/birth_date logged)
     logger.info(
         "AUDIT_CHILD_DELETE child_id=%s user_id=%s sessions=%d feedback=%d "
-        "s3_objects=%d training_candidates=%d clusters=%d bridges=%d "
-        "concepts=%d milestones=%d",
+        "s3_objects=%d",
         child_id, user_id,
         deleted.get("deleted_sessions", 0),
         deleted.get("deleted_feedback", 0),
         deleted.get("deleted_s3_objects", 0),
-        deleted.get("deleted_training_candidates", 0),
-        deleted.get("deleted_clusters", 0),
-        deleted.get("deleted_bridges", 0),
-        deleted.get("deleted_concepts", 0),
-        deleted.get("deleted_milestones", 0),
     )
     return response(
         200,
@@ -474,11 +393,6 @@ def delete_account(event: Dict) -> Dict:
         "deleted_sessions": 0,
         "deleted_feedback": 0,
         "deleted_s3_objects": 0,
-        "deleted_training_candidates": 0,
-        "deleted_clusters": 0,
-        "deleted_bridges": 0,
-        "deleted_concepts": 0,
-        "deleted_milestones": 0,
     }
     for child in children:
         child_id = str(child.get("child_id") or "").strip()
@@ -492,11 +406,10 @@ def delete_account(event: Dict) -> Dict:
     # Audit log (no PII — user_id is a Cognito sub, no names logged)
     logger.info(
         "AUDIT_ACCOUNT_DELETE user_id=%s children=%d sessions=%d "
-        "s3_objects=%d training_candidates=%d",
+        "s3_objects=%d",
         user_id, total_deleted_children,
         aggregate.get("deleted_sessions", 0),
         aggregate.get("deleted_s3_objects", 0),
-        aggregate.get("deleted_training_candidates", 0),
     )
     return response(
         200,

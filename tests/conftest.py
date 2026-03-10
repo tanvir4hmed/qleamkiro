@@ -13,8 +13,6 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("CHILD_PROFILE_TABLE", "test-ChildProfile")
 os.environ.setdefault("SESSION_TABLE", "test-Session")
-os.environ.setdefault("SOUND_CLUSTER_TABLE", "test-SoundCluster")
-os.environ.setdefault("SEMANTIC_BRIDGE_TABLE", "test-SemanticBridge")
 os.environ.setdefault("FEEDBACK_TABLE", "test-Feedback")
 os.environ.setdefault("S3_BUCKET_NAME", "test-audio-bucket")
 os.environ.setdefault("TRAINING_FEATURES_TABLE", "test-TrainingFeatures")
@@ -70,50 +68,6 @@ def dynamodb_tables(aws_credentials):
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             }],
-            BillingMode="PAY_PER_REQUEST",
-        )
-
-        # SoundCluster
-        dynamodb.create_table(
-            TableName="test-SoundCluster",
-            KeySchema=[{"AttributeName": "cluster_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "cluster_id", "AttributeType": "S"},
-                {"AttributeName": "child_id", "AttributeType": "S"},
-                {"AttributeName": "last_updated", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[{
-                "IndexName": "child_id-last_updated-index",
-                "KeySchema": [
-                    {"AttributeName": "child_id", "KeyType": "HASH"},
-                    {"AttributeName": "last_updated", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            }],
-            BillingMode="PAY_PER_REQUEST",
-        )
-
-        # SemanticBridge
-        dynamodb.create_table(
-            TableName="test-SemanticBridge",
-            KeySchema=[{"AttributeName": "bridge_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "bridge_id", "AttributeType": "S"},
-                {"AttributeName": "child_id", "AttributeType": "S"},
-                {"AttributeName": "cluster_id", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "child_id-index",
-                    "KeySchema": [{"AttributeName": "child_id", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
-                {
-                    "IndexName": "cluster_id-index",
-                    "KeySchema": [{"AttributeName": "cluster_id", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
-            ],
             BillingMode="PAY_PER_REQUEST",
         )
 

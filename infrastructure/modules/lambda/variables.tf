@@ -42,38 +42,13 @@ variable "session_table" {
   type        = string
 }
 
-variable "sound_cluster_table" {
-  description = "DynamoDB SoundCluster table name"
-  type        = string
-}
-
-variable "semantic_bridge_table" {
-  description = "DynamoDB SemanticBridge table name"
-  type        = string
-}
-
 variable "feedback_table" {
   description = "DynamoDB Feedback table name"
   type        = string
 }
 
-variable "concept_graph_table" {
-  description = "DynamoDB ConceptGraph table name"
-  type        = string
-}
-
-variable "milestones_table" {
-  description = "DynamoDB Milestones table name"
-  type        = string
-}
-
 variable "population_model_table" {
   description = "DynamoDB PopulationModel table name"
-  type        = string
-}
-
-variable "training_candidate_table" {
-  description = "DynamoDB TrainingCandidate table name"
   type        = string
 }
 
