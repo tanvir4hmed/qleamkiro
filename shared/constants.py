@@ -19,8 +19,6 @@ N_FFT: int = 2048
 CHILD_PROFILE_TABLE: str = os.environ.get("CHILD_PROFILE_TABLE", "qleam-dev-ChildProfile")
 SESSION_TABLE: str = os.environ.get("SESSION_TABLE", "qleam-dev-Session")
 FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
-POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
-MODEL_REGISTRY_TABLE: str = os.environ.get("MODEL_REGISTRY_TABLE", "qleam-dev-ModelRegistry")
 TRAINING_FEATURES_TABLE: str = os.environ.get("TRAINING_FEATURES_TABLE", "qleam-dev-TrainingFeatures")
 
 # =============================================================================

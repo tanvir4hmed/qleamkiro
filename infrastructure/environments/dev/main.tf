@@ -203,12 +203,10 @@ module "lambda" {
   private_subnet_ids        = module.vpc.private_subnet_ids
   lambda_security_group_id  = module.vpc.lambda_security_group_id
 
-  s3_bucket_name         = local.audio_bucket_name
-  child_profile_table    = module.dynamodb.child_profile_table_name
-  session_table          = module.dynamodb.session_table_name
-  feedback_table         = module.dynamodb.feedback_table_name
-  population_model_table = module.dynamodb.population_model_table_name
-  model_registry_table   = module.dynamodb.model_registry_table_name
+  s3_bucket_name      = local.audio_bucket_name
+  child_profile_table = module.dynamodb.child_profile_table_name
+  session_table       = module.dynamodb.session_table_name
+  feedback_table      = module.dynamodb.feedback_table_name
 
   step_function_arn              = module.step_functions.state_machine_arn
   step_function_arn_param_name   = ""

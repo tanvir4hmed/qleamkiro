@@ -1,6 +1,6 @@
 # =============================================================================
 # Module: DynamoDB
-# All Qleam data tables: ChildProfile, Session, Feedback, PopulationModel, ModelRegistry, TrainingFeatures, ModelVersions
+# All Qleam data tables: ChildProfile, Session, Feedback, TrainingFeatures, ModelVersions
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -126,82 +126,6 @@ resource "aws_dynamodb_table" "feedback" {
   tags = {
     Name  = "${var.project}-${var.environment}-Feedback"
     Table = "Feedback"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# PopulationModel Table
-# Stage-level online/federated priors used by insight_generator evidence model
-# PK: stage
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "population_model" {
-  name         = "${var.project}-${var.environment}-PopulationModel"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "stage"
-
-  attribute {
-    name = "stage"
-    type = "S"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-PopulationModel"
-    Table = "PopulationModel"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# ModelRegistry Table
-# Stores stage-level trained acoustic model versions and promotion status
-# PK: model_id
-# GSI: developmental_stage-created_at-index
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "model_registry" {
-  name         = "${var.project}-${var.environment}-ModelRegistry"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "model_id"
-
-  attribute {
-    name = "model_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "developmental_stage"
-    type = "S"
-  }
-
-  attribute {
-    name = "created_at"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "developmental_stage-created_at-index"
-    hash_key        = "developmental_stage"
-    range_key       = "created_at"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-ModelRegistry"
-    Table = "ModelRegistry"
   }
 }
 

@@ -10,8 +10,6 @@ locals {
     CHILD_PROFILE_TABLE            = var.child_profile_table
     SESSION_TABLE                  = var.session_table
     FEEDBACK_TABLE                 = var.feedback_table
-    POPULATION_MODEL_TABLE         = var.population_model_table
-    MODEL_REGISTRY_TABLE           = var.model_registry_table
     TRAINING_FEATURES_TABLE        = var.training_features_table
     SAGEMAKER_HUBERT_ENDPOINT      = var.sagemaker_hubert_endpoint_name
     USE_SAGEMAKER_INTENT_ENDPOINT  = tostring(var.use_sagemaker_intent_endpoint)

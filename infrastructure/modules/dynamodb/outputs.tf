@@ -28,26 +28,6 @@ output "feedback_table_arn" {
   value       = aws_dynamodb_table.feedback.arn
 }
 
-output "population_model_table_name" {
-  description = "PopulationModel DynamoDB table name"
-  value       = aws_dynamodb_table.population_model.name
-}
-
-output "population_model_table_arn" {
-  description = "PopulationModel DynamoDB table ARN"
-  value       = aws_dynamodb_table.population_model.arn
-}
-
-output "model_registry_table_name" {
-  description = "ModelRegistry DynamoDB table name"
-  value       = aws_dynamodb_table.model_registry.name
-}
-
-output "model_registry_table_arn" {
-  description = "ModelRegistry DynamoDB table ARN"
-  value       = aws_dynamodb_table.model_registry.arn
-}
-
 output "training_features_table_name" {
   description = "TrainingFeatures DynamoDB table name"
   value       = aws_dynamodb_table.training_features.name
@@ -74,8 +54,6 @@ output "all_table_names" {
     child_profile     = aws_dynamodb_table.child_profile.name
     session           = aws_dynamodb_table.session.name
     feedback          = aws_dynamodb_table.feedback.name
-    population_model  = aws_dynamodb_table.population_model.name
-    model_registry    = aws_dynamodb_table.model_registry.name
     training_features = aws_dynamodb_table.training_features.name
     model_versions    = aws_dynamodb_table.model_versions.name
   }
