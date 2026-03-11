@@ -68,15 +68,6 @@ Only the following DynamoDB tables are active in current code and infrastructure
   - `is_confirmed = true`, `model_confidence_at_time`, `audio_quality_snr`
   - `session_id` is removed during anonymization.
 
-### 3.2 Removed entities (not active)
-The following entities are removed from code paths and infra wiring:
-- `SoundCluster`
-- `SemanticBridge`
-- `ConceptGraph`
-- `Milestones`
-- `TrainingCandidate`
-- `PopulationModel`
-- `ModelRegistry`
 
 ## 4. API Contract (Current)
 
