@@ -1,0 +1,119 @@
+# QLEAM DEV AWS Report (Basic vs Advanced)
+
+Date: March 24, 2026  
+Environment: DEV only  
+Region: us-east-1  
+Currency: USD
+
+## 1) List of AWS Services Used
+
+- Amazon API Gateway
+- AWS Lambda
+- AWS Step Functions
+- Amazon S3
+- Amazon DynamoDB
+- Amazon Cognito
+- Amazon CloudFront
+- Amazon VPC (Subnets, NAT Gateway, VPC Endpoints, Security Groups)
+- AWS IAM
+- Amazon ECR
+- Amazon CloudWatch
+- Amazon SNS
+- Amazon EventBridge
+- AWS Systems Manager Parameter Store
+- Amazon Bedrock
+- Amazon Transcribe
+- Amazon SageMaker Serverless Inference
+- AWS X-Ray
+
+## 2) Brief Justification for Each Service (Project-Specific)
+
+| Service | Why this project uses it |
+|---|---|
+| Amazon API Gateway | Exposes and secures the frontend APIs (`/child`, `/session/upload`, `/session/{id}/start`, `/session/{id}/insight`, `/feedback`, `/status`) and routes them to `api_handler` Lambda. |
+| AWS Lambda | Runs core backend units (`api_handler`, `feature_extraction`, `insight_generator`, `feedback_processor`, `training_check`, `model_trainer`) with autoscaling and no server management. |
+| AWS Step Functions | Orchestrates the audio pipeline (`AudioClassifier -> InsightGenerator`) and training pipeline with retries, failure branching, and execution history. |
+| Amazon S3 | Stores uploaded audio files, frontend static assets, Terraform remote state, and model artifacts. |
+| Amazon DynamoDB | Stores child profile, session records, feedback records, training features, and model versions with low-latency reads/writes. |
+| Amazon Cognito | Provides managed sign-in/auth and JWT authorizer integration for API Gateway protected routes. |
+| Amazon CloudFront | Delivers the frontend via CDN with HTTPS and caching, reducing origin load and improving response time. |
+| Amazon VPC | Keeps Lambda in private subnets, controls egress via NAT, and uses security groups/endpoints for network isolation and safer traffic paths. |
+| AWS IAM | Enforces least-privilege permissions between Lambda, Step Functions, S3, DynamoDB, Bedrock, Transcribe, and SageMaker. |
+| Amazon ECR | Stores Lambda container images and supports versioned deployments and rollbacks through CI/CD. |
+| Amazon CloudWatch | Collects logs and metrics, hosts dashboard, and powers operational alarms for Lambda/API/Step Functions. |
+| Amazon SNS | CloudWatch alarms publish to SNS topic; SNS fans out to email/subscribers as a centralized incident notification channel. |
+| Amazon EventBridge | Triggers daily training-check execution and supports event-driven pipeline triggering patterns. |
+| AWS Systems Manager Parameter Store | Stores runtime references/config (for example, Step Function ARN path) outside application code. |
+| Amazon Bedrock | Supports model-based insight text generation path for parent-facing narrative output (when enabled in runtime path). |
+| Amazon Transcribe | Performs speech-to-text in linguistic flow (`boto3.client("transcribe")`) so transcript/word analysis can be generated. |
+| Amazon SageMaker Serverless Inference | Hosts HuBERT endpoint for Advanced-mode acoustic inference (`boto3.client("sagemaker-runtime")` + endpoint invocation). |
+| AWS X-Ray | Captures end-to-end traces across API/Lambda/Step Functions to speed up debugging and latency root-cause analysis. |
+
+## 3) Resource Optimization Strategies (and Implementation Status)
+
+| Optimization Strategy | Status | Evidence in project |
+|---|---|---|
+| DynamoDB on-demand billing (`PAY_PER_REQUEST`) | Implemented | `infrastructure/modules/dynamodb/main.tf` |
+| S3 lifecycle (archive + expiration) for audio | Implemented | `infrastructure/modules/s3/main.tf` |
+| CloudFront lower cost class (`PriceClass_100`) | Implemented | `infrastructure/modules/frontend/main.tf` |
+| ECR lifecycle (keep last 10 images) | Implemented | `infrastructure/modules/ecr/main.tf` |
+| Log retention window control (DEV=30 days) | Implemented | `log_retention_days` in env + log group retention in modules |
+| VPC endpoints for S3 and DynamoDB | Implemented | `infrastructure/modules/vpc/main.tf` |
+| Keep advanced inference off by default (`use_sagemaker_intent_endpoint=false`) | Implemented | `infrastructure/environments/dev/terraform.tfvars` |
+| Disable NAT in DEV to reduce fixed baseline | Not implemented | DEV still has `enable_nat_gateway=true` |
+
+## 4) Expected Running Costs
+
+### 4.1 Basic Mode Cost Estimation (SageMaker calls excluded)
+
+| Service Cost Head | 0 Traffic (USD/month) | 10,000 Traffic (USD/month) |
+|---|---:|---:|
+| VPC baseline (NAT Gateway + Public IPv4) | 73.00 | 73.00 |
+| NAT data processing | 0.00 | 0.90 |
+| S3 storage (20 GB) | 0.46 | 0.46 |
+| S3 request charges | 0.00 | 0.06 |
+| DynamoDB on-demand operations | 0.00 | 0.02 |
+| DynamoDB PITR backup | 0.20 | 0.20 |
+| API Gateway requests | 0.00 | 0.04 |
+| Lambda requests + compute | 0.00 | 0.00 |
+| Step Functions transitions | 0.00 | 1.15 |
+| CloudWatch (alarms + dashboard) | 4.30 | 4.30 |
+| ECR image storage | 0.80 | 0.80 |
+| Bedrock usage | 0.00 | 3.13 |
+| Transcribe usage | 0.00 | 75.00 |
+| Other low-volume services (Cognito, SNS, EventBridge, SSM, X-Ray, CloudFront) | 0.00 | 0.00 |
+| **TOTAL (BASIC MODE)** | **78.76** | **159.06** |
+
+### 4.2 Advanced Mode Cost Estimation (includes SageMaker HuBERT processing)
+
+Assumption for 10,000 traffic case: HuBERT invoked with ~20s average processing per call on 3 GB SageMaker serverless endpoint.
+
+| Service Cost Head | 0 Traffic (USD/month) | 10,000 Traffic (USD/month) |
+|---|---:|---:|
+| VPC baseline (NAT Gateway + Public IPv4) | 73.00 | 73.00 |
+| NAT data processing | 0.00 | 0.90 |
+| S3 storage (20 GB) | 0.46 | 0.46 |
+| S3 request charges | 0.00 | 0.06 |
+| DynamoDB on-demand operations | 0.00 | 0.02 |
+| DynamoDB PITR backup | 0.20 | 0.20 |
+| API Gateway requests | 0.00 | 0.04 |
+| Lambda requests + compute | 0.00 | 0.00 |
+| Step Functions transitions | 0.00 | 1.15 |
+| CloudWatch (alarms + dashboard) | 4.30 | 4.30 |
+| ECR image storage | 0.80 | 0.80 |
+| Bedrock usage | 0.00 | 3.13 |
+| Transcribe usage | 0.00 | 75.00 |
+| SageMaker serverless inference (HuBERT) | 0.00 | 13.24 |
+| Other low-volume services (Cognito, SNS, EventBridge, SSM, X-Ray, CloudFront) | 0.00 | 0.00 |
+| **TOTAL (ADVANCED MODE)** | **78.76** | **172.30** |
+
+### 4.3 Total Summary (One Glance)
+
+| Traffic (Monthly Requests) | Basic Mode (USD/month) | Advanced Mode (USD/month) |
+|---:|---:|---:|
+| 0 | **~79.00** | **~79.00** |
+| 10,000 | **159.06** | **172.30** |
+
+**Total Summary (One Glance):**
+- **Basic Mode:** `~$79` to `$159.06` / month (0 to 10,000 requests)
+- **Advanced Mode:** `~$79` to `$172.30` / month (0 to 10,000 requests)
