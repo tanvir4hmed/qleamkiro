@@ -233,7 +233,6 @@ def _step_train(event: Dict) -> Dict:
     val_accuracy = float(np.mean(val_preds == y_val))
 
     logger.info(f"Validation accuracy: {val_accuracy:.3f}")
-
     # Save model weights to S3
     model_key = f"{prefix}/model_weights.npz"
     buf = io.BytesIO()
@@ -249,6 +248,7 @@ def _step_train(event: Dict) -> Dict:
         "train_samples": len(X_emb_train),
         "val_samples": len(X_emb_val),
         "train_loss_final": train_history[-1] if train_history else None,
+        "stopped_epoch": len(train_history),
     }
 
 
@@ -396,22 +396,54 @@ def _forward_two_branch(params, X_emb, X_age):
 
 
 def _train_two_branch(X_emb, X_age, y, n_classes, epochs=50, lr=0.001, reg=1e-4, batch_size=32):
-    """Train two-branch network with full manual backpropagation."""
+    """Train two-branch network with full manual backpropagation.
+
+    Improvements over naive fixed-LR loop:
+    - Exponential LR decay (0.95 per epoch, floor 1e-5): takes big steps early,
+      fine-tunes later without overshooting.
+    - Early stopping (patience=8, min_delta=0.001): stops when validation loss
+      stops improving, returns the best checkpoint — not the final overfit state.
+    - Internal val split (15% of training data) used only for early stopping;
+      the outer val split in _step_train is still used for final accuracy reporting.
+    """
     params = _init_params(n_classes)
     n_samples = len(X_emb)
     losses = []
 
+    # Early stopping / LR decay config
+    PATIENCE = 8
+    MIN_DELTA = 0.001
+    LR_DECAY = 0.95
+    MIN_LR = 1e-5
+
+    # Internal val split for early stopping (15% of training data)
+    n_internal_val = max(1, int(n_samples * 0.15))
+    perm_init = np.random.permutation(n_samples)
+    iv_idx = perm_init[:n_internal_val]
+    it_idx = perm_init[n_internal_val:]
+
+    X_emb_t, X_age_t, y_t = X_emb[it_idx], X_age[it_idx], y[it_idx]
+    X_emb_v, X_age_v, y_v = X_emb[iv_idx], X_age[iv_idx], y[iv_idx]
+
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+    best_params = None
+    current_lr = lr
+
     for epoch in range(epochs):
-        perm = np.random.permutation(n_samples)
-        X_emb_s = X_emb[perm]
-        X_age_s = X_age[perm]
-        y_s = y[perm]
+        # LR decay
+        current_lr = max(MIN_LR, lr * (LR_DECAY ** epoch))
+
+        perm = np.random.permutation(len(X_emb_t))
+        X_emb_s = X_emb_t[perm]
+        X_age_s = X_age_t[perm]
+        y_s = y_t[perm]
 
         epoch_loss = 0.0
         n_batches = 0
 
-        for start in range(0, n_samples, batch_size):
-            end = min(start + batch_size, n_samples)
+        for start in range(0, len(X_emb_t), batch_size):
+            end = min(start + batch_size, len(X_emb_t))
             xe = X_emb_s[start:end]
             xa = X_age_s[start:end]
             yb = y_s[start:end]
@@ -435,7 +467,7 @@ def _train_two_branch(X_emb, X_age, y, n_classes, epochs=50, lr=0.001, reg=1e-4,
 
             probs = _softmax_batch(logits)
 
-            # Loss
+            # Loss (cross-entropy + L2 regularisation)
             loss = -np.log(probs[np.arange(bs), yb] + 1e-9).mean()
             for k in params:
                 if k.startswith("W_"):
@@ -485,7 +517,7 @@ def _train_two_branch(X_emb, X_age, y, n_classes, epochs=50, lr=0.001, reg=1e-4,
             dW_age1 = xa.T @ dz_age1 + reg * params["W_age1"]
             db_age1 = dz_age1.sum(axis=0)
 
-            # Update all params
+            # Update all params with current (decayed) LR
             grads = {
                 "W_emb1": dW_emb1, "b_emb1": db_emb1,
                 "W_emb2": dW_emb2, "b_emb2": db_emb2,
@@ -495,15 +527,38 @@ def _train_two_branch(X_emb, X_age, y, n_classes, epochs=50, lr=0.001, reg=1e-4,
                 "W_fc2": dW_fc2,   "b_fc2": db_fc2,
             }
             for k in params:
-                params[k] -= lr * grads[k]
+                params[k] -= current_lr * grads[k]
 
         avg_loss = epoch_loss / max(1, n_batches)
         losses.append(float(avg_loss))
 
-        if (epoch + 1) % 10 == 0:
-            logger.info(f"Epoch {epoch+1}/{epochs} loss={avg_loss:.4f}")
+        # --- Early stopping: compute validation loss ---
+        val_logits = _forward_two_branch(params, X_emb_v, X_age_v)
+        val_probs = _softmax_batch(val_logits)
+        val_loss = float(-np.log(val_probs[np.arange(len(y_v)), y_v] + 1e-9).mean())
 
-    return params, losses
+        if val_loss < best_val_loss - MIN_DELTA:
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+            best_params = {k: v.copy() for k, v in params.items()}
+        else:
+            epochs_no_improve += 1
+
+        if (epoch + 1) % 10 == 0:
+            logger.info(
+                f"Epoch {epoch+1}/{epochs} loss={avg_loss:.4f} "
+                f"val_loss={val_loss:.4f} lr={current_lr:.6f}"
+            )
+
+        if epochs_no_improve >= PATIENCE:
+            logger.info(
+                f"Early stopping at epoch {epoch+1} "
+                f"(no improvement for {PATIENCE} epochs, best_val_loss={best_val_loss:.4f})"
+            )
+            break
+
+    # Return best checkpoint (not final — avoids returning overfit weights)
+    return best_params if best_params is not None else params, losses
 
 
 # ---------------------------------------------------------------------------
@@ -516,9 +571,11 @@ def _get_active_model_accuracy() -> float:
     try:
         mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
         from boto3.dynamodb.conditions import Key, Attr
-        response = mv_table.scan(
-            FilterExpression=Attr("model_type").eq("emotion_classifier") & Attr("active").eq(True),
-            Limit=1,
+        # Query by partition key (model_type) — no scan needed
+        response = mv_table.query(
+            KeyConditionExpression=Key("model_type").eq("emotion_classifier"),
+            FilterExpression=Attr("active").eq(True),
+            Limit=5,
         )
         items = response.get("Items", [])
         if items:
@@ -534,9 +591,11 @@ def _get_active_model_version() -> int:
     try:
         mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
         from boto3.dynamodb.conditions import Key, Attr
-        response = mv_table.scan(
-            FilterExpression=Attr("model_type").eq("emotion_classifier") & Attr("active").eq(True),
-            Limit=1,
+        # Query by partition key (model_type) — no scan needed
+        response = mv_table.query(
+            KeyConditionExpression=Key("model_type").eq("emotion_classifier"),
+            FilterExpression=Attr("active").eq(True),
+            Limit=5,
         )
         items = response.get("Items", [])
         if items:

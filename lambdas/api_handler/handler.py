@@ -114,12 +114,9 @@ def _float_to_decimal(obj: Any) -> Any:
     if isinstance(obj, bool):
         return Decimal("1") if obj else Decimal("0")
     
-    # Handle string - try to convert if it looks like a number
+    # Strings are always returned as-is — never coerce to Decimal
     if isinstance(obj, str):
-        try:
-            return Decimal(obj)
-        except:
-            return obj  # Return as-is if not a valid number string
+        return obj
     
     # Handle dict recursively
     if isinstance(obj, dict):

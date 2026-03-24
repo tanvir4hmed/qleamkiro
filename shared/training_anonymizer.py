@@ -174,33 +174,89 @@ def anonymize_and_confirm(
         return {"status": "error", "feature_id": feature_id, "error": str(e)}
 
 
+# In-process cache for confirmed sample count (per Lambda warm instance).
+# Avoids a full table scan on every emotion prediction call.
+# TTL: 5 minutes — stale by at most one feedback cycle, acceptable.
+_confirmed_count_cache: Optional[int] = None
+_confirmed_count_cache_ts: float = 0.0
+_CONFIRMED_COUNT_CACHE_TTL_S: float = 300.0  # 5 minutes
+
+
 def count_confirmed_samples(training_features_table) -> int:
-    """Count total confirmed training samples."""
+    """Count total confirmed training samples.
+
+    Uses an in-process cache (5 min TTL) to avoid a full DynamoDB scan
+    on every emotion prediction call.
+    """
+    import time
+    global _confirmed_count_cache, _confirmed_count_cache_ts
+
+    now = time.monotonic()
+    if (
+        _confirmed_count_cache is not None
+        and (now - _confirmed_count_cache_ts) < _CONFIRMED_COUNT_CACHE_TTL_S
+    ):
+        return _confirmed_count_cache
+
     try:
         from boto3.dynamodb.conditions import Attr
-        response = training_features_table.scan(
-            FilterExpression=Attr("is_confirmed").eq(True),
-            Select="COUNT",
-        )
-        return response.get("Count", 0)
+        total = 0
+        scan_kwargs: Dict = {
+            "FilterExpression": Attr("is_confirmed").eq(True),
+            "Select": "COUNT",
+        }
+        resp = training_features_table.scan(**scan_kwargs)
+        total += resp.get("Count", 0)
+        while resp.get("LastEvaluatedKey"):
+            resp = training_features_table.scan(
+                **scan_kwargs,
+                ExclusiveStartKey=resp["LastEvaluatedKey"],
+            )
+            total += resp.get("Count", 0)
+
+        _confirmed_count_cache = total
+        _confirmed_count_cache_ts = now
+        return total
     except Exception as e:
         logger.warning(f"Failed to count confirmed samples: {e}")
-        return 0
+        return _confirmed_count_cache if _confirmed_count_cache is not None else 0
 
 
 def _find_training_feature(session_id: str, training_features_table) -> Optional[Dict]:
-    """Find the TrainingFeatures record for a session (by session_id GSI or scan)."""
+    """Find the TrainingFeatures record for a session.
+
+    Tries the session_id-index GSI first (O(1)).
+    Falls back to a filtered scan only if the GSI is not available
+    (e.g. during local testing or before the index is created).
+    """
     if training_features_table is None:
         return None
 
+    # --- GSI path (preferred) ---
+    try:
+        import boto3
+        resp = training_features_table.query(
+            IndexName="session_id-index",
+            KeyConditionExpression=boto3.dynamodb.conditions.Key("session_id").eq(session_id),
+            Limit=1,
+        )
+        items = resp.get("Items", [])
+        if items:
+            return _decimal_to_float(items[0])
+        # GSI returned 0 items — record genuinely not found
+        return None
+    except Exception as gsi_err:
+        # GSI doesn't exist yet — fall back to scan (safe degradation)
+        logger.debug(f"GSI query failed ({gsi_err}), falling back to scan")
+
+    # --- Scan fallback ---
     try:
         from boto3.dynamodb.conditions import Attr
-        # session_id is stored during Phase 2 embedding extraction
-        response = training_features_table.scan(
+        resp = training_features_table.scan(
             FilterExpression=Attr("session_id").eq(session_id),
             Limit=1,
         )
-        items = response.get("Items", [])
+        items = resp.get("Items", [])
         if items:
             return _decimal_to_float(items[0])
     except Exception as e:
