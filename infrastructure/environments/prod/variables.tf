@@ -62,13 +62,13 @@ variable "audio_retention_days" {
 
 # Lambda
 variable "alpha_value" {
-  description = "EMA smoothing factor for baseline updates"
+  description = "Alpha blending value for model scoring"
   type        = number
   default     = 0.3
 }
 
 variable "cluster_similarity_threshold" {
-  description = "Cosine similarity threshold for cluster assignment"
+  description = "Similarity threshold for sound clustering"
   type        = number
   default     = 0.85
 }

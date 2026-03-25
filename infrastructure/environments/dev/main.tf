@@ -174,18 +174,19 @@ module "frontend" {
 module "step_functions" {
   source = "../../modules/step_functions"
 
-  project                          = var.project
-  environment                      = var.environment
-  step_functions_role_arn          = module.iam.step_functions_role_arn
-  feature_extraction_lambda_arn    = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
-  cluster_engine_lambda_arn        = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-cluster-engine"
-  insight_generator_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
-  developmental_tracker_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-developmental-tracker"
-  concept_decoder_lambda_arn       = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-concept-decoder"
-  speech_analyzer_lambda_arn       = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-speech-analyzer"
-  audio_bucket_name                = local.audio_bucket_name
-  enable_s3_event_trigger          = var.enable_s3_event_trigger
-  log_retention_days               = var.log_retention_days
+  project                       = var.project
+  environment                   = var.environment
+  step_functions_role_arn       = module.iam.step_functions_role_arn
+  feature_extraction_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-feature-extraction"
+  insight_generator_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-insight-generator"
+  audio_bucket_name             = local.audio_bucket_name
+  enable_s3_event_trigger       = var.enable_s3_event_trigger
+  log_retention_days            = var.log_retention_days
+
+  # Training pipeline
+  enable_training_pipeline  = true
+  training_check_lambda_arn = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-training-check"
+  model_trainer_lambda_arn  = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-${var.environment}-model-trainer"
 
   depends_on = [module.iam]
 }
@@ -202,20 +203,11 @@ module "lambda" {
   private_subnet_ids        = module.vpc.private_subnet_ids
   lambda_security_group_id  = module.vpc.lambda_security_group_id
 
-  s3_bucket_name           = local.audio_bucket_name
-  child_profile_table      = module.dynamodb.child_profile_table_name
-  session_table            = module.dynamodb.session_table_name
-  sound_cluster_table      = module.dynamodb.sound_cluster_table_name
-  semantic_bridge_table    = module.dynamodb.semantic_bridge_table_name
-  feedback_table           = module.dynamodb.feedback_table_name
-  concept_graph_table      = module.dynamodb.concept_graph_table_name
-  milestones_table         = module.dynamodb.milestones_table_name
-  population_model_table   = module.dynamodb.population_model_table_name
-  training_candidate_table = module.dynamodb.training_candidate_table_name
-  model_registry_table     = module.dynamodb.model_registry_table_name
+  s3_bucket_name      = local.audio_bucket_name
+  child_profile_table = module.dynamodb.child_profile_table_name
+  session_table       = module.dynamodb.session_table_name
+  feedback_table      = module.dynamodb.feedback_table_name
 
-  alpha_value                    = var.alpha_value
-  cluster_similarity_threshold   = var.cluster_similarity_threshold
   step_function_arn              = module.step_functions.state_machine_arn
   step_function_arn_param_name   = ""
   use_bedrock                    = var.use_bedrock
@@ -231,7 +223,24 @@ module "lambda" {
   image_tag           = var.lambda_image_tag
   allowed_origins     = local.allowed_origins
 
-  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions]
+  # HuBERT SageMaker endpoint
+  sagemaker_hubert_endpoint_name = module.sagemaker.endpoint_name
+  training_features_table        = module.dynamodb.training_features_table_name
+  model_versions_table           = module.dynamodb.model_versions_table_name
+  training_step_function_arn     = module.step_functions.training_state_machine_arn
+
+  depends_on = [module.vpc, module.iam, module.dynamodb, module.s3, module.ecr, module.step_functions, module.sagemaker]
+}
+
+# -----------------------------------------------------------------------------
+# SageMaker (HuBERT Feature Extraction)
+# -----------------------------------------------------------------------------
+module "sagemaker" {
+  source = "../../modules/sagemaker"
+
+  enabled     = true # Endpoint at $0 idle; calls controlled by use_sagemaker_intent_endpoint in tfvars
+  project     = var.project
+  environment = var.environment
 }
 
 # -----------------------------------------------------------------------------
@@ -279,15 +288,11 @@ module "cloudwatch" {
 
   lambda_function_names = [
     module.lambda.feature_extraction_function_name,
-    module.lambda.cluster_engine_function_name,
-    module.lambda.reinforcement_engine_function_name,
     module.lambda.insight_generator_function_name,
     module.lambda.feedback_processor_function_name,
     module.lambda.api_handler_function_name,
-    module.lambda.nlp_processor_function_name,
-    module.lambda.developmental_tracker_function_name,
-    module.lambda.concept_decoder_function_name,
-    module.lambda.speech_analyzer_function_name,
+    module.lambda.training_check_function_name,
+    module.lambda.model_trainer_function_name,
   ]
 
   state_machine_arn            = module.step_functions.state_machine_arn

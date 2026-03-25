@@ -168,6 +168,47 @@ jobs:
             -backend-config="encrypt=true"
 
       # ────────────────────────────────────────────────────────────────────────
+      # Phase 0: One-time migration cleanup (before ECR target apply)
+      # Empty deprecated repos so Terraform can destroy them without force_delete
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Migration - Empty deprecated ECR repositories (one-time)
+        run: |
+          set -euo pipefail
+
+          DEPRECATED_REPOS="qleam-dev-concept_decoder qleam-dev-nlp_processor qleam-dev-developmental_tracker qleam-dev-speech_analyzer"
+
+          echo "🧹 One-time migration: emptying deprecated ECR repositories..."
+          for REPO in $DEPRECATED_REPOS; do
+            if ! aws ecr describe-repositories --repository-names "$REPO" >/dev/null 2>&1; then
+              echo "  $REPO not found (already removed)"
+              continue
+            fi
+
+            echo "  Cleaning images from $REPO..."
+            while true; do
+              IMAGE_COUNT=$(aws ecr list-images \
+                --repository-name "$REPO" \
+                --query 'length(imageIds)' \
+                --output text)
+
+              if [ "$IMAGE_COUNT" = "0" ] || [ "$IMAGE_COUNT" = "None" ]; then
+                echo "  ✅ $REPO is empty"
+                break
+              fi
+
+              IMAGE_IDS_JSON=$(aws ecr list-images \
+                --repository-name "$REPO" \
+                --max-results 1000 \
+                --query 'imageIds' \
+                --output json)
+
+              aws ecr batch-delete-image \
+                --repository-name "$REPO" \
+                --image-ids "$IMAGE_IDS_JSON" >/dev/null
+            done
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
       # Phase 1: Create ECR repositories first (Lambda needs images)
       # ────────────────────────────────────────────────────────────────────────
       - name: Terraform Apply - ECR Repositories
@@ -175,7 +216,8 @@ jobs:
           cd infrastructure/environments/dev
           echo "📦 Phase 1: Creating ECR repositories..."
           terraform apply -auto-approve -var-file=terraform.tfvars \
-            -target=module.ecr 2>&1 || true
+            -target=module.ecr \
+            -target=module.sagemaker
 
       # ────────────────────────────────────────────────────────────────────────
       # Phase 2: Push placeholder images to ECR
@@ -192,7 +234,7 @@ jobs:
           echo "📦 Phase 2: Checking which Lambda functions need placeholder images..."
 
           # List of Lambda function names (matching ECR repo names, underscores)
-          LAMBDA_FUNCTIONS="feature_extraction cluster_engine reinforcement_engine insight_generator feedback_processor api_handler nlp_processor developmental_tracker concept_decoder speech_analyzer"
+          LAMBDA_FUNCTIONS="feature_extraction insight_generator feedback_processor api_handler training_check model_trainer"
 
           PUSHED_ANY=false
 
@@ -230,8 +272,57 @@ jobs:
           echo "══════════════════════════════════════════════════════"
 
       # ────────────────────────────────────────────────────────────────────────
+      # Phase 2.1: Remove manually-managed S3 bucket from Terraform state
+      # The models bucket is now created outside Terraform so it survives destroy
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Remove models bucket from Terraform state (one-time migration)
+        run: |
+          cd infrastructure/environments/dev
+          # Remove all 3 bucket resources if they exist in state
+          for RESOURCE in \
+            "module.sagemaker.aws_s3_bucket.models" \
+            "module.sagemaker.aws_s3_bucket_server_side_encryption_configuration.models" \
+            "module.sagemaker.aws_s3_bucket_public_access_block.models"; do
+            if terraform state show "$RESOURCE" >/dev/null 2>&1; then
+              echo "🗑️ Removing $RESOURCE from state..."
+              terraform state rm "$RESOURCE"
+            else
+              echo "✅ $RESOURCE not in state (already removed)"
+            fi
+          done
+
+      # ────────────────────────────────────────────────────────────────────────
+      # Phase 2.5: Ensure SageMaker model artifact exists in S3
+      # HuBERT model pulls weights from HuggingFace Hub at runtime,
+      # but SageMaker requires a model_data_url — upload empty placeholder
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload SageMaker placeholder model artifact
+        run: |
+          BUCKET="qleam-dev-models"
+          KEY="hubert/model.tar.gz"
+
+          # Create bucket if it doesn't exist yet (Terraform may not have created it)
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "📦 Creating models bucket: $BUCKET"
+            aws s3api create-bucket --bucket "$BUCKET" --region ${{ env.AWS_REGION }}
+          fi
+
+          # Only upload if the artifact doesn't already exist
+          if aws s3api head-object --bucket "$BUCKET" --key "$KEY" 2>/dev/null; then
+            echo "✅ Model artifact already exists at s3://$BUCKET/$KEY"
+          else
+            echo "📦 Uploading placeholder model.tar.gz..."
+            mkdir -p /tmp/hubert_placeholder
+            echo '{"HF_MODEL_ID": "facebook/hubert-base-ls960"}' > /tmp/hubert_placeholder/config.json
+            tar -czf /tmp/model.tar.gz -C /tmp/hubert_placeholder .
+            aws s3 cp /tmp/model.tar.gz "s3://$BUCKET/$KEY"
+            echo "✅ Placeholder uploaded to s3://$BUCKET/$KEY"
+          fi
+
+      # ────────────────────────────────────────────────────────────────────────
       # Phase 3: Create all remaining resources (including Lambda functions)
       # ────────────────────────────────────────────────────────────────────────
+
       - name: Terraform Apply - All Resources
         run: |
           cd infrastructure/environments/dev

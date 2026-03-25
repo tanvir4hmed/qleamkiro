@@ -18,28 +18,8 @@ variable "feature_extraction_lambda_arn" {
   type        = string
 }
 
-variable "cluster_engine_lambda_arn" {
-  description = "ARN of the cluster engine Lambda"
-  type        = string
-}
-
 variable "insight_generator_lambda_arn" {
   description = "ARN of the insight generator Lambda"
-  type        = string
-}
-
-variable "developmental_tracker_lambda_arn" {
-  description = "ARN of the developmental tracker Lambda"
-  type        = string
-}
-
-variable "concept_decoder_lambda_arn" {
-  description = "ARN of the concept decoder Lambda"
-  type        = string
-}
-
-variable "speech_analyzer_lambda_arn" {
-  description = "ARN of the speech analyzer Lambda"
   type        = string
 }
 
@@ -64,4 +44,23 @@ variable "log_retention_days" {
   description = "CloudWatch log retention in days"
   type        = number
   default     = 30
+}
+
+# Training pipeline variables
+variable "training_check_lambda_arn" {
+  description = "ARN of the training check Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "model_trainer_lambda_arn" {
+  description = "ARN of the model trainer Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "enable_training_pipeline" {
+  description = "Whether to create the training Step Function and daily EventBridge schedule"
+  type        = bool
+  default     = false
 }

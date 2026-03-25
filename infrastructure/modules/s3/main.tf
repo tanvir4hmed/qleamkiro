@@ -41,20 +41,27 @@ resource "aws_s3_bucket_versioning" "audio" {
   }
 }
 
-# Lifecycle rules — auto-delete raw audio after N days
+# Lifecycle rules — Glacier archive + auto-delete (GDPR/COPPA belt-and-suspenders)
 resource "aws_s3_bucket_lifecycle_configuration" "audio" {
   bucket = aws_s3_bucket.audio.id
 
   rule {
-    id     = "delete-raw-audio"
+    id     = "archive-and-delete-audio"
     status = "Enabled"
 
     filter {
       prefix = ""
     }
 
+    # Move to Glacier after retention period (default 90 days)
+    transition {
+      days          = var.audio_retention_days
+      storage_class = "GLACIER"
+    }
+
+    # Permanent deletion after max retention (default 365 days)
     expiration {
-      days = var.audio_retention_days
+      days = var.audio_max_retention_days
     }
 
     noncurrent_version_expiration {

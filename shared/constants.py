@@ -5,32 +5,6 @@ Central configuration for all Lambda functions
 import os
 
 # =============================================================================
-# EMA & Clustering
-# =============================================================================
-ALPHA_VALUE: float = float(os.environ.get("ALPHA_VALUE", "0.3"))
-CLUSTER_SIMILARITY_THRESHOLD: float = float(os.environ.get("CLUSTER_SIMILARITY_THRESHOLD", "0.85"))
-
-# =============================================================================
-# Reinforcement Learning Rates
-# =============================================================================
-REINFORCEMENT_LEARNING_RATE: float = 0.1
-REINFORCEMENT_DECAY_NEUTRAL: float = 0.02
-REINFORCEMENT_DECAY_INEFFECTIVE: float = 0.05
-REINFORCEMENT_MAX: float = 1.0
-REINFORCEMENT_MIN: float = 0.0
-REINFORCEMENT_NEUTRAL_START: float = 0.5
-
-SEMANTIC_CONFIDENCE_INCREMENT: float = 0.05
-SEMANTIC_CONFIDENCE_MAX: float = 1.0
-
-# =============================================================================
-# Deviation Detection
-# =============================================================================
-MIN_SESSIONS_FOR_DEVIATION: int = 3
-DEVIATION_THRESHOLD_MODERATE: float = 0.3
-DEVIATION_THRESHOLD_HIGH: float = 0.6
-
-# =============================================================================
 # Audio Processing
 # =============================================================================
 MAX_AUDIO_DURATION_SECONDS: int = 30
@@ -44,14 +18,8 @@ N_FFT: int = 2048
 # =============================================================================
 CHILD_PROFILE_TABLE: str = os.environ.get("CHILD_PROFILE_TABLE", "qleam-dev-ChildProfile")
 SESSION_TABLE: str = os.environ.get("SESSION_TABLE", "qleam-dev-Session")
-SOUND_CLUSTER_TABLE: str = os.environ.get("SOUND_CLUSTER_TABLE", "qleam-dev-SoundCluster")
-SEMANTIC_BRIDGE_TABLE: str = os.environ.get("SEMANTIC_BRIDGE_TABLE", "qleam-dev-SemanticBridge")
 FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
-CONCEPT_GRAPH_TABLE: str = os.environ.get("CONCEPT_GRAPH_TABLE", "qleam-dev-ConceptGraph")
-MILESTONES_TABLE: str = os.environ.get("MILESTONES_TABLE", "qleam-dev-Milestones")
-POPULATION_MODEL_TABLE: str = os.environ.get("POPULATION_MODEL_TABLE", "qleam-dev-PopulationModel")
-TRAINING_CANDIDATE_TABLE: str = os.environ.get("TRAINING_CANDIDATE_TABLE", "qleam-dev-TrainingCandidate")
-MODEL_REGISTRY_TABLE: str = os.environ.get("MODEL_REGISTRY_TABLE", "qleam-dev-ModelRegistry")
+TRAINING_FEATURES_TABLE: str = os.environ.get("TRAINING_FEATURES_TABLE", "qleam-dev-TrainingFeatures")
 
 # =============================================================================
 # S3
@@ -75,6 +43,13 @@ USE_BEDROCK: bool = os.environ.get("USE_BEDROCK", "true").lower() == "true"
 # Cry/intent custom model endpoint (SageMaker real-time inference).
 USE_SAGEMAKER_INTENT_ENDPOINT: bool = os.environ.get("USE_SAGEMAKER_INTENT_ENDPOINT", "false").lower() == "true"
 SAGEMAKER_INTENT_ENDPOINT_NAME: str = os.environ.get("SAGEMAKER_INTENT_ENDPOINT_NAME", "")
+
+# HuBERT feature extraction endpoint (SageMaker Serverless).
+SAGEMAKER_HUBERT_ENDPOINT: str = os.environ.get("SAGEMAKER_HUBERT_ENDPOINT", "")
+
+# Model version management (Phase 3).
+MODEL_VERSIONS_TABLE: str = os.environ.get("MODEL_VERSIONS_TABLE", "")
+TRAINING_STEP_FUNCTION_ARN: str = os.environ.get("TRAINING_STEP_FUNCTION_ARN", "")
 
 # Speech transcription for linguistic sessions (Amazon Transcribe).
 USE_TRANSCRIBE_FOR_LINGUISTIC: bool = os.environ.get("USE_TRANSCRIBE_FOR_LINGUISTIC", "false").lower() == "true"
@@ -143,12 +118,13 @@ DISCLAIMER = (
 # =============================================================================
 DEVELOPMENTAL_STAGE_MAP = [
     (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
-    (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
-    (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
-    (271,  365,  "PROTO_WORDS",       "TRANSITION"),
-    (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
-    (549,  730,  "WORD_COMBINATIONS", "LINGUISTIC"),
-    (731,  99999, "EARLY_SENTENCES",  "LINGUISTIC"),
+    # (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
+    # (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
+    # (271,  365,  "PROTO_WORDS",       "TRANSITION"),
+    # (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
+    # # System scope is capped to 0-24 months; older ages are clamped here.
+    # (549,  99999, "WORD_COMBINATIONS", "LINGUISTIC"),
+    (91, 99999, "NEWBORN", "PRE_LINGUISTIC"),
 ]
 
 # =============================================================================
@@ -162,22 +138,6 @@ QUALITY_MAX_SILENCE_RATIO: float = 0.80     # Was 0.85 â€” spec: Layer 0 ga
 QUALITY_MAX_CLIPPING_RATIO: float = 0.005   # Was 0.05 â€” spec: Layer 0 gate (0.5%)
 LOMBARD_NOISE_FLOOR_DB: float = -30.0       # Above this â†’ Lombard effect warning
 
-# =============================================================================
-# Milestone Types (Phase 6)
-# =============================================================================
-MILESTONE_TYPES = {
-    "FIRST_CANONICAL_BABBLE":     "First session with CBR > 0.20",
-    "FIRST_PROTO_WORD_CANDIDATE": "First cluster meeting proto-word criteria",
-    "FIRST_CONFIRMED_PROTO_WORD": "Cluster promoted to established signal",
-    "LINGUISTIC_MODE_TRANSITION": "First session in LINGUISTIC mode",
-    "CONCEPT_GRAPH_10_NODES":     "Personal concept graph reached 10 confirmed concepts",
-    "CONCEPT_GRAPH_25_NODES":     "Personal concept graph reached 25 confirmed concepts",
-    "FIRST_MLU_2":                "Estimated MLU reached 2.0 (two-morpheme utterances)",
-    "FIRST_MLU_3":                "Estimated MLU reached 3.0 (three-morpheme utterances)",
-    "VOCAB_SIZE_20":              "Confirmed vocabulary reached 20 concepts",
-    "VOCAB_SIZE_50":              "Confirmed vocabulary reached 50 concepts",
-}
-
 PRAGMATIC_TYPES = ["declaration", "request", "question", "exclamation"]
 
 # =============================================================================
@@ -190,18 +150,6 @@ VTL_SPEED_OF_SOUND_CM_S: float = 34300.0  # Deprecated: use temperature-correcte
 VTL_AMBIENT_TEMP_C: float = 20.0      # Default ambient temperature for c(T) calc
 INFANT_F0_MIN_HZ: float = 250.0       # Was 200 â€” spec: adult threshold â‰¥ 250 Hz (Theorem 3.1)
 STRONG_INFANT_F0_HZ: float = 300.0    # Above this â†’ strong infant signal
-
-# =============================================================================
-# Federated Learning (Phase 8 â€” FIVL)
-# Spec: SCIENTIFIC_MATHEMATICS.md Section 10, Theorem 10.1-10.2
-# =============================================================================
-FL_EPSILON: float = 1.0          # Differential privacy Îµ (privacy budget)
-FL_DELTA: float = 1e-5           # Differential privacy Î´ (failure probability)
-FL_MIN_PARTICIPANTS: int = 10    # Minimum sessions per stage before aggregation
-FL_FRS_QUALITY_GATE: float = 0.60   # Minimum FRS for session to be included
-FL_DELTA_QUALITY_GATE: float = 0.65  # Minimum delta_score for session to be included
-FL_RESEARCH_FLOOR: float = 0.10  # Research prior floor â€” never fully replaced by FL
-FL_ROUND_INTERVAL_HOURS: int = 24    # How often aggregation runs (via EventBridge)
 
 # =============================================================================
 # Training Candidate Acceptance (Phase 1)

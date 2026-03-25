@@ -1,6 +1,6 @@
 # =============================================================================
 # Module: DynamoDB
-# All Qleam data tables: ChildProfile, Session, SoundCluster, SemanticBridge, Feedback, ConceptGraph
+# All Qleam data tables: ChildProfile, Session, Feedback, TrainingFeatures, ModelVersions
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -86,99 +86,6 @@ resource "aws_dynamodb_table" "session" {
 }
 
 # -----------------------------------------------------------------------------
-# SoundCluster Table
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "sound_cluster" {
-  name         = "${var.project}-${var.environment}-SoundCluster"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "cluster_id"
-
-  attribute {
-    name = "cluster_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "child_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "last_updated"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "child_id-last_updated-index"
-    hash_key        = "child_id"
-    range_key       = "last_updated"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-SoundCluster"
-    Table = "SoundCluster"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# SemanticBridge Table
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "semantic_bridge" {
-  name         = "${var.project}-${var.environment}-SemanticBridge"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "bridge_id"
-
-  attribute {
-    name = "bridge_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "child_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "cluster_id"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "child_id-index"
-    hash_key        = "child_id"
-    projection_type = "ALL"
-  }
-
-  global_secondary_index {
-    name            = "cluster_id-index"
-    hash_key        = "cluster_id"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-SemanticBridge"
-    Table = "SemanticBridge"
-  }
-}
-
-# -----------------------------------------------------------------------------
 # Feedback Table
 # -----------------------------------------------------------------------------
 resource "aws_dynamodb_table" "feedback" {
@@ -223,71 +130,35 @@ resource "aws_dynamodb_table" "feedback" {
 }
 
 # -----------------------------------------------------------------------------
-# ConceptGraph Table
-# Personal concept graph: maps each child's acoustic clusters to semantic concepts
-# PK: child_id, SK: concept_id (enables all-concepts-for-child query)
+# TrainingFeatures Table
+# HuBERT embedding metadata for each processed baby sound session
+# PK: feature_id
+# GSI: sound_type-age_days-index (query by emotion + age for training)
 # -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "concept_graph" {
-  name         = "${var.project}-${var.environment}-ConceptGraph"
+resource "aws_dynamodb_table" "training_features" {
+  name         = "${var.project}-${var.environment}-TrainingFeatures"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "child_id"
-  range_key    = "concept_id"
+  hash_key     = "feature_id"
 
   attribute {
-    name = "child_id"
+    name = "feature_id"
     type = "S"
   }
 
   attribute {
-    name = "concept_id"
-    type = "S"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-ConceptGraph"
-    Table = "ConceptGraph"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# Milestones Table
-# Tracks developmental milestone events per child
-# PK: child_id, SK: milestone_id
-# GSI: child_id-first_date-index (chronological milestone queries)
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "milestones" {
-  name         = "${var.project}-${var.environment}-Milestones"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "child_id"
-  range_key    = "milestone_id"
-
-  attribute {
-    name = "child_id"
+    name = "sound_type"
     type = "S"
   }
 
   attribute {
-    name = "milestone_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "first_date"
-    type = "S"
+    name = "age_days"
+    type = "N"
   }
 
   global_secondary_index {
-    name            = "child_id-first_date-index"
-    hash_key        = "child_id"
-    range_key       = "first_date"
+    name            = "sound_type-age_days-index"
+    hash_key        = "sound_type"
+    range_key       = "age_days"
     projection_type = "ALL"
   }
 
@@ -300,24 +171,30 @@ resource "aws_dynamodb_table" "milestones" {
   }
 
   tags = {
-    Name  = "${var.project}-${var.environment}-Milestones"
-    Table = "Milestones"
+    Name  = "${var.project}-${var.environment}-TrainingFeatures"
+    Table = "TrainingFeatures"
   }
 }
 
 # -----------------------------------------------------------------------------
-# PopulationModel Table
-# Stage-level online/federated priors used by insight_generator evidence model
-# PK: stage
+# ModelVersions Table
+# Tracks trained model versions for emotion classifier (Phase 3)
+# PK: model_type (e.g. "emotion_classifier"), SK: version (number)
 # -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "population_model" {
-  name         = "${var.project}-${var.environment}-PopulationModel"
+resource "aws_dynamodb_table" "model_versions" {
+  name         = "${var.project}-${var.environment}-ModelVersions"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "stage"
+  hash_key     = "model_type"
+  range_key    = "version"
 
   attribute {
-    name = "stage"
+    name = "model_type"
     type = "S"
+  }
+
+  attribute {
+    name = "version"
+    type = "N"
   }
 
   point_in_time_recovery {
@@ -329,101 +206,7 @@ resource "aws_dynamodb_table" "population_model" {
   }
 
   tags = {
-    Name  = "${var.project}-${var.environment}-PopulationModel"
-    Table = "PopulationModel"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# TrainingCandidate Table
-# De-identified accepted samples for supervised training dataset construction
-# PK: candidate_id
-# GSI: developmental_stage-accepted_at-index
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "training_candidate" {
-  name         = "${var.project}-${var.environment}-TrainingCandidate"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "candidate_id"
-
-  attribute {
-    name = "candidate_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "developmental_stage"
-    type = "S"
-  }
-
-  attribute {
-    name = "accepted_at"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "developmental_stage-accepted_at-index"
-    hash_key        = "developmental_stage"
-    range_key       = "accepted_at"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-TrainingCandidate"
-    Table = "TrainingCandidate"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# ModelRegistry Table
-# Stores stage-level trained acoustic model versions and promotion status
-# PK: model_id
-# GSI: developmental_stage-created_at-index
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "model_registry" {
-  name         = "${var.project}-${var.environment}-ModelRegistry"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "model_id"
-
-  attribute {
-    name = "model_id"
-    type = "S"
-  }
-
-  attribute {
-    name = "developmental_stage"
-    type = "S"
-  }
-
-  attribute {
-    name = "created_at"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "developmental_stage-created_at-index"
-    hash_key        = "developmental_stage"
-    range_key       = "created_at"
-    projection_type = "ALL"
-  }
-
-  point_in_time_recovery {
-    enabled = var.enable_pitr
-  }
-
-  server_side_encryption {
-    enabled = true
-  }
-
-  tags = {
-    Name  = "${var.project}-${var.environment}-ModelRegistry"
-    Table = "ModelRegistry"
+    Name  = "${var.project}-${var.environment}-ModelVersions"
+    Table = "ModelVersions"
   }
 }

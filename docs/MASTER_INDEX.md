@@ -30,7 +30,7 @@ Qleam is an AI system that learns a baby's private language from birth. Every ba
 
 The app records a baby's vocalizations. It analyzes the audio using physics-based acoustic signal processing, validates that the recording is genuinely from an infant (not an adult, not background noise), identifies which enrolled baby is speaking, and generates an insight about what the baby is communicating. Over time, across hundreds of sessions, it builds a personal concept graph of everything this baby knows and how they express it. Eventually it can decode a stream of pre-linguistic sounds in real time — "meh meh wawa bah" becomes "asking for water before lunch" — because it has learned this specific child's private language from day zero.
 
-As the child grows into language (approximately 24–36 months), the app transitions from intent translation to language development tracking. The insight changes from "baby may be hungry" to "your child used a complete sentence — language milestone." The app never stops being useful — it grows with the child.
+Current production scope is 0–24 months. Within this range, the app focuses on intent translation, early word emergence, and word-combination support.
 
 At scale, the data from thousands of children — acoustically rich, longitudinally tracked, parent-confirmed, context-annotated — becomes a scientific dataset that does not exist anywhere in developmental psychology research. It enables new mathematical theories of language emergence, replaces outdated static research categories with data-driven ones, and potentially contributes to PhD-level and publishable research.
 
@@ -651,19 +651,7 @@ feedback_payload = {
 }
 ```
 
-**STAGE: TODDLER_LATE (24–36 months)**
-```
-feedback_payload = {
-  transcription:    string — "what did they say?" (full sentence attempt)
-  concept_selected: concept_node_id OR null,
-  free_text:        string — "what did they want?"
-  understood:       ENUM["yes","mostly","no"],
-  language_quality: ENUM["full_sentence","word_combination","sounds_only"],
-  // NO effectiveness field — child expressed clearly, nothing to judge
-}
-```
-
-**STAGE: PRESCHOOL (36+ months)**
+**STAGE: PRESCHOOL (outside current 0–24 month scope)**
 ```
 feedback_payload = {
   transcription:     string,

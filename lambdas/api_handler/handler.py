@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -28,16 +28,13 @@ sys.path.insert(0, "/var/task/shared")
 
 from constants import (
     CHILD_PROFILE_TABLE,
-    CONCEPT_GRAPH_TABLE,
     FEEDBACK_TABLE,
-    MILESTONES_TABLE,
     S3_BUCKET_NAME,
-    SEMANTIC_BRIDGE_TABLE,
+    SAGEMAKER_HUBERT_ENDPOINT,
     SESSION_TABLE,
-    SOUND_CLUSTER_TABLE,
-    STEP_FUNCTION_ARN,
+    TRAINING_FEATURES_TABLE,
+    USE_SAGEMAKER_INTENT_ENDPOINT,
 )
-from concept_graph import pre_populate_universal_concepts, get_concepts
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -49,6 +46,7 @@ ALLOWED_ORIGINS = [
     for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
+MAX_SUPPORTED_CHILD_AGE_DAYS = 730  # 24 months
 
 dynamodb = boto3.resource("dynamodb")
 s3_client = boto3.client("s3")
@@ -66,11 +64,8 @@ def get_step_function_arn() -> str:
 
 child_profile_table = dynamodb.Table(CHILD_PROFILE_TABLE)
 session_table = dynamodb.Table(SESSION_TABLE)
-sound_cluster_table = dynamodb.Table(SOUND_CLUSTER_TABLE)
-semantic_bridge_table = dynamodb.Table(SEMANTIC_BRIDGE_TABLE)
 feedback_table = dynamodb.Table(FEEDBACK_TABLE)
-concept_graph_table = dynamodb.Table(CONCEPT_GRAPH_TABLE)
-milestones_table = dynamodb.Table(MILESTONES_TABLE)
+training_features_table = dynamodb.Table(TRAINING_FEATURES_TABLE) if TRAINING_FEATURES_TABLE else None
 
 
 def _decimal_to_float(obj: Any) -> Any:
@@ -119,12 +114,9 @@ def _float_to_decimal(obj: Any) -> Any:
     if isinstance(obj, bool):
         return Decimal("1") if obj else Decimal("0")
     
-    # Handle string - try to convert if it looks like a number
+    # Strings are always returned as-is — never coerce to Decimal
     if isinstance(obj, str):
-        try:
-            return Decimal(obj)
-        except:
-            return obj  # Return as-is if not a valid number string
+        return obj
     
     # Handle dict recursively
     if isinstance(obj, dict):
@@ -222,7 +214,6 @@ def list_children(event: Dict) -> Dict:
             "child_id": item["child_id"],
             "name": item.get("name", ""),
             "birth_date": item.get("birth_date", ""),
-            "language_maturity_level": item.get("language_maturity_level", "pre-linguistic"),
             "session_count": _decimal_to_float(item.get("session_count", 0)),
             "created_at": item.get("created_at"),
         }
@@ -240,18 +231,28 @@ def create_child(event: Dict) -> Dict:
     body = json.loads(event.get("body") or "{}")
     child_name = body.get("name", "").strip()
     birth_date = body.get("birth_date", "").strip()  # Expected: "YYYY-MM-DD"
+    gender = body.get("gender", "").strip().lower()  # "boy", "girl", "other", or "" (optional)
 
     if not child_name:
         return response(400, {"error": "name is required"}, event)
 
-    # birth_date is mandatory — drives age calculation, developmental staging, and FL aggregation
+    # birth_date is mandatory — drives age calculation for cry analysis
     if not birth_date:
         return response(400, {"error": "birth_date is required (YYYY-MM-DD)"}, event)
     try:
-        from datetime import date as _date
-        _date.fromisoformat(birth_date)
+        birth = date.fromisoformat(birth_date)
     except ValueError:
         return response(400, {"error": "birth_date must be a valid date in YYYY-MM-DD format"}, event)
+    today = datetime.now(timezone.utc).date()
+    age_days = (today - birth).days
+    if age_days < 0:
+        return response(400, {"error": "birth_date cannot be in the future"}, event)
+    if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return response(
+            400,
+            {"error": "Only children aged 0-24 months are supported. Please provide a birth_date within the last 24 months."},
+            event,
+        )
 
     child_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -261,9 +262,9 @@ def create_child(event: Dict) -> Dict:
         "parent_id": user_id,
         "name": child_name,
         "birth_date": birth_date,
+        "gender": gender if gender in ("boy", "girl", "other") else "",
         "baseline_features": {},
         "readiness_score": 0.5,
-        "language_maturity_level": "pre-linguistic",
         "session_count": 0,
         "created_at": now,
         "updated_at": now,
@@ -271,12 +272,6 @@ def create_child(event: Dict) -> Dict:
 
     child_profile_table.put_item(Item=_float_to_decimal(profile))
     logger.info(f"Created child profile {child_id} for user {user_id} (birth_date={'set' if birth_date else 'not set'})")
-
-    # Pre-populate universal concepts for new child (best-effort, non-fatal)
-    try:
-        pre_populate_universal_concepts(child_id, concept_graph_table)
-    except Exception as e:
-        logger.warning(f"Failed to pre-populate concepts for child {child_id}: {e}")
 
     return response(201, {"child_id": child_id, "message": "Child profile created"}, event)
 
@@ -287,23 +282,23 @@ def create_child(event: Dict) -> Dict:
 def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
     """
     Delete all direct personal data rows for a child.
-    Intentionally does not touch de-identified population/training aggregates.
+    Intentionally does NOT touch de-identified training_features or trained models.
     """
     _key = boto3.dynamodb.conditions.Key
+    bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
     deleted_sessions = 0
     deleted_feedback = 0
-    deleted_clusters = 0
-    deleted_bridges = 0
-    deleted_concepts = 0
-    deleted_milestones = 0
+    deleted_s3_objects = 0
 
-    # Delete sessions + their feedback records
+    # Delete sessions + their feedback records + S3 audio
     sessions_resp = session_table.query(
         IndexName="child_id-timestamp-index",
         KeyConditionExpression=_key("child_id").eq(child_id)
     )
     for sess in sessions_resp.get("Items", []):
         sid = sess["session_id"]
+
+        # Delete feedback records for this session
         fb_resp = feedback_table.query(
             IndexName="session_id-created_at-index",
             KeyConditionExpression=_key("session_id").eq(sid)
@@ -311,55 +306,27 @@ def _delete_child_direct_data(child_id: str) -> Dict[str, int]:
         for fb in fb_resp.get("Items", []):
             feedback_table.delete_item(Key={"feedback_id": fb["feedback_id"]})
             deleted_feedback += 1
+
+        # Delete S3 audio files for this session (child_id/session_id/*)
+        try:
+            s3_prefix = f"{child_id}/{sid}/"
+            s3_resp = s3_client.list_objects_v2(Bucket=bucket, Prefix=s3_prefix)
+            for obj in s3_resp.get("Contents", []):
+                s3_client.delete_object(Bucket=bucket, Key=obj["Key"])
+                deleted_s3_objects += 1
+        except Exception as e:
+            logger.warning(f"S3 cleanup for session {sid}: {e}")
+
         session_table.delete_item(Key={"session_id": sid})
         deleted_sessions += 1
 
-    # Delete sound clusters
-    clusters_resp = sound_cluster_table.query(
-        IndexName="child_id-last_updated-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for cluster in clusters_resp.get("Items", []):
-        sound_cluster_table.delete_item(Key={"cluster_id": cluster["cluster_id"]})
-        deleted_clusters += 1
-
-    # Delete semantic bridges
-    bridges_resp = semantic_bridge_table.query(
-        IndexName="child_id-index",
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for bridge in bridges_resp.get("Items", []):
-        semantic_bridge_table.delete_item(Key={"bridge_id": bridge["bridge_id"]})
-        deleted_bridges += 1
-
-    # Delete personal concept graph (child_id is PK)
-    concepts_resp = concept_graph_table.query(
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for concept in concepts_resp.get("Items", []):
-        concept_graph_table.delete_item(
-            Key={"child_id": child_id, "concept_id": concept["concept_id"]}
-        )
-        deleted_concepts += 1
-
-    # Delete milestones (child_id is PK)
-    milestones_resp = milestones_table.query(
-        KeyConditionExpression=_key("child_id").eq(child_id)
-    )
-    for milestone in milestones_resp.get("Items", []):
-        milestones_table.delete_item(
-            Key={"child_id": child_id, "milestone_id": milestone["milestone_id"]}
-        )
-        deleted_milestones += 1
-
+    # Delete child profile last
     child_profile_table.delete_item(Key={"child_id": child_id})
+
     return {
         "deleted_sessions": deleted_sessions,
         "deleted_feedback": deleted_feedback,
-        "deleted_clusters": deleted_clusters,
-        "deleted_bridges": deleted_bridges,
-        "deleted_concepts": deleted_concepts,
-        "deleted_milestones": deleted_milestones,
+        "deleted_s3_objects": deleted_s3_objects,
     }
 
 
@@ -378,7 +345,15 @@ def delete_child(event: Dict) -> Dict:
 
     deleted = _delete_child_direct_data(child_id)
 
-    logger.info(f"Deleted all direct data for child {child_id} (population model retained)")
+    # Audit log (no PII — child_id is a UUID, no name/birth_date logged)
+    logger.info(
+        "AUDIT_CHILD_DELETE child_id=%s user_id=%s sessions=%d feedback=%d "
+        "s3_objects=%d",
+        child_id, user_id,
+        deleted.get("deleted_sessions", 0),
+        deleted.get("deleted_feedback", 0),
+        deleted.get("deleted_s3_objects", 0),
+    )
     return response(
         200,
         {
@@ -414,10 +389,7 @@ def delete_account(event: Dict) -> Dict:
     aggregate = {
         "deleted_sessions": 0,
         "deleted_feedback": 0,
-        "deleted_clusters": 0,
-        "deleted_bridges": 0,
-        "deleted_concepts": 0,
-        "deleted_milestones": 0,
+        "deleted_s3_objects": 0,
     }
     for child in children:
         child_id = str(child.get("child_id") or "").strip()
@@ -428,9 +400,13 @@ def delete_account(event: Dict) -> Dict:
         for k in aggregate:
             aggregate[k] += int(deleted.get(k, 0) or 0)
 
+    # Audit log (no PII — user_id is a Cognito sub, no names logged)
     logger.info(
-        f"Deleted account-scoped child data for parent={user_id} "
-        f"children={total_deleted_children} (de-identified training/population retained)"
+        "AUDIT_ACCOUNT_DELETE user_id=%s children=%d sessions=%d "
+        "s3_objects=%d",
+        user_id, total_deleted_children,
+        aggregate.get("deleted_sessions", 0),
+        aggregate.get("deleted_s3_objects", 0),
     )
     return response(
         200,
@@ -461,6 +437,11 @@ def list_sessions(event: Dict) -> Dict:
     # Return summary (no embedding vectors)
     summaries = []
     for s in sessions:
+        insight_obj = s.get("insight", {}) if isinstance(s.get("insight"), dict) else {}
+        emotion_confidence = insight_obj.get("emotion_confidence")
+        if emotion_confidence is None:
+            emotion_confidence = (insight_obj.get("probable_intent") or {}).get("confidence")
+
         summaries.append({
             "session_id": s["session_id"],
             "timestamp": s.get("timestamp"),
@@ -468,15 +449,16 @@ def list_sessions(event: Dict) -> Dict:
             "feature_scores": s.get("feature_scores", {}),
             "cluster_id": s.get("cluster_id"),
             "insight_summary": {
-                "display_type": s.get("insight", {}).get("display_type"),
-                "headline": s.get("insight", {}).get("headline"),
-                "headline_icon": s.get("insight", {}).get("headline_icon"),
-                "is_adult": s.get("insight", {}).get("is_adult", False),
-                "emotion": s.get("insight", {}).get("emotion"),
+                "display_type": insight_obj.get("display_type"),
+                "headline": insight_obj.get("headline"),
+                "headline_icon": insight_obj.get("headline_icon"),
+                "is_adult": bool(insight_obj.get("is_adult", False)),
+                "emotion": insight_obj.get("emotion"),
+                "emotion_confidence": emotion_confidence,
                 # Backward compat for old sessions
-                "probable_intent": s.get("insight", {}).get("probable_intent"),
-                "suggested_response": s.get("insight", {}).get("suggested_response"),
-            } if s.get("insight") else None,
+                "probable_intent": insight_obj.get("probable_intent"),
+                "suggested_response": insight_obj.get("suggested_response"),
+            } if insight_obj else None,
         })
 
     return response(200, {"sessions": summaries, "count": len(summaries)}, event)
@@ -486,78 +468,6 @@ def list_sessions(event: Dict) -> Dict:
 # POST /session/upload — Get presigned URL and create session record
 # =============================================================================
 
-_VALID_HEALTH_STATES = {"healthy", "sick", "teething", "other", "unknown"}
-_VALID_ENVIRONMENTS = {"home_quiet", "home_noisy", "outdoor", "car", "other", "unknown"}
-
-_HEALTH_STATE_ALIASES = {
-    "well": "healthy",
-    "healthy": "healthy",
-    "fussy": "other",
-    "tired": "other",
-    "sick": "sick",
-    "teething": "teething",
-    "other": "other",
-    "unknown": "unknown",
-}
-
-_ENVIRONMENT_ALIASES = {
-    "quiet": "home_quiet",
-    "home_quiet": "home_quiet",
-    "noisy": "home_noisy",
-    "home_noisy": "home_noisy",
-    "travel": "car",
-    "car": "car",
-    "outdoor": "outdoor",
-    "other": "other",
-    "unknown": "unknown",
-}
-
-
-def _validate_context(raw: Any) -> Dict:
-    """
-    Validate and sanitize optional session context provided by the parent.
-
-    Accepted fields:
-        feeding_minutes_ago  — int 0-999, minutes since last feeding
-        health_state         — str: healthy|sick|teething|other|unknown
-        environment          — str: home_quiet|home_noisy|outdoor|car|other|unknown
-        notes                — str, max 500 chars (free text)
-
-    Unknown keys are silently dropped.  Invalid values are replaced with None.
-    Returns a clean dict (may be empty if raw is missing/invalid).
-    """
-    if not isinstance(raw, dict):
-        return {}
-
-    ctx: Dict = {}
-
-    # feeding_minutes_ago
-    fma = raw.get("feeding_minutes_ago")
-    if isinstance(fma, (int, float)) and 0 <= int(fma) <= 999:
-        ctx["feeding_minutes_ago"] = int(fma)
-
-    # health_state
-    hs = raw.get("health_state", "")
-    if isinstance(hs, str):
-        normalized_hs = _HEALTH_STATE_ALIASES.get(hs.strip().lower())
-        if normalized_hs in _VALID_HEALTH_STATES:
-            ctx["health_state"] = normalized_hs
-
-    # environment
-    env = raw.get("environment", "")
-    if isinstance(env, str):
-        normalized_env = _ENVIRONMENT_ALIASES.get(env.strip().lower())
-        if normalized_env in _VALID_ENVIRONMENTS:
-            ctx["environment"] = normalized_env
-
-    # notes (free text, capped at 500 chars)
-    notes = raw.get("notes", "")
-    if isinstance(notes, str) and notes.strip():
-        ctx["notes"] = notes.strip()[:500]
-
-    return ctx
-
-
 def upload_session(event: Dict) -> Dict:
     user_id = get_user_id(event)
     body = json.loads(event.get("body") or "{}")
@@ -566,11 +476,30 @@ def upload_session(event: Dict) -> Dict:
     if not child_id:
         return response(400, {"error": "child_id is required"}, event)
 
-    # [Phase 3] Optional session context (feeding time, health, environment)
-    # Frontend sends the key as "session_context"; accept both for backward compat
-    session_context = _validate_context(
-        body.get("session_context") or body.get("context")
-    )
+    # Enforce ownership + age boundary check (0-24 months) before creating upload session
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    profile = _decimal_to_float(profile_resp["Item"])
+    if profile.get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized for this child profile"}, event)
+    birth_date = str(profile.get("birth_date") or "").strip()
+    if not birth_date:
+        return response(400, {"error": "Child birth_date is missing. Please update the profile first."}, event)
+    try:
+        birth = date.fromisoformat(birth_date)
+    except ValueError:
+        return response(400, {"error": "Child birth_date is invalid. Please update the profile."}, event)
+    today = datetime.now(timezone.utc).date()
+    age_days = (today - birth).days
+    if age_days < 0:
+        return response(400, {"error": "Child birth_date cannot be in the future"}, event)
+    if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return response(
+            400,
+            {"error": "This system supports only children aged 0-24 months. Recording rejected."},
+            event,
+        )
 
     session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -589,7 +518,7 @@ def upload_session(event: Dict) -> Dict:
         ExpiresIn=300,  # 5 minutes
     )
 
-    # Create pending session record (includes context if provided)
+    # Create pending session record
     session_item = {
         "session_id": session_id,
         "child_id": child_id,
@@ -598,15 +527,10 @@ def upload_session(event: Dict) -> Dict:
         "processed": False,
         "timestamp": now,
     }
-    if session_context:
-        session_item["session_context"] = session_context
 
     session_table.put_item(Item=session_item)
 
-    logger.info(
-        f"Created upload session {session_id} for child {child_id}"
-        f"{' with context' if session_context else ''}"
-    )
+    logger.info(f"Created upload session {session_id} for child {child_id}")
 
     return response(200, {
         "session_id": session_id,
@@ -621,6 +545,7 @@ def upload_session(event: Dict) -> Dict:
 # POST /session/{session_id}/start — Start processing pipeline
 # =============================================================================
 def start_processing(event: Dict) -> Dict:
+    user_id = get_user_id(event)
     session_id = event["pathParameters"]["session_id"]
     body = json.loads(event.get("body") or "{}")
 
@@ -629,8 +554,35 @@ def start_processing(event: Dict) -> Dict:
         return response(404, {"error": "Session not found"}, event)
 
     session = _decimal_to_float(session_resp["Item"])
+    if session.get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized for this session"}, event)
     child_id = session["child_id"]
     s3_audio_path = session["s3_audio_path"]
+
+    # Enforce ownership + age boundary check (0-24 months) at pipeline start
+    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+    if "Item" not in profile_resp:
+        return response(404, {"error": "Child not found"}, event)
+    profile = _decimal_to_float(profile_resp["Item"])
+    if profile.get("parent_id") != user_id:
+        return response(403, {"error": "Not authorized for this child profile"}, event)
+    birth_date = str(profile.get("birth_date") or "").strip()
+    if not birth_date:
+        return response(400, {"error": "Child birth_date is missing. Please update the profile first."}, event)
+    try:
+        birth = date.fromisoformat(birth_date)
+    except ValueError:
+        return response(400, {"error": "Child birth_date is invalid. Please update the profile."}, event)
+    today = datetime.now(timezone.utc).date()
+    age_days = (today - birth).days
+    if age_days < 0:
+        return response(400, {"error": "Child birth_date cannot be in the future"}, event)
+    if age_days > MAX_SUPPORTED_CHILD_AGE_DAYS:
+        return response(
+            400,
+            {"error": "This system supports only children aged 0-24 months. Recording rejected."},
+            event,
+        )
 
     # Get Step Function ARN from SSM Parameter Store (resolves circular dependency)
     try:
@@ -643,8 +595,6 @@ def start_processing(event: Dict) -> Dict:
         "child_id": child_id,
         "session_id": session_id,
         "s3_audio_path": s3_audio_path,
-        # [Phase 3] Session context (feeding time, health, environment) — may be absent
-        "session_context": session.get("session_context") or {},
     }
 
     sfn_client.start_execution(
@@ -664,6 +614,39 @@ def start_processing(event: Dict) -> Dict:
 # =============================================================================
 # GET /session/{session_id}/insight — Get session insight
 # =============================================================================
+def _build_raw_debug_from_session(session: Dict, insight: Dict) -> Dict[str, Any]:
+    """Build raw debug payload from stored session fields (supports older sessions)."""
+    return {
+        "recording": {
+            "sound_type": session.get("sound_type"),
+            "is_adult": session.get("is_adult", False),
+            "age_days": session.get("age_days_at_recording"),
+            "duration_seconds": session.get("duration_seconds"),
+            "fast_reject": session.get("fast_reject", False),
+            "fast_reject_reasons": session.get("fast_reject_reasons", []),
+        },
+        "quality_gate": session.get("quality_gate", {}),
+        "routing": session.get("routing", {}),
+        "sound_classification": session.get("sound_classification", {}),
+        "sound_summary": session.get("sound_summary", {}),
+        "sound_features": session.get("sound_features", {}),
+        "diarization": session.get("diarization", {}),
+        "biological": session.get("biological", {}),
+        "age_classification": session.get("age_classification", {}),
+        "analysis_output": {
+            "display_type": insight.get("display_type"),
+            "headline": insight.get("headline"),
+            "emotion": insight.get("emotion"),
+            "emotion_confidence": insight.get("emotion_confidence"),
+            "top_emotions": insight.get("top_emotions", []),
+            "dunstan_sound": insight.get("dunstan_sound"),
+            "dunstan_ambiguous": insight.get("dunstan_ambiguous", False),
+            "also_possible": insight.get("also_possible", []),
+        },
+        "cry_model_debug": insight.get("debug_payload", {}),
+    }
+
+
 def get_insight(event: Dict) -> Dict:
     session_id = event["pathParameters"]["session_id"]
 
@@ -679,6 +662,14 @@ def get_insight(event: Dict) -> Dict:
     insight = session.get("insight")
     if not insight:
         return response(202, {"status": "processing", "message": "Session is still being processed"}, event)
+    if not isinstance(insight, dict):
+        insight = {}
+    else:
+        insight = dict(insight)
+
+    # Ensure raw debug is available for both new and older sessions.
+    if not isinstance(insight.get("raw_debug"), dict):
+        insight["raw_debug"] = _build_raw_debug_from_session(session, insight)
 
     # Fetch child name for personalization
     child_id = session.get("child_id", "")
@@ -700,21 +691,11 @@ def get_insight(event: Dict) -> Dict:
         "child_name": child_name,
         "insight": insight,
         "timestamp": session.get("timestamp"),
-        # Phase 3: Session context (feeding time, health state, environment)
-        "session_context": session.get("session_context"),
-        # Phase 6: Developmental tracking output
-        "developmental_view": session.get("developmental_view"),
-        # Phase 6: Concept graph decode output
-        "concept_decode": session.get("concept_decode"),
-        # Phase 7: Speech analysis output (LINGUISTIC mode only)
-        "speech_analysis": session.get("speech_analysis"),
         # Phase 1: Biological validation summary
         "biological": {
             k: v for k, v in (session.get("biological") or {}).items()
             if k in ("vtl_cm", "f0_hz", "is_infant", "vtl_zone", "bio_confidence")
         },
-        "developmental_stage": session.get("developmental_stage"),
-        "developmental_mode": session.get("developmental_mode"),
     }, event)
 
 
@@ -725,24 +706,25 @@ def submit_feedback(event: Dict) -> Dict:
     session_id = event["pathParameters"]["session_id"]
     body = json.loads(event.get("body") or "{}")
 
-    # Blank submission guard — at least one substantive field must be present
-    response_type = str(body.get("response_type", "") or "").strip()
-    word_token = str(body.get("word_token", "") or "").strip()
-    notes = str(body.get("notes", "") or "").strip()[:500]
-    if not response_type and not word_token and not notes:
-        return response(400, {"error": "Feedback must include at least response_type, word_token, or notes"}, event)
+    feedback_type = str(body.get("feedback_type") or "cry_emotion").strip().lower()
+    if feedback_type != "cry_emotion":
+        return response(400, {"error": "Only cry emotion feedback is supported"}, event)
 
-    # Full feedback payload — includes Phase 4 (FRS/DS) and Phase 5 (NLP/stage) fields
+    confirmed_emotion = str(body.get("confirmed_emotion", "") or "").strip()
+    if not confirmed_emotion:
+        confirmed_emotions = body.get("confirmed_emotions") or []
+        if isinstance(confirmed_emotions, list) and confirmed_emotions:
+            confirmed_emotion = str(confirmed_emotions[0] or "").strip()
+    if not confirmed_emotion:
+        return response(400, {"error": "confirmed_emotion is required for cry feedback"}, event)
+
+    notes = str(body.get("notes", "") or "").strip()[:500]
     feedback_payload = {
         "session_id": session_id,
-        "response_type": response_type,
-        "effectiveness": body.get("effectiveness", "neutral"),
-        "word_token": word_token,
-        # Phase 5: free-text notes (fed to NLP processor for concept extraction)
+        "feedback_type": "cry_emotion",
+        "confirmed_emotion": confirmed_emotion,
+        "was_correct": bool(body.get("was_correct", True)),
         "notes": notes,
-        # Phase 5: stage-aware schema tracking
-        "developmental_stage": body.get("developmental_stage", ""),
-        "stage_version": int(body.get("stage_version", 0) or 0),
     }
 
     # Invoke feedback processor Lambda
@@ -765,101 +747,73 @@ def submit_feedback(event: Dict) -> Dict:
 
 
 # =============================================================================
-# GET /child/{child_id}/concepts — List personal concept graph for a child
+# GET /status — System status (AI mode, feature flags)
 # =============================================================================
-def list_concepts(event: Dict) -> Dict:
-    user_id = get_user_id(event)
+def get_status(event: Dict) -> Dict:
+    endpoint_configured = bool(SAGEMAKER_HUBERT_ENDPOINT)
+    sagemaker_enabled = bool(USE_SAGEMAKER_INTENT_ENDPOINT and endpoint_configured)
+    return response(200, {
+        "sagemaker_enabled": sagemaker_enabled,
+        "sagemaker_flag_enabled": bool(USE_SAGEMAKER_INTENT_ENDPOINT),
+        "hubert_endpoint_configured": endpoint_configured,
+        "ai_mode": "Advanced" if sagemaker_enabled else "Basic",
+    }, event)
+
+
+# =============================================================================
+# GET /child/{child_id}/training-stats — Training contribution counts
+# =============================================================================
+def get_training_stats(event: Dict) -> Dict:
     child_id = event["pathParameters"]["child_id"]
+    user_id = get_user_id(event)
 
     # Verify ownership
     profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
     if "Item" not in profile_resp:
         return response(404, {"error": "Child not found"}, event)
     if profile_resp["Item"].get("parent_id") != user_id:
-        return response(403, {"error": "Forbidden"}, event)
+        return response(403, {"error": "Not authorized"}, event)
 
-    try:
-        concepts = get_concepts(child_id, concept_graph_table, limit=20)
-        return response(200, {"concepts": concepts, "count": len(concepts)}, event)
-    except Exception as e:
-        logger.error(f"Failed to list concepts for child {child_id}: {e}")
-        return response(500, {"error": "Failed to retrieve concepts"}, event)
+    child_count = 0
+    total_count = 0
 
+    if training_features_table:
+        try:
+            # Scan for confirmed samples — count child-specific and total
+            scan_kwargs = {
+                "Select": "COUNT",
+                "FilterExpression": "is_confirmed = :true",
+                "ExpressionAttributeValues": {":true": True},
+            }
+            # Total count
+            resp = training_features_table.scan(**scan_kwargs)
+            total_count = resp.get("Count", 0)
+            while resp.get("LastEvaluatedKey"):
+                resp = training_features_table.scan(
+                    **scan_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"]
+                )
+                total_count += resp.get("Count", 0)
 
-# =============================================================================
-# GET /child/{child_id}/milestones — List developmental milestones for a child
-# =============================================================================
-def list_milestones(event: Dict) -> Dict:
-    user_id = get_user_id(event)
-    child_id = event["pathParameters"]["child_id"]
+            # Child-specific count
+            child_kwargs = {
+                "Select": "COUNT",
+                "FilterExpression": "is_confirmed = :true AND child_id = :cid",
+                "ExpressionAttributeValues": {":true": True, ":cid": child_id},
+            }
+            resp = training_features_table.scan(**child_kwargs)
+            child_count = resp.get("Count", 0)
+            while resp.get("LastEvaluatedKey"):
+                resp = training_features_table.scan(
+                    **child_kwargs, ExclusiveStartKey=resp["LastEvaluatedKey"]
+                )
+                child_count += resp.get("Count", 0)
+        except Exception as e:
+            logger.warning(f"Training stats query failed: {e}")
 
-    # Verify ownership
-    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
-    if "Item" not in profile_resp:
-        return response(404, {"error": "Child not found"}, event)
-    if profile_resp["Item"].get("parent_id") != user_id:
-        return response(403, {"error": "Forbidden"}, event)
-
-    try:
-        resp = milestones_table.query(
-            IndexName="child_id-first_date-index",
-            KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id),
-            ScanIndexForward=False,  # Most recent first
-        )
-        milestones = [_decimal_to_float(item) for item in resp.get("Items", [])]
-        return response(200, {"milestones": milestones, "count": len(milestones)}, event)
-    except Exception as e:
-        logger.error(f"Failed to list milestones for child {child_id}: {e}")
-        return response(500, {"error": "Failed to retrieve milestones"}, event)
-
-
-# =============================================================================
-# GET /child/{child_id}/language-signals — Private language signal library
-# Returns sound clusters sorted by proto-word status + frequency.
-# Used by the Private Language Page (Phase 9).
-# =============================================================================
-def list_language_signals(event: Dict) -> Dict:
-    user_id = get_user_id(event)
-    child_id = event["pathParameters"]["child_id"]
-
-    # Verify ownership
-    profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
-    if "Item" not in profile_resp:
-        return response(404, {"error": "Child not found"}, event)
-    if profile_resp["Item"].get("parent_id") != user_id:
-        return response(403, {"error": "Forbidden"}, event)
-
-    try:
-        resp = sound_cluster_table.query(
-            IndexName="child_id-last_updated-index",
-            KeyConditionExpression=boto3.dynamodb.conditions.Key("child_id").eq(child_id),
-            ScanIndexForward=False,  # Most recent first
-        )
-        clusters = [_decimal_to_float(item) for item in resp.get("Items", [])]
-
-        # Sort: crystallized proto-words first, then candidates, then by frequency
-        _status_order = {"CRYSTALLIZED": 0, "CANDIDATE": 1, "NONE": 2}
-        clusters.sort(key=lambda c: (
-            _status_order.get(c.get("proto_word_status", "NONE"), 2),
-            -float(c.get("frequency_count", 0)),
-        ))
-
-        # Return summary data (no embedding vectors)
-        signals = []
-        for c in clusters[:50]:
-            signals.append({
-                "cluster_id": c.get("cluster_id"),
-                "label": c.get("dominant_word_token") or c.get("label") or "Unnamed sound",
-                "proto_word_status": c.get("proto_word_status", "NONE"),
-                "frequency_count": int(c.get("frequency_count", 0)),
-                "reinforcement_weight": float(c.get("reinforcement_weight", 0.5)),
-                "last_updated": c.get("last_updated"),
-            })
-
-        return response(200, {"signals": signals, "count": len(signals)}, event)
-    except Exception as e:
-        logger.error(f"Failed to list language signals for child {child_id}: {e}")
-        return response(500, {"error": "Failed to retrieve language signals"}, event)
+    return response(200, {
+        "child_count": child_count,
+        "total_count": total_count,
+    }, event)
 
 
 # =============================================================================
@@ -871,9 +825,8 @@ ROUTES = {
     ("DELETE", "/child/{child_id}"): delete_child,
     ("DELETE", "/account"): delete_account,
     ("GET", "/child/{child_id}/sessions"): list_sessions,
-    ("GET", "/child/{child_id}/concepts"): list_concepts,
-    ("GET", "/child/{child_id}/milestones"): list_milestones,
-    ("GET", "/child/{child_id}/language-signals"): list_language_signals,
+    ("GET", "/child/{child_id}/training-stats"): get_training_stats,
+    ("GET", "/status"): get_status,
     ("POST", "/session/upload"): upload_session,
     ("POST", "/session/{session_id}/start"): start_processing,
     ("GET", "/session/{session_id}/insight"): get_insight,

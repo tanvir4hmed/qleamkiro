@@ -1,0 +1,148 @@
+# QLEAM DEV AWS Report (Basic vs Advanced)
+
+Date: March 24, 2026  
+Environment: DEV only  
+Region: us-east-1  
+Currency: USD
+
+## 1) List of AWS Services Used
+
+- Amazon API Gateway
+- AWS Lambda
+- AWS Step Functions
+- Amazon S3
+- Amazon DynamoDB
+- Amazon Cognito
+- Amazon CloudFront
+- Amazon VPC (Subnets, NAT Gateway, VPC Endpoints, Security Groups)
+- AWS IAM
+- Amazon ECR
+- Amazon CloudWatch
+- Amazon SNS
+- Amazon EventBridge
+- AWS Systems Manager Parameter Store
+- Amazon Bedrock
+- Amazon Transcribe
+- Amazon SageMaker Serverless Inference
+- AWS X-Ray
+
+## 2) Brief Justification for Each Service (Project-Specific)
+
+| Service | Why this project uses it |
+|---|---|
+| Amazon API Gateway | Exposes and secures the frontend APIs (`/child`, `/session/upload`, `/session/{id}/start`, `/session/{id}/insight`, `/feedback`, `/status`) and routes them to `api_handler` Lambda. |
+| AWS Lambda | Runs core backend units (`api_handler`, `feature_extraction`, `insight_generator`, `feedback_processor`, `training_check`, `model_trainer`) with autoscaling and no server management. |
+| AWS Step Functions | Orchestrates the audio pipeline (`AudioClassifier -> InsightGenerator`) and training pipeline with retries, failure branching, and execution history. |
+| Amazon S3 | Stores uploaded audio files, frontend static assets, Terraform remote state, and model artifacts. |
+| Amazon DynamoDB | Stores child profile, session records, feedback records, training features, and model versions with low-latency reads/writes. |
+| Amazon Cognito | Provides managed sign-in/auth and JWT authorizer integration for API Gateway protected routes. |
+| Amazon CloudFront | Delivers the frontend via CDN with HTTPS and caching, reducing origin load and improving response time. |
+| Amazon VPC | Keeps Lambda in private subnets, controls egress via NAT, and uses security groups/endpoints for network isolation and safer traffic paths. |
+| AWS IAM | Enforces least-privilege permissions between Lambda, Step Functions, S3, DynamoDB, Bedrock, Transcribe, and SageMaker. |
+| Amazon ECR | Stores Lambda container images and supports versioned deployments and rollbacks through CI/CD. |
+| Amazon CloudWatch | Collects logs and metrics, hosts dashboard, and powers operational alarms for Lambda/API/Step Functions. |
+| Amazon SNS | CloudWatch alarms publish to SNS topic; SNS fans out to email/subscribers as a centralized incident notification channel. |
+| Amazon EventBridge | Triggers daily training-check execution and supports event-driven pipeline triggering patterns. |
+| AWS Systems Manager Parameter Store | Stores runtime references/config (for example, Step Function ARN path) outside application code. |
+| Amazon Bedrock | Supports model-based insight text generation path for parent-facing narrative output (when enabled in runtime path). |
+| Amazon Transcribe | Performs speech-to-text in linguistic flow (`boto3.client("transcribe")`) so transcript/word analysis can be generated. |
+| Amazon SageMaker Serverless Inference | Hosts HuBERT endpoint for Advanced-mode acoustic inference (`boto3.client("sagemaker-runtime")` + endpoint invocation). |
+| AWS X-Ray | Captures end-to-end traces across API/Lambda/Step Functions to speed up debugging and latency root-cause analysis. |
+
+## 3) Resource Optimization Strategies (and Implementation Status)
+
+| Optimization Strategy | Status | Evidence in project |
+|---|---|---|
+| DynamoDB on-demand billing (`PAY_PER_REQUEST`) | Implemented | `infrastructure/modules/dynamodb/main.tf` |
+| S3 lifecycle (archive + expiration) for audio | Implemented | `infrastructure/modules/s3/main.tf` |
+| CloudFront lower cost class (`PriceClass_100`) | Implemented | `infrastructure/modules/frontend/main.tf` |
+| ECR lifecycle (keep last 10 images) | Implemented | `infrastructure/modules/ecr/main.tf` |
+| Log retention window control (DEV=30 days) | Implemented | `log_retention_days` in env + log group retention in modules |
+| VPC endpoints for S3 and DynamoDB | Implemented | `infrastructure/modules/vpc/main.tf` |
+| Keep advanced inference off by default (`use_sagemaker_intent_endpoint=false`) | Implemented | `infrastructure/environments/dev/terraform.tfvars` |
+| Disable NAT in DEV to reduce fixed baseline | Not implemented | DEV still has `enable_nat_gateway=true` |
+
+## 4) Expected Running Costs
+
+### 4.1 Cost model
+
+Monthly cost = **Fixed baseline cost** + **Usage-driven cost**.
+
+- Fixed baseline continues even with zero traffic (NAT, IPv4, dashboard, alarms, storage, ECR).
+- Usage-driven part increases with request volume (API, Step Functions, Transcribe, Bedrock, optional SageMaker calls).
+
+### 4.2 SageMaker Serverless (HuBERT) per-hit estimate
+
+For SageMaker Serverless inference, cost has two parts:
+
+1. Inference duration charge  
+2. Data processed charge (In + Out)
+
+Reference pricing example on SageMaker page shows:
+- 2 GB endpoint compute rate: **$0.00004 / second**
+- Data processing: **$0.016 / GB** (In/Out)
+- Example: 10M requests x 100ms at 2GB => **$40.16 total** (about **$0.000004016 per call**)
+
+Project endpoint memory is 3072 MB (3 GB).  
+Estimated compute rate scales with memory:
+
+- Estimated 3 GB rate = `0.00004 * (3072 / 2048)` = **$0.00006 / second**
+
+Per-hit formula (Advanced mode):
+
+`Per hit cost ~= (duration_seconds * 0.00006) + ((GB_in + GB_out) * 0.016)`
+
+Practical estimate used in this report:
+- Average HuBERT call cost (light-to-moderate payload) ≈ **$0.00005 per hit** (order-of-magnitude estimate)
+- So, **10,000 HuBERT hits ≈ $0.50 / month** (estimate)
+
+Important clarification:
+- **$0.50 is not per call** in this report.
+- It is the **estimated total monthly SageMaker inference add-on** for ~10,000 HuBERT calls under the stated assumptions.
+- If payload becomes large (especially large JSON output) or duration increases, per-hit cost increases.
+
+### 4.3 Traffic scenarios (monthly)
+
+| Scenario | Basic Mode | Advanced Mode |
+|---|---:|---:|
+| Zero traffic | **~$79/month** | **~$79/month** |
+| 10,000 requests/month | **$159.06/month** | **$159.56/month** |
+
+### 4.4 One-glance total (overall)
+
+| View | Monthly Cost |
+|---|---:|
+| Baseline fixed cost (no traffic) | **~$79** |
+| Total with 10,000 requests (Basic) | **$159.06** |
+| Total with 10,000 requests (Advanced) | **$159.56** |
+| Advanced uplift over Basic at 10,000 requests | **+$0.50** |
+
+### 4.5 Per-user view (how to present monthly)
+
+Use monthly active users (`U`) and avg requests per user per month (`R`):
+
+- Total requests `H = U * R`
+- Basic monthly estimate (current assumptions):  
+  `Cost_basic ~= 78.76 + (0.00803 * H)`
+- Advanced monthly estimate (current assumptions):  
+  `Cost_advanced ~= 78.76 + (0.00808 * H)`
+
+Example:
+- If `U = 100` users and `R = 100` requests/user, `H = 10,000`  
+  => Basic `$159.06`, Advanced `$159.56`
+
+Note: If your real speech duration, Transcribe ratio, or HuBERT invocation ratio changes, variable cost will change accordingly.
+
+
+
+
+## 4) Expected Running Costs
+
+| Traffic (Monthly Requests) | Basic Mode (USD/month) | Advanced Mode (USD/month) |
+|---:|---:|---:|
+| 0 | **~79.00** | **~79.00** |
+| 10,000 | **159.06** | **172.30** |
+
+**Total Summary (One Glance):**
+- **Basic Mode:** `~$79` to `$159.06` / month (0 to 10,000 requests)
+- **Advanced Mode:** `~$79` to `$172.30` / month (0 to 10,000 requests)

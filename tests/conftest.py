@@ -13,12 +13,12 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("CHILD_PROFILE_TABLE", "test-ChildProfile")
 os.environ.setdefault("SESSION_TABLE", "test-Session")
-os.environ.setdefault("SOUND_CLUSTER_TABLE", "test-SoundCluster")
-os.environ.setdefault("SEMANTIC_BRIDGE_TABLE", "test-SemanticBridge")
 os.environ.setdefault("FEEDBACK_TABLE", "test-Feedback")
 os.environ.setdefault("S3_BUCKET_NAME", "test-audio-bucket")
-os.environ.setdefault("ALPHA_VALUE", "0.3")
-os.environ.setdefault("CLUSTER_SIMILARITY_THRESHOLD", "0.85")
+os.environ.setdefault("TRAINING_FEATURES_TABLE", "test-TrainingFeatures")
+os.environ.setdefault("SAGEMAKER_HUBERT_ENDPOINT", "")
+os.environ.setdefault("MODEL_VERSIONS_TABLE", "test-ModelVersions")
+os.environ.setdefault("TRAINING_STEP_FUNCTION_ARN", "")
 
 
 @pytest.fixture
@@ -71,50 +71,6 @@ def dynamodb_tables(aws_credentials):
             BillingMode="PAY_PER_REQUEST",
         )
 
-        # SoundCluster
-        dynamodb.create_table(
-            TableName="test-SoundCluster",
-            KeySchema=[{"AttributeName": "cluster_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "cluster_id", "AttributeType": "S"},
-                {"AttributeName": "child_id", "AttributeType": "S"},
-                {"AttributeName": "last_updated", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[{
-                "IndexName": "child_id-last_updated-index",
-                "KeySchema": [
-                    {"AttributeName": "child_id", "KeyType": "HASH"},
-                    {"AttributeName": "last_updated", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            }],
-            BillingMode="PAY_PER_REQUEST",
-        )
-
-        # SemanticBridge
-        dynamodb.create_table(
-            TableName="test-SemanticBridge",
-            KeySchema=[{"AttributeName": "bridge_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "bridge_id", "AttributeType": "S"},
-                {"AttributeName": "child_id", "AttributeType": "S"},
-                {"AttributeName": "cluster_id", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "child_id-index",
-                    "KeySchema": [{"AttributeName": "child_id", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
-                {
-                    "IndexName": "cluster_id-index",
-                    "KeySchema": [{"AttributeName": "cluster_id", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
-
         # Feedback
         dynamodb.create_table(
             TableName="test-Feedback",
@@ -132,6 +88,40 @@ def dynamodb_tables(aws_credentials):
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             }],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        # TrainingFeatures
+        dynamodb.create_table(
+            TableName="test-TrainingFeatures",
+            KeySchema=[{"AttributeName": "feature_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "feature_id", "AttributeType": "S"},
+                {"AttributeName": "sound_type", "AttributeType": "S"},
+                {"AttributeName": "age_days", "AttributeType": "N"},
+            ],
+            GlobalSecondaryIndexes=[{
+                "IndexName": "sound_type-age_days-index",
+                "KeySchema": [
+                    {"AttributeName": "sound_type", "KeyType": "HASH"},
+                    {"AttributeName": "age_days", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            }],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        # ModelVersions
+        dynamodb.create_table(
+            TableName="test-ModelVersions",
+            KeySchema=[
+                {"AttributeName": "model_type", "KeyType": "HASH"},
+                {"AttributeName": "version", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "model_type", "AttributeType": "S"},
+                {"AttributeName": "version", "AttributeType": "N"},
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
 

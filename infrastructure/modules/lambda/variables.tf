@@ -42,56 +42,33 @@ variable "session_table" {
   type        = string
 }
 
-variable "sound_cluster_table" {
-  description = "DynamoDB SoundCluster table name"
-  type        = string
-}
-
-variable "semantic_bridge_table" {
-  description = "DynamoDB SemanticBridge table name"
-  type        = string
-}
-
 variable "feedback_table" {
   description = "DynamoDB Feedback table name"
   type        = string
 }
 
-variable "concept_graph_table" {
-  description = "DynamoDB ConceptGraph table name"
+variable "training_features_table" {
+  description = "DynamoDB TrainingFeatures table name"
   type        = string
+  default     = ""
 }
 
-variable "milestones_table" {
-  description = "DynamoDB Milestones table name"
+variable "model_versions_table" {
+  description = "DynamoDB ModelVersions table name (Phase 3)"
   type        = string
+  default     = ""
 }
 
-variable "population_model_table" {
-  description = "DynamoDB PopulationModel table name"
+variable "training_step_function_arn" {
+  description = "ARN of the training Step Function (Phase 3)"
   type        = string
+  default     = ""
 }
 
-variable "training_candidate_table" {
-  description = "DynamoDB TrainingCandidate table name"
+variable "sagemaker_hubert_endpoint_name" {
+  description = "SageMaker HuBERT endpoint name for feature extraction"
   type        = string
-}
-
-variable "model_registry_table" {
-  description = "DynamoDB ModelRegistry table name"
-  type        = string
-}
-
-variable "alpha_value" {
-  description = "EMA alpha value for baseline aggregation"
-  type        = number
-  default     = 0.3
-}
-
-variable "cluster_similarity_threshold" {
-  description = "Cosine similarity threshold for cluster assignment"
-  type        = number
-  default     = 0.85
+  default     = ""
 }
 
 variable "step_function_arn" {

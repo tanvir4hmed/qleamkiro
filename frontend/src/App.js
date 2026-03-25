@@ -1,14 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import Dashboard from './pages/Dashboard';
 import SessionDetail from './pages/SessionDetail';
-import ProgressPage from './pages/ProgressPage';
-import LanguagePage from './pages/LanguagePage';
 import './App.css';
 
 function App() {
+  const [aiMode, setAiMode] = useState(null);
+
   return (
     <Authenticator
       loginMechanisms={['email']}
@@ -22,6 +22,13 @@ function App() {
                 <span className="brand-logo">◎</span>
                 <span className="brand-name">Qleam</span>
               </div>
+              <div className="header-center">
+                {aiMode && (
+                  <div className={`ai-mode-badge ai-mode-badge--${aiMode.toLowerCase()} ai-mode-badge--header`}>
+                    AI Mode: {aiMode}
+                  </div>
+                )}
+              </div>
               <div className="header-user">
                 <span className="user-name">
                   {user?.signInDetails?.loginId || user?.username}
@@ -33,10 +40,8 @@ function App() {
             </header>
             <main className="app-main">
               <Routes>
-                <Route path="/" element={<Dashboard user={user} />} />
+                <Route path="/" element={<Dashboard user={user} onAiModeChange={setAiMode} />} />
                 <Route path="/session/:sessionId" element={<SessionDetail />} />
-                <Route path="/progress/:childId" element={<ProgressPage />} />
-                <Route path="/language/:childId" element={<LanguagePage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </main>

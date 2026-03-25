@@ -10,11 +10,15 @@ AWS_REGION="us-east-1"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-# The 3 Lambda functions that are missing placeholder images
+# Lambda functions that may need placeholder images during first deploy.
+# Keep this list in sync with infrastructure/modules/ecr/variables.tf.
 MISSING_FUNCTIONS=(
-    "developmental_tracker"
-    "concept_decoder"
-    "speech_analyzer"
+    "feature_extraction"
+    "cluster_engine"
+    "reinforcement_engine"
+    "insight_generator"
+    "feedback_processor"
+    "api_handler"
 )
 
 echo "🔧 Pushing placeholder images to ECR..."

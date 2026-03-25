@@ -7,13 +7,37 @@ import RecordButton from '../components/RecordButton';
 import InsightPanel from '../components/InsightPanel';
 
 const SELECTED_CHILD_KEY = 'qleam_selected_child_id';
+const MAX_SUPPORTED_CHILD_AGE_DAYS = 730; // 24 months
+
+function getBirthDateBounds() {
+  const today = new Date();
+  const max = today.toISOString().split('T')[0];
+  const minDate = new Date(today);
+  minDate.setDate(minDate.getDate() - MAX_SUPPORTED_CHILD_AGE_DAYS);
+  const min = minDate.toISOString().split('T')[0];
+  return { min, max };
+}
+
+function isBirthDateInSupportedRange(dateString) {
+  if (!dateString) return false;
+  const parsed = new Date(`${dateString}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return false;
+
+  const now = new Date();
+  const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const birthUtcMs = Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate());
+  const ageDays = Math.floor((todayUtcMs - birthUtcMs) / 86400000);
+
+  return ageDays >= 0 && ageDays <= MAX_SUPPORTED_CHILD_AGE_DAYS;
+}
 
 // ─── Settings Panel ──────────────────────────────────────────────────────────
 
-function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess }) {
+function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess, anchor, isClosing }) {
   const [panel, setPanel] = useState(null); // null | 'add' | 'remove'
   const [addName, setAddName] = useState('');
   const [addDob, setAddDob] = useState('');
+  const [addGender, setAddGender] = useState('');
   const [deleteChildId, setDeleteChildId] = useState('');
   const [confirmName, setConfirmName] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -21,14 +45,20 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const overlayRef = useRef(null);
+  const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
   const handleAdd = async () => {
     if (!addName.trim() || !addDob) { setAddError('Name and date of birth are required.'); return; }
+    if (!isBirthDateInSupportedRange(addDob)) {
+      // setAddError('Only children aged 0-24 months are supported.');
+      setAddError('Only children aged 0-24 months are supported.');
+      return;
+    }
     setAdding(true);
     setAddError('');
     try {
-      const child = await onAddChild(addName.trim(), addDob);
-      setAddName(''); setAddDob(''); setPanel(null);
+      const child = await onAddChild(addName.trim(), addDob, addGender);
+      setAddName(''); setAddDob(''); setAddGender(''); setPanel(null);
       onSuccess?.(`${child?.name || addName.trim()} added`);
     } catch (e) { setAddError(e.message || 'Failed to add child.'); }
     finally { setAdding(false); }
@@ -58,9 +88,17 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
     setAddError(''); setDeleteError('');
   };
 
+  const panelStyle = anchor ? {
+    top: `${anchor.top}px`,
+    right: anchor.right !== undefined ? `${anchor.right}px` : undefined,
+    left: anchor.left !== undefined ? `${anchor.left}px` : undefined,
+    width: anchor.left !== undefined ? 'auto' : undefined,
+    maxHeight: anchor.maxHeight ? `${anchor.maxHeight}px` : undefined,
+  } : undefined;
+
   return (
-    <div className="settings-overlay" onClick={e => { if (e.target === overlayRef.current) onClose(); }} ref={overlayRef}>
-      <div className="settings-panel" role="dialog" aria-label="Settings">
+    <div className={`settings-overlay${isClosing ? ' closing' : ''}`} onClick={e => { if (e.target === overlayRef.current) onClose(); }} ref={overlayRef}>
+      <div className={`settings-panel${isClosing ? ' closing' : ''}`} role="dialog" aria-label="Settings" style={panelStyle}>
         <div className="settings-header">
           <h2>Settings</h2>
           <button className="settings-close-btn" onClick={onClose} aria-label="Close">✕</button>
@@ -102,9 +140,23 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
                   type="date"
                   value={addDob}
                   onChange={e => setAddDob(e.target.value)}
-                  max={new Date().toISOString().split('T')[0]}
+                  min={minBirthDate}
+                  max={maxBirthDate}
                   className="settings-input"
                 />
+              </label>
+              <label className="settings-dob-label">
+                Gender <span className="birth-date-optional">(optional)</span>
+                <select
+                  value={addGender}
+                  onChange={e => setAddGender(e.target.value)}
+                  className="settings-input settings-select"
+                >
+                  <option value="">Prefer not to say</option>
+                  <option value="boy">Boy</option>
+                  <option value="girl">Girl</option>
+                  <option value="other">Other</option>
+                </select>
               </label>
               {addError && <p className="settings-error">{addError}</p>}
               <button
@@ -169,7 +221,7 @@ function SettingsPanel({ children, onClose, onAddChild, onDeleteChild, onSuccess
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard() {
+function Dashboard({ onAiModeChange }) {
   const navigate = useNavigate();
   const [children, setChildren] = useState([]);
   const [selectedChild, setSelectedChild] = useState(null);
@@ -178,16 +230,89 @@ function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [isSettingsClosing, setIsSettingsClosing] = useState(false);
   const [showAddFirst, setShowAddFirst] = useState(false);
   const [newChildName, setNewChildName] = useState('');
   const [newChildBirthDate, setNewChildBirthDate] = useState('');
   const [notification, setNotification] = useState(null);
+  const [settingsAnchor, setSettingsAnchor] = useState({ top: 70, right: 16, maxHeight: 420 });
+  const [trainingStats, setTrainingStats] = useState(null);
   const notificationTimerRef = useRef(null);
+  const settingsCloseTimerRef = useRef(null);
+  const childSectionRef = useRef(null);
+  const SETTINGS_GUTTER = 12;
+  const SETTINGS_MAX_WIDTH = 360;
+  const { min: minBirthDate, max: maxBirthDate } = getBirthDateBounds();
 
   const showNotification = useCallback((msg) => {
     setNotification(msg);
     clearTimeout(notificationTimerRef.current);
     notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
+  }, []);
+
+  const calculateSettingsAnchor = useCallback(() => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rect = childSectionRef.current?.getBoundingClientRect();
+
+    if (!rect) {
+      return {
+        top: 70,
+        right: SETTINGS_GUTTER,
+        maxHeight: Math.max(260, vh - 84),
+      };
+    }
+
+    const desiredTop = Math.round(rect.top);
+    const top = Math.max(SETTINGS_GUTTER, Math.min(desiredTop, vh - 220));
+    const maxHeight = Math.max(260, vh - top - SETTINGS_GUTTER);
+
+    const panelWidth = Math.min(SETTINGS_MAX_WIDTH, vw - (SETTINGS_GUTTER * 2));
+    const rightFromSection = Math.round(vw - rect.right);
+    const maxRightForViewport = Math.max(0, vw - panelWidth);
+    const right = Math.max(0, Math.min(rightFromSection, maxRightForViewport));
+
+    return {
+      top,
+      right,
+      maxHeight,
+    };
+  }, [SETTINGS_GUTTER, SETTINGS_MAX_WIDTH]);
+
+  const openSettings = useCallback(() => {
+    clearTimeout(settingsCloseTimerRef.current);
+    setIsSettingsClosing(false);
+    setSettingsAnchor(calculateSettingsAnchor());
+    setShowSettings(true);
+  }, [calculateSettingsAnchor]);
+
+  const closeSettings = useCallback(() => {
+    setIsSettingsClosing(true);
+    clearTimeout(settingsCloseTimerRef.current);
+    settingsCloseTimerRef.current = setTimeout(() => {
+      setShowSettings(false);
+      setIsSettingsClosing(false);
+    }, 140);
+  }, []);
+
+  const toggleSettings = useCallback(() => {
+    if (showSettings && !isSettingsClosing) {
+      closeSettings();
+      return;
+    }
+    openSettings();
+  }, [showSettings, isSettingsClosing, openSettings, closeSettings]);
+
+  useEffect(() => {
+    if (!showSettings) return undefined;
+    const handleResize = () => setSettingsAnchor(calculateSettingsAnchor());
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [showSettings, calculateSettingsAnchor]);
+
+  useEffect(() => () => {
+    clearTimeout(notificationTimerRef.current);
+    clearTimeout(settingsCloseTimerRef.current);
   }, []);
 
   const getAuthHeaders = async () => {
@@ -227,6 +352,10 @@ function Dashboard() {
       } catch (_) {}
     }
 
+    apiCall('/status')
+      .then(data => onAiModeChange?.(data.ai_mode || null))
+      .catch(() => onAiModeChange?.(null));
+
     apiCall('/child')
       .then(data => {
         const fetched = data.children || [];
@@ -241,7 +370,7 @@ function Dashboard() {
         });
       })
       .catch(err => setError(err.message));
-  }, [apiCall]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [apiCall, onAiModeChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load sessions — cancel stale requests to prevent wrong child's insight bleeding through
   useEffect(() => {
@@ -262,15 +391,22 @@ function Dashboard() {
       .catch(err => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
+    apiCall(`/child/${selectedChild.child_id}/training-stats`)
+      .then(data => { if (!cancelled) setTrainingStats(data); })
+      .catch(() => { if (!cancelled) setTrainingStats(null); });
+
     return () => { cancelled = true; };
   }, [selectedChild, apiCall]);
 
-  const addChild = useCallback(async (name, birthDate) => {
+  const addChild = useCallback(async (name, birthDate, gender = '') => {
+    if (!isBirthDateInSupportedRange(birthDate)) {
+      throw new Error('Only children aged 0-24 months are supported.');
+    }
     const data = await apiCall('/child', {
       method: 'POST',
-      body: JSON.stringify({ name, birth_date: birthDate }),
+      body: JSON.stringify({ name, birth_date: birthDate, gender }),
     });
-    const newChild = { child_id: data.child_id, name, birth_date: birthDate };
+    const newChild = { child_id: data.child_id, name, birth_date: birthDate, gender };
     setChildren(prev => {
       const updated = [...prev, newChild];
       localStorage.setItem('qleam_children', JSON.stringify(updated));
@@ -282,6 +418,11 @@ function Dashboard() {
 
   const handleAddFirstChild = async () => {
     if (!newChildName.trim() || !newChildBirthDate) return;
+    if (!isBirthDateInSupportedRange(newChildBirthDate)) {
+      // setError('Only children aged 0-24 months are supported.');
+      setError('Only children aged 0-24 months are supported.');
+      return;
+    }
     try {
       await addChild(newChildName.trim(), newChildBirthDate);
       setNewChildName(''); setNewChildBirthDate(''); setShowAddFirst(false);
@@ -323,7 +464,7 @@ function Dashboard() {
       )}
 
       {/* ── Child Selector ── */}
-      <section className="child-section">
+      <section className="child-section" ref={childSectionRef}>
         <div className="child-section-header">
           <div className="child-selector">
             {children.map(child => (
@@ -342,10 +483,13 @@ function Dashboard() {
             )}
           </div>
           <button
-            className="settings-icon-btn"
-            onClick={() => setShowSettings(true)}
-            title="Settings"
-            aria-label="Open settings"
+            className={`settings-icon-btn${showSettings ? ' is-hidden' : ''}${showSettings && !isSettingsClosing ? ' active' : ''}`}
+            onClick={toggleSettings}
+            title={showSettings && !isSettingsClosing ? 'Close settings' : 'Settings'}
+            aria-label={showSettings && !isSettingsClosing ? 'Close settings' : 'Open settings'}
+            aria-expanded={showSettings && !isSettingsClosing}
+            aria-hidden={showSettings}
+            tabIndex={showSettings ? -1 : 0}
           >
             ⚙
           </button>
@@ -368,7 +512,8 @@ function Dashboard() {
                 type="date"
                 value={newChildBirthDate}
                 onChange={e => setNewChildBirthDate(e.target.value)}
-                max={new Date().toISOString().split('T')[0]}
+                min={minBirthDate}
+                max={maxBirthDate}
               />
             </label>
             <button onClick={handleAddFirstChild} disabled={!newChildName.trim() || !newChildBirthDate}>Add</button>
@@ -376,33 +521,19 @@ function Dashboard() {
           </div>
         )}
 
-        {/* Child-specific navigation */}
-        {selectedChild && (
-          <div className="child-nav-bar">
-            <button
-              className="child-nav-btn"
-              onClick={() => navigate(`/progress/${selectedChild.child_id}`)}
-            >
-              Journey ↗
-            </button>
-            <button
-              className="child-nav-btn child-nav-btn--language"
-              onClick={() => navigate(`/language/${selectedChild.child_id}`)}
-            >
-              Language ↗
-            </button>
-          </div>
-        )}
       </section>
+
 
       {/* ── Settings Panel ── */}
       {showSettings && (
         <SettingsPanel
           children={children}
-          onClose={() => setShowSettings(false)}
+          onClose={closeSettings}
           onAddChild={addChild}
           onDeleteChild={handleDeleteChild}
-          onSuccess={(msg) => { showNotification(msg); setShowSettings(false); }}
+          onSuccess={(msg) => { showNotification(msg); closeSettings(); }}
+          anchor={settingsAnchor}
+          isClosing={isSettingsClosing}
         />
       )}
 
@@ -416,11 +547,20 @@ function Dashboard() {
             </p>
             <RecordButton
               childId={selectedChild.child_id}
-              childBirthDate={selectedChild.birth_date}
               apiCall={apiCall}
               onComplete={handleSessionComplete}
             />
           </section>
+
+          {/* Training Contribution — only shown when count > 0 */}
+          {trainingStats && trainingStats.child_count > 0 && (
+            <div className="training-stats">
+              Your baby contributed <strong>{trainingStats.child_count}</strong> sample{trainingStats.child_count !== 1 ? 's' : ''} to our AI
+              {trainingStats.total_count > 0 && (
+                <span className="training-stats-total"> ({trainingStats.total_count} total across all families)</span>
+              )}
+            </div>
+          )}
 
           {/* Latest Insight — only shown when there IS a real insight */}
           {latestInsight && (

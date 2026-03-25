@@ -4,7 +4,7 @@ aws_region  = "us-east-1"
 
 # VPC
 vpc_cidr           = "10.0.0.0/16"
-availability_zones = ["us-east-1a", "us-east-1b"]
+availability_zones = ["us-east-1a"]
 enable_nat_gateway = true
 
 # DynamoDB
@@ -20,6 +20,7 @@ audio_retention_days = 90
 alpha_value                  = 0.3
 cluster_similarity_threshold = 0.85
 use_bedrock                  = true
+use_sagemaker_intent_endpoint = false  # Set to true to activate SageMaker HuBERT (paid per call)
 bedrock_model_id             = "anthropic.claude-3-haiku-20240307-v1:0"
 use_transcribe_for_linguistic = true
 transcribe_timeout_seconds    = 25

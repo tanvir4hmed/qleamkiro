@@ -14,9 +14,15 @@ variable "bucket_name" {
 }
 
 variable "audio_retention_days" {
-  description = "Number of days to retain raw audio files before deletion"
+  description = "Number of days before archiving audio to Glacier"
   type        = number
   default     = 90
+}
+
+variable "audio_max_retention_days" {
+  description = "Number of days before permanent deletion of audio files"
+  type        = number
+  default     = 365
 }
 
 variable "allowed_origins" {
