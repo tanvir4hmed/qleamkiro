@@ -16,14 +16,15 @@ def test_encode_age_shape():
     assert result.dtype == np.float32
 
 
-def test_encode_age_newborn_flag():
-    # Under 90 days -> newborn flag = 1.0
-    result = encode_age(30)
-    assert result[3] == 1.0
+def test_encode_age_newborn_hint_is_smooth():
+    result_60 = encode_age(60)
+    result_90 = encode_age(90)
+    result_120 = encode_age(120)
 
-    # Over 90 days -> newborn flag = 0.0
-    result = encode_age(100)
-    assert result[3] == 0.0
+    assert result_60[3] > result_90[3] > result_120[3]
+    assert result_60[3] > 0.9
+    assert result_90[3] == pytest.approx(0.5, abs=1e-6)
+    assert result_120[3] < 0.1
 
 
 def test_encode_age_normalization():

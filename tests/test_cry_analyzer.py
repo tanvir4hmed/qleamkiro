@@ -76,12 +76,12 @@ def test_analyze_cry_uses_age_specific_variant_and_dunstan_gating():
     }
 
     newborn_result = analyze_cry({}, age_days=45, classifier_result=classifier_result)
-    toddler_result = analyze_cry({}, age_days=400, classifier_result=classifier_result)
+    early_infant_result = analyze_cry({}, age_days=120, classifier_result=classifier_result)
 
     assert newborn_result["age_bracket"] == "0_90"
     assert newborn_result["dunstan_sound"] == "neh"
     assert "feeding reflex" in newborn_result["what_means"]
 
-    assert toddler_result["age_bracket"] == "366_730"
-    assert toddler_result["dunstan_sound"] is None
-    assert "multiple channels" in toddler_result["what_means"]
+    assert early_infant_result["age_bracket"] == "91_180"
+    assert early_infant_result["dunstan_sound"] is None
+    assert "developing more varied ways" in early_infant_result["what_means"]

@@ -91,6 +91,43 @@ def lambda_handler(event, context):
         return {"triggered": False, "reason": f"error:{e}"}
 
 
+def _scan_confirmed_samples(table, projection_expression: str = None) -> List[Dict]:
+    """Scan confirmed training samples with pagination support."""
+    from boto3.dynamodb.conditions import Attr
+
+    scan_kwargs = {
+        "FilterExpression": Attr("is_confirmed").eq(True),
+    }
+    if projection_expression:
+        scan_kwargs["ProjectionExpression"] = projection_expression
+
+    response = table.scan(**scan_kwargs)
+    items = response.get("Items", [])
+
+    while "LastEvaluatedKey" in response:
+        paged_kwargs = {
+            **scan_kwargs,
+            "ExclusiveStartKey": response["LastEvaluatedKey"],
+        }
+        response = table.scan(**paged_kwargs)
+        items.extend(response.get("Items", []))
+
+    return items
+
+
+def _count_samples(table) -> Tuple[int, int]:
+    """
+    Backward-compatible sample counts for total confirmed and untrained samples.
+
+    This preserves the pre-bucket helper contract used by tests and older callers
+    while the Lambda itself now evaluates bucket-specific counts separately.
+    """
+    items = _scan_confirmed_samples(table, "included_in_training")
+    total = len(items)
+    since_last = sum(1 for item in items if "included_in_training" not in item)
+    return total, since_last
+
+
 def _count_samples_per_bucket(table) -> Dict[str, Dict]:
     """
     Count confirmed samples grouped by age buckets.
@@ -108,23 +145,10 @@ def _count_samples_per_bucket(table) -> Dict[str, Dict]:
             ...
         }
     """
-    from boto3.dynamodb.conditions import Attr
-
-    # Scan all confirmed samples
-    response = table.scan(
-        FilterExpression=Attr("is_confirmed").eq(True),
-        ProjectionExpression="age_day_bucket,age_week_bucket,age_slot_bucket,communication_stage,included_in_training",
+    items = _scan_confirmed_samples(
+        table,
+        "age_day_bucket,age_week_bucket,age_slot_bucket,communication_stage,included_in_training",
     )
-    items = response.get("Items", [])
-
-    # Handle pagination
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=Attr("is_confirmed").eq(True),
-            ProjectionExpression="age_day_bucket,age_week_bucket,age_slot_bucket,communication_stage,included_in_training",
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
 
     # Group by buckets
     bucket_stats = {}
@@ -134,7 +158,7 @@ def _count_samples_per_bucket(table) -> Dict[str, Dict]:
         age_week = item.get("age_week_bucket")
         age_slot = item.get("age_slot_bucket")
         stage = item.get("communication_stage", "A")
-        trained = item.get("included_in_training")
+        is_untrained = "included_in_training" not in item
 
         # Day bucket (most specific)
         if age_day is not None:
@@ -148,7 +172,7 @@ def _count_samples_per_bucket(table) -> Dict[str, Dict]:
                     "since_last_train": 0,
                 }
             bucket_stats[key]["total"] += 1
-            if not trained:
+            if is_untrained:
                 bucket_stats[key]["since_last_train"] += 1
 
         # Week bucket
@@ -163,7 +187,7 @@ def _count_samples_per_bucket(table) -> Dict[str, Dict]:
                     "since_last_train": 0,
                 }
             bucket_stats[key]["total"] += 1
-            if not trained:
+            if is_untrained:
                 bucket_stats[key]["since_last_train"] += 1
 
         # Slot bucket (least specific)
@@ -178,7 +202,7 @@ def _count_samples_per_bucket(table) -> Dict[str, Dict]:
                     "since_last_train": 0,
                 }
             bucket_stats[key]["total"] += 1
-            if not trained:
+            if is_untrained:
                 bucket_stats[key]["since_last_train"] += 1
 
     return bucket_stats
@@ -304,4 +328,3 @@ def _start_training_for_bucket(bucket_info: Dict) -> str:
     except Exception as e:
         logger.error(f"Failed to start training Step Function: {e}")
         return ""
-

@@ -321,6 +321,7 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
                 )
                 # Store embeddings for Phase 3 training
                 _store_training_features(
+                    child_id=child_id,
                     session_id=session_id,
                     hubert_embeddings=hubert_emb,
                     sound_type=sound_type,
@@ -778,6 +779,7 @@ def _save_and_return_fast_reject(
 
 
 def _store_training_features(
+    child_id: str,
     session_id: str,
     hubert_embeddings: np.ndarray,
     sound_type: str,

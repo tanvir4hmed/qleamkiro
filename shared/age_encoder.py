@@ -7,7 +7,7 @@ Encoding:
   [0] age_days / 730.0              — normalized 0-1 for 0-24 months
   [1] sin(age_days * pi / 90)       — captures ~3-month developmental cycles
   [2] sin(age_days * pi / 180)      — captures ~6-month developmental cycles
-  [3] 1.0 if age_days < 90 else 0.0 — newborn hint (Dunstan reflex period)
+  [3] smooth sigmoid newborn hint   — gradual transition around day 90
 """
 import math
 from typing import List
@@ -29,7 +29,7 @@ def encode_age(age_days: int) -> np.ndarray:
         np.ndarray of shape (4,), dtype float32
     """
     age = max(0, min(age_days, MAX_AGE_DAYS))
-    # Smooth sigmoid decay for newborn hint: 1.0 at day 60, 0.5 at day 90, ~0.0 at day 120
+    # Smooth newborn transition: high through early infancy, centered at day 90.
     newborn_hint = 1.0 / (1.0 + math.exp((age - 90) / 10))
     return np.array([
         age / MAX_AGE_DAYS,

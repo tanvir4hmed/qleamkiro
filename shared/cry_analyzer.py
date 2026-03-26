@@ -382,8 +382,8 @@ DUNSTAN_MAP = {
 
 
 def get_dunstan_sound(emotion_key: str, age_days: Optional[int] = None) -> Optional[str]:
-    """Get the Dunstan sound name for a given emotion. Only relevant for 0-6m."""
-    if age_days is not None and age_days > 180:
+    """Get the Dunstan sound name for a given emotion. Only relevant for 0-90d."""
+    if age_days is not None and age_days > 90:
         return None
     return DUNSTAN_MAP.get(emotion_key)
 
