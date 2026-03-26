@@ -355,25 +355,6 @@ EMOTIONS = {
         },
     },
 }
-        "what_try": [
-            "Check for obvious pain sources: hair tourniquet, pinching, rash",
-            "Gently examine fingers, toes, and body for anything unusual",
-            "If crying persists or seems unusual, consult your pediatrician",
-        ],
-    },
-    "content": {
-        "label": "Content / Settling",
-        "icon": "\U0001f60a",
-        "description": "Low-intensity vocalizations without distress signals",
-        "what_hearing": "Soft, low-level fussing or cooing \u2014 no urgent quality, may include babbling",
-        "what_means": "Your baby doesn't seem to be in distress. These sounds may be self-soothing or exploratory vocalizations",
-        "what_try": [
-            "Continue what you're doing \u2014 baby seems settled",
-            "Respond with gentle voice to encourage communication",
-            "Observe for any changes that might indicate a shift in mood",
-        ],
-    },
-}
 
 # ---------------------------------------------------------------------------
 # Age bracket utility
@@ -534,9 +515,3 @@ def _get_age_variant(age_days: Optional[int]) -> str:
         return "181_365"
     else:
         return "366_730"
-        "what_means": emotion_info.get("what_means", "Your baby is expressing a need"),
-        "what_try": emotion_info.get("what_try", ["Observe and respond to your baby's cues"]),
-        "dunstan_sound": dunstan_sound,
-        "dunstan_description": dunstan_description,
-        "debug_trace": debug_trace,
-    }

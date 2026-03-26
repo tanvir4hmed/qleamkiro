@@ -63,3 +63,25 @@ def test_analyze_cry_rule_fallback_is_not_constant_discomfort():
     assert hungry_result["debug_trace"]["model_version"] == "rule_based_basic"
     assert pain_result["debug_trace"]["model_version"] == "rule_based_basic"
     assert hungry_result["primary_emotion"] != pain_result["primary_emotion"]
+
+
+def test_analyze_cry_uses_age_specific_variant_and_dunstan_gating():
+    classifier_result = {
+        "using_model": True,
+        "primary_emotion": "hungry",
+        "confidence": 0.74,
+        "emotion_probabilities": {"hungry": 0.74, "tired": 0.15, "discomfort": 0.11},
+        "top_emotions": [{"key": "hungry", "score": 0.74}],
+        "model_version": "phase4-v2",
+    }
+
+    newborn_result = analyze_cry({}, age_days=45, classifier_result=classifier_result)
+    toddler_result = analyze_cry({}, age_days=400, classifier_result=classifier_result)
+
+    assert newborn_result["age_bracket"] == "0_90"
+    assert newborn_result["dunstan_sound"] == "neh"
+    assert "feeding reflex" in newborn_result["what_means"]
+
+    assert toddler_result["age_bracket"] == "366_730"
+    assert toddler_result["dunstan_sound"] is None
+    assert "multiple channels" in toddler_result["what_means"]
