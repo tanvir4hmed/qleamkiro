@@ -69,29 +69,53 @@ def lambda_handler(event, context):
 
 
 def _step_load(event: Dict) -> Dict:
-    """Load confirmed training data from DynamoDB + S3, including age_days."""
+    """
+    Load confirmed training data from DynamoDB + S3, including age_days.
+    Phase 3: Filter by age bucket (day/week/slot).
+    """
     if not TRAINING_FEATURES_TABLE:
         return {"error": "TRAINING_FEATURES_TABLE not configured"}
 
     table = dynamodb.Table(TRAINING_FEATURES_TABLE)
     bucket = S3_BUCKET_NAME
 
-    # Query all confirmed samples
+    # Phase 3: Get bucket parameters
+    bucket_type = event.get("bucket_type")  # "day", "week", or "slot"
+    bucket_value = event.get("bucket_value")  # e.g., "45", "6", "0_90"
+    communication_stage = event.get("communication_stage", "A")
+
+    # Query samples for this specific bucket
     from boto3.dynamodb.conditions import Attr
-    response = table.scan(
-        FilterExpression=Attr("is_confirmed").eq(True),
-    )
+
+    if bucket_type and bucket_value:
+        # Bucket-specific training
+        filter_expr = Attr("is_confirmed").eq(True)
+        
+        if bucket_type == "day":
+            filter_expr = filter_expr & Attr("age_day_bucket").eq(int(bucket_value))
+        elif bucket_type == "week":
+            filter_expr = filter_expr & Attr("age_week_bucket").eq(int(bucket_value))
+        elif bucket_type == "slot":
+            filter_expr = filter_expr & Attr("age_slot_bucket").eq(bucket_value)
+        
+        logger.info(f"Loading samples for {bucket_type}={bucket_value}, stage={communication_stage}")
+    else:
+        # Global training (backward compatibility)
+        filter_expr = Attr("is_confirmed").eq(True)
+        logger.info("Loading all confirmed samples (global training)")
+
+    response = table.scan(FilterExpression=filter_expr)
     items = response.get("Items", [])
 
     # Handle pagination
     while "LastEvaluatedKey" in response:
         response = table.scan(
-            FilterExpression=Attr("is_confirmed").eq(True),
+            FilterExpression=filter_expr,
             ExclusiveStartKey=response["LastEvaluatedKey"],
         )
         items.extend(response.get("Items", []))
 
-    logger.info(f"Found {len(items)} confirmed training samples")
+    logger.info(f"Found {len(items)} confirmed training samples for bucket")
 
     if len(items) < MIN_SAMPLES:
         return {
@@ -175,6 +199,9 @@ def _step_load(event: Dict) -> Dict:
         "train_id": train_id,
         "temp_prefix": temp_prefix,
         "bucket": bucket,
+        "bucket_type": bucket_type,
+        "bucket_value": bucket_value,
+        "communication_stage": communication_stage,
         "n_samples": len(embeddings),
         "n_classes": len(valid_classes),
         "valid_classes": valid_classes,
@@ -253,7 +280,10 @@ def _step_train(event: Dict) -> Dict:
 
 
 def _step_validate(event: Dict) -> Dict:
-    """Compare new model accuracy to current active model."""
+    """
+    Compare new model accuracy to current active model.
+    Bug Fix #9: Minimum promotion threshold 55% (above random for 7-class).
+    """
     if event.get("skip"):
         return event
 
@@ -265,9 +295,12 @@ def _step_validate(event: Dict) -> Dict:
     )
 
     PROMOTION_MARGIN = 0.02
+    MIN_PROMOTION_ACCURACY = 0.55  # Bug Fix #9: Above random (14%) + meaningful margin
+    
     accuracy_improved = val_accuracy > (current_accuracy + PROMOTION_MARGIN)
 
-    if current_accuracy == 0 and val_accuracy >= 0.3:
+    # If no current model, require minimum 55% accuracy (not 30%)
+    if current_accuracy == 0 and val_accuracy >= MIN_PROMOTION_ACCURACY:
         accuracy_improved = True
 
     return {
@@ -279,17 +312,27 @@ def _step_validate(event: Dict) -> Dict:
 
 
 def _step_promote(event: Dict) -> Dict:
-    """Promote new model: copy to permanent S3 path, update ModelVersions."""
+    """
+    Promote new model: copy to permanent S3 path, update ModelVersions.
+    Phase 3: Store with bucket-specific composite key.
+    """
     bucket = event["bucket"]
     model_key = event["model_key"]
     train_id = event["train_id"]
     val_accuracy = event.get("val_accuracy", 0)
     prefix = event["temp_prefix"]
+    
+    # Phase 3: Bucket parameters
+    bucket_type = event.get("bucket_type", "global")
+    bucket_value = event.get("bucket_value", "all")
+    communication_stage = event.get("communication_stage", "A")
 
-    current_version = _get_active_model_version()
+    current_version = _get_active_model_version(bucket_type, bucket_value)
     new_version = current_version + 1
 
-    permanent_key = f"models/emotion_classifier/v{new_version}/model_weights.npz"
+    # Phase 3: S3 path includes bucket hierarchy
+    # models/{stage}/{bucket_type}/{bucket_value}/v{N}/model_weights.npz
+    permanent_key = f"models/{communication_stage}/{bucket_type}/{bucket_value}/v{new_version}/model_weights.npz"
     s3_client.copy_object(
         Bucket=bucket,
         CopySource={"Bucket": bucket, "Key": model_key},
@@ -306,7 +349,14 @@ def _step_promote(event: Dict) -> Dict:
                     Key={"model_type": "emotion_classifier",
                          "version": Decimal(str(current_version))},
                     UpdateExpression="SET active = :f",
-                    ExpressionAttributeValues={":f": False},
+                    ConditionExpression=(
+                        "age_bucket_type = :bt AND age_bucket_value = :bv"
+                    ),
+                    ExpressionAttributeValues={
+                        ":f": False,
+                        ":bt": bucket_type,
+                        ":bv": bucket_value,
+                    },
                 )
             except Exception as e:
                 logger.warning(f"Failed to deactivate v{current_version}: {e}")
@@ -316,6 +366,9 @@ def _step_promote(event: Dict) -> Dict:
             "version": Decimal(str(new_version)),
             "s3_path": permanent_key,
             "s3_bucket": bucket,
+            "age_bucket_type": bucket_type,
+            "age_bucket_value": bucket_value,
+            "communication_stage": communication_stage,
             "accuracy": Decimal(str(round(val_accuracy, 4))),
             "train_samples": Decimal(str(event.get("train_samples", 0))),
             "val_samples": Decimal(str(event.get("val_samples", 0))),
@@ -330,13 +383,16 @@ def _step_promote(event: Dict) -> Dict:
     _mark_features_as_trained(bucket, prefix, train_id)
 
     logger.info(
-        f"Model promoted: v{new_version} accuracy={val_accuracy:.3f} "
-        f"s3={permanent_key}"
+        f"Model promoted: {bucket_type}={bucket_value} v{new_version} "
+        f"accuracy={val_accuracy:.3f} s3={permanent_key}"
     )
 
     return {
         "status": "promoted",
         "version": new_version,
+        "bucket_type": bucket_type,
+        "bucket_value": bucket_value,
+        "communication_stage": communication_stage,
         "accuracy": val_accuracy,
         "s3_path": permanent_key,
         "train_id": train_id,
@@ -585,16 +641,21 @@ def _get_active_model_accuracy() -> float:
     return 0.0
 
 
-def _get_active_model_version() -> int:
+def _get_active_model_version(bucket_type: str = "global", bucket_value: str = "all") -> int:
+    """Get the active model version for a specific bucket."""
     if not MODEL_VERSIONS_TABLE:
         return 0
     try:
         mv_table = dynamodb.Table(MODEL_VERSIONS_TABLE)
         from boto3.dynamodb.conditions import Key, Attr
-        # Query by partition key (model_type) — no scan needed
+        # Query by partition key (model_type), filter by bucket and active
         response = mv_table.query(
             KeyConditionExpression=Key("model_type").eq("emotion_classifier"),
-            FilterExpression=Attr("active").eq(True),
+            FilterExpression=(
+                Attr("active").eq(True) &
+                Attr("age_bucket_type").eq(bucket_type) &
+                Attr("age_bucket_value").eq(bucket_value)
+            ),
             Limit=5,
         )
         items = response.get("Items", [])

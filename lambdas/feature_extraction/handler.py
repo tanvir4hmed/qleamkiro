@@ -367,6 +367,35 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
     session_table.put_item(Item=_float_to_decimal(session_item))
     logger.info(f"Session saved: {session_id} type={sound_type} adult={is_adult}")
 
+    # --- Phase 4: Update population atlas ---
+    if age_days is not None and not is_adult and sound_type in ("cry", "speech", "laugh", "mixed"):
+        try:
+            from atlas_builder import update_daily_atlas
+            sound_features_for_atlas = sound_result.get("features", {})
+            update_daily_atlas(age_days, sound_features_for_atlas)
+        except Exception as e:
+            logger.warning(f"Atlas update failed (non-fatal): {e}")
+    
+    # --- Phase 5: Update individual baby trajectory ---
+    if child_id and age_days is not None and not is_adult and sound_type in ("cry", "speech", "laugh", "mixed"):
+        try:
+            from trajectory_tracker import update_baby_trajectory
+            from constants import DEVELOPMENTAL_STAGE_MAP
+            
+            # Get communication stage
+            communication_stage = DEVELOPMENTAL_STAGE_MAP.get(age_days, "A")
+            
+            sound_features_for_trajectory = sound_result.get("features", {})
+            update_baby_trajectory(
+                child_id=child_id,
+                age_days=age_days,
+                sound_features=sound_features_for_trajectory,
+                sound_type=sound_type,
+                communication_stage=communication_stage,
+            )
+        except Exception as e:
+            logger.warning(f"Trajectory update failed (non-fatal): {e}")
+
     return {
         "status": "classified",
         "session_id": session_id,
@@ -501,7 +530,7 @@ def _check_post_classification_rejects(
     if sound_type == "speech" and isinstance(age_days, int) and age_days <= 90:
         reasons.append("speech_not_expected")
     if sound_type == "mixed":
-        if _is_chaotic_mixed(sound_summary, sound_scores):
+        if _is_chaotic_mixed(sound_summary, sound_scores, age_days):
             reasons.append("chaotic_environment")
 
     for issue in issues:
@@ -527,8 +556,11 @@ def _check_post_classification_rejects(
     return reasons, "Audio Quality Issue", "Audio is broken. Please try to record again."
 
 
-def _is_chaotic_mixed(sound_summary: Optional[Dict], sound_scores: Optional[Dict]) -> bool:
-    """Return True if mixed audio is too noisy/non-cry to analyze safely."""
+def _is_chaotic_mixed(sound_summary: Optional[Dict], sound_scores: Optional[Dict], age_days: Optional[int] = None) -> bool:
+    """
+    Return True if mixed audio is too noisy/non-cry to analyze safely.
+    Bug Fix #10: Age-aware threshold - older babies babble more, need lower cry requirement.
+    """
     summary = sound_summary if isinstance(sound_summary, dict) else {}
     scores = sound_scores if isinstance(sound_scores, dict) else {}
     ratios = summary.get("type_ratios", {}) if isinstance(summary.get("type_ratios"), dict) else {}
@@ -537,10 +569,18 @@ def _is_chaotic_mixed(sound_summary: Optional[Dict], sound_scores: Optional[Dict
     speech_ratio = float(ratios.get("speech", 0.0))
     noise_ratio = float(ratios.get("noise", 0.0))
 
+    # Age-aware cry threshold
+    if age_days and age_days > 90:
+        # Older babies: babbling is normal, lower cry requirement
+        min_cry_threshold = 0.15
+    else:
+        # Newborns: expect higher cry purity
+        min_cry_threshold = 0.35
+
     # Segment-ratio path (preferred when diarized segments exist).
     if ratios:
         cry_dominant = (
-            cry_ratio >= 0.35
+            cry_ratio >= min_cry_threshold
             and cry_ratio >= speech_ratio + 0.08
             and cry_ratio >= noise_ratio
         )
@@ -579,7 +619,7 @@ def _normalize_sound_type_for_scope(
 
     if sound_type == "mixed":
         # In this age scope, mixed that is cry-dominant should proceed as cry.
-        if not _is_chaotic_mixed(sound_summary, sound_scores):
+        if not _is_chaotic_mixed(sound_summary, sound_scores, age_days):
             return "cry"
         return sound_type
 
@@ -763,6 +803,24 @@ def _store_training_features(
         buf.seek(0)
         s3_client.put_object(Bucket=bucket, Key=s3_key, Body=buf.read())
 
+        # Phase 1: Calculate age buckets
+        age_day_bucket = age_days if isinstance(age_days, int) else 0
+        age_week_bucket = (age_day_bucket // 7) + 1 if age_day_bucket > 0 else 0
+        age_slot_bucket = _get_slot_bucket(age_day_bucket)
+        
+        # Phase 1: Determine communication stage from sound_type
+        communication_stage = _determine_communication_stage(sound_type, age_day_bucket)
+        
+        # Phase 1: Get language_region from parent profile
+        language_region = "en"  # Default
+        try:
+            if child_id:
+                profile_resp = child_profile_table.get_item(Key={"child_id": child_id})
+                profile = profile_resp.get("Item", {})
+                language_region = profile.get("language_region", "en")
+        except Exception as e:
+            logger.warning(f"Failed to get language_region from profile: {e}")
+
         # Store metadata in DynamoDB
         if training_features_table is not None:
             now = datetime.now(timezone.utc).isoformat()
@@ -776,6 +834,13 @@ def _store_training_features(
                 "model_version": classifier_result.get("model_version", "unknown"),
                 "age_days": age_days if isinstance(age_days, int) else 0,
                 "duration_s": duration_s,
+                # Phase 1: New fields
+                "age_day_bucket": age_day_bucket,
+                "age_week_bucket": age_week_bucket,
+                "age_slot_bucket": age_slot_bucket,
+                "communication_stage": communication_stage,
+                "language_region": language_region,
+                "flagged_for_training": False,  # Set to True after quality gates pass
                 "created_at": now,
             }
             training_features_table.put_item(Item=_float_to_decimal(item))
@@ -783,3 +848,54 @@ def _store_training_features(
         logger.info(f"Training features stored: {feature_id} -> s3://{bucket}/{s3_key}")
     except Exception as e:
         logger.warning(f"Failed to store training features (non-fatal): {e}")
+
+
+# =============================================================================
+# Phase 1: Helper Functions for Age Bucket Calculation
+# =============================================================================
+
+def _get_slot_bucket(age_days: int) -> str:
+    """
+    Map age_days to slot bucket (A-F).
+    
+    Args:
+        age_days: Baby's age in days
+    
+    Returns:
+        Slot bucket: "A", "B", "C", "D", "E", or "F"
+    """
+    if age_days <= 90:
+        return "A"
+    elif age_days <= 180:
+        return "B"
+    elif age_days <= 270:
+        return "C"
+    elif age_days <= 365:
+        return "D"
+    elif age_days <= 548:
+        return "E"
+    else:
+        return "F"
+
+
+def _determine_communication_stage(sound_type: str, age_days: int) -> str:
+    """
+    Determine communication stage from sound_type and age.
+    
+    Args:
+        sound_type: Detected sound type (cry, babble, speech, laugh, etc.)
+        age_days: Baby's age in days
+    
+    Returns:
+        Communication stage: "cry", "babble", "word", "laugh", or "other"
+    """
+    if sound_type in ("cry", "mixed"):
+        return "cry"
+    elif sound_type == "babble":
+        return "babble"
+    elif sound_type == "speech":
+        return "word"
+    elif sound_type == "laugh":
+        return "laugh"
+    else:
+        return "other"

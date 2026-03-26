@@ -20,6 +20,8 @@ CHILD_PROFILE_TABLE: str = os.environ.get("CHILD_PROFILE_TABLE", "qleam-dev-Chil
 SESSION_TABLE: str = os.environ.get("SESSION_TABLE", "qleam-dev-Session")
 FEEDBACK_TABLE: str = os.environ.get("FEEDBACK_TABLE", "qleam-dev-Feedback")
 TRAINING_FEATURES_TABLE: str = os.environ.get("TRAINING_FEATURES_TABLE", "qleam-dev-TrainingFeatures")
+BABY_DAILY_ATLAS_TABLE: str = os.environ.get("BABY_DAILY_ATLAS_TABLE", "qleam-dev-BabyDailyAtlas")
+BABY_TRAJECTORY_TABLE: str = os.environ.get("BABY_TRAJECTORY_TABLE", "qleam-dev-BabyTrajectory")
 
 # =============================================================================
 # S3
@@ -117,14 +119,13 @@ DISCLAIMER = (
 # mode: PRE_LINGUISTIC | TRANSITION | LINGUISTIC
 # =============================================================================
 DEVELOPMENTAL_STAGE_MAP = [
-    (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),
-    # (91,   180,  "EARLY_VOCAL",       "PRE_LINGUISTIC"),
-    # (181,  270,  "CANONICAL_BABBLE",  "PRE_LINGUISTIC"),  # 6-9m: still pre-linguistic per spec
-    # (271,  365,  "PROTO_WORDS",       "TRANSITION"),
-    # (366,  548,  "FIRST_WORDS",       "LINGUISTIC"),
-    # # System scope is capped to 0-24 months; older ages are clamped here.
-    # (549,  99999, "WORD_COMBINATIONS", "LINGUISTIC"),
-    (91, 99999, "NEWBORN", "PRE_LINGUISTIC"),
+    (0,    90,   "NEWBORN",           "PRE_LINGUISTIC"),   # Stage A: Cry dominant
+    (91,   180,  "INFANT",            "PRE_LINGUISTIC"),   # Stage B: Cry + early vocal
+    (181,  270,  "BABBLER",           "PRE_LINGUISTIC"),   # Stage C: Babble onset
+    (271,  365,  "PROTO_WORD",        "TRANSITION"),       # Stage D: Proto-words
+    (366,  548,  "FIRST_WORD",        "LINGUISTIC"),       # Stage E: First words
+    (549,  730,  "WORD_COMBO",        "LINGUISTIC"),       # Stage F: Word combinations
+    (731,  99999, "OUT_OF_SCOPE",     "LINGUISTIC"),       # Beyond 24 months
 ]
 
 # =============================================================================

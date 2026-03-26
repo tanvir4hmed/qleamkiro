@@ -37,6 +37,8 @@ from constants import (
 from cry_analyzer import analyze_cry
 from speech_transcriber import transcribe_audio, analyze_words_for_display
 from word_analyzer import analyze_words_by_age
+from stage_router import get_analysis_routing, get_multi_signal_headline, get_stage_appropriate_suggestions
+from babble_analyzer import analyze_babble
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 logging.basicConfig(level=getattr(logging, log_level))
@@ -102,6 +104,17 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
         "disclaimer": DISCLAIMER,
     }
 
+    # --- Phase 6: Get stage-aware routing ---
+    stage_routing = None
+    if age_days is not None:
+        try:
+            stage_routing = get_analysis_routing(age_days, sound_type)
+            insight["stage"] = stage_routing.get("stage")
+            insight["stage_name"] = stage_routing.get("stage_name")
+            logger.info(f"Stage routing: {stage_routing.get('stage')} - {stage_routing.get('analysis_mode')}")
+        except Exception as e:
+            logger.warning(f"Failed to get stage routing: {e}")
+
     # --- Fast reject path ---
     if fast_reject:
         insight["display_type"] = event.get("sound_type", "silence")
@@ -159,6 +172,47 @@ def lambda_handler(event: Dict, context: Any) -> Dict:
             word_analysis, word_age_analysis, is_adult, age_days,
             classifier_result=classifier_result,
         )
+
+    # --- Phase 4: Add population context ---
+    population_context = None
+    if age_days is not None and not is_adult and sound_type in ("cry", "mixed"):
+        try:
+            from atlas_builder import get_population_context
+            pop_context = get_population_context(age_days, sound_features)
+            if pop_context.get("has_population_data"):
+                insight["population_context"] = pop_context
+                population_context = pop_context
+                logger.info(f"Added population context for age_day={age_days}")
+        except Exception as e:
+            logger.warning(f"Failed to get population context: {e}")
+    
+    # --- Phase 5: Add personal context ---
+    if event.get("child_id") and age_days is not None and not is_adult and sound_type in ("cry", "mixed"):
+        try:
+            from trajectory_tracker import get_personal_context
+            personal_context = get_personal_context(
+                child_id=event["child_id"],
+                age_days=age_days,
+                sound_features=sound_features,
+                population_context=population_context,
+            )
+            if personal_context.get("has_personal_history"):
+                insight["personal_context"] = personal_context
+                logger.info(f"Added personal context for child {event['child_id']}")
+        except Exception as e:
+            logger.warning(f"Failed to get personal context: {e}")
+    
+    # --- Phase 6: Add stage-appropriate suggestions ---
+    if stage_routing and not is_adult:
+        try:
+            suggestions = get_stage_appropriate_suggestions(
+                stage_routing.get("stage", "A"),
+                sound_type
+            )
+            if suggestions:
+                insight["stage_suggestions"] = suggestions
+        except Exception as e:
+            logger.warning(f"Failed to get stage suggestions: {e}")
 
     _save_insight(session_id, insight)
 
@@ -234,7 +288,7 @@ def _build_cry_insight(
         _attach_word_info(insight, word_analysis, word_age_analysis)
         return insight
 
-    # ML classifier output -> display text
+    # ML classifier output -> display text (age_days passed through for Basic mode)
     cry_result = analyze_cry(
         features=sound_features,
         age_days=age_days,
@@ -292,6 +346,25 @@ def _build_cry_insight(
         insight["also_possible"] = alt_emotions
 
     _attach_word_info(insight, word_analysis, word_age_analysis)
+    
+    # --- Phase 6: Add babble analysis for multi-signal sessions ---
+    if age_days and age_days >= 180:  # Stages C-F
+        try:
+            babble_result = analyze_babble(sound_features, age_days, word_analysis)
+            if babble_result and babble_result.get("confidence", 0) > 0.5:
+                insight["babble_analysis"] = babble_result
+                # Update headline for multi-signal
+                headline, icon = get_multi_signal_headline(
+                    stage=insight.get("stage", "A"),
+                    cry_emotion=cry_result.get("primary_emotion"),
+                    babble_type=babble_result.get("babble_type"),
+                )
+                insight["headline"] = headline
+                insight["headline_icon"] = icon
+                logger.info(f"Multi-signal: cry + babble ({babble_result.get('babble_type')})")
+        except Exception as e:
+            logger.warning(f"Babble analysis failed: {e}")
+    
     return insight
 
 

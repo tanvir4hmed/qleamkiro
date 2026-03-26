@@ -3,8 +3,185 @@ Rule-based cry emotion scoring for Basic mode / model fallback.
 
 This mirrors the older handmade approach: score acoustic features against
 emotion profiles, then normalize to a probability-like distribution.
+
+Phase 2: Age-adjusted thresholds for all ages 0-730 days.
 """
 from typing import Any, Dict, List, Optional, Tuple
+
+
+# =============================================================================
+# Phase 2: Age Anchor Points for Developmental Acoustic Curves
+# Derived from acoustic development literature (same sources as original thresholds)
+# =============================================================================
+
+AGE_ANCHOR_POINTS = {
+    # Hungry emotion - F0 thresholds
+    "f0_hungry_min": {0: 300.0, 90: 280.0, 180: 250.0, 365: 220.0, 730: 200.0},
+    "f0_hungry_max": {0: 560.0, 90: 520.0, 180: 480.0, 365: 420.0, 730: 380.0},
+    
+    # Tired emotion - F0 thresholds
+    "f0_tired_min": {0: 210.0, 90: 200.0, 180: 180.0, 365: 160.0, 730: 150.0},
+    "f0_tired_max": {0: 430.0, 90: 400.0, 180: 370.0, 365: 340.0, 730: 320.0},
+    
+    # Pain emotion - F0 thresholds
+    "f0_pain_min": {0: 560.0, 90: 520.0, 180: 480.0, 365: 440.0, 730: 400.0},
+    "f0_pain_max": {0: 1100.0, 90: 1000.0, 180: 900.0, 365: 800.0, 730: 700.0},
+    
+    # Gas emotion - F0 thresholds
+    "f0_gas_min": {0: 400.0, 90: 380.0, 180: 350.0, 365: 320.0, 730: 300.0},
+    "f0_gas_max": {0: 660.0, 90: 620.0, 180: 580.0, 365: 540.0, 730: 500.0},
+    
+    # Burp emotion - F0 thresholds
+    "f0_burp_min": {0: 280.0, 90: 270.0, 180: 250.0, 365: 230.0, 730: 220.0},
+    "f0_burp_max": {0: 520.0, 90: 500.0, 180: 470.0, 365: 440.0, 730: 420.0},
+    
+    # Content emotion - F0 thresholds
+    "f0_content_min": {0: 120.0, 90: 130.0, 180: 140.0, 365: 150.0, 730: 160.0},
+    "f0_content_max": {0: 420.0, 90: 400.0, 180: 380.0, 365: 360.0, 730: 350.0},
+    
+    # RMS (energy) thresholds
+    "rms_hungry_min": {0: 0.055, 90: 0.060, 180: 0.065, 365: 0.070, 730: 0.075},
+    "rms_hungry_max": {0: 0.16, 90: 0.17, 180: 0.18, 365: 0.19, 730: 0.20},
+    "rms_tired_min": {0: 0.010, 90: 0.012, 180: 0.015, 365: 0.018, 730: 0.020},
+    "rms_tired_max": {0: 0.075, 90: 0.080, 180: 0.085, 365: 0.090, 730: 0.095},
+    "rms_pain_min": {0: 0.13, 90: 0.14, 180: 0.15, 365: 0.16, 730: 0.17},
+    "rms_pain_max": {0: 0.45, 90: 0.42, 180: 0.40, 365: 0.38, 730: 0.36},
+    "rms_discomfort_min": {0: 0.03, 90: 0.035, 180: 0.04, 365: 0.045, 730: 0.05},
+    "rms_discomfort_max": {0: 0.11, 90: 0.12, 180: 0.13, 365: 0.14, 730: 0.15},
+    "rms_gas_min": {0: 0.085, 90: 0.090, 180: 0.095, 365: 0.100, 730: 0.105},
+    "rms_gas_max": {0: 0.18, 90: 0.19, 180: 0.20, 365: 0.21, 730: 0.22},
+    "rms_burp_min": {0: 0.03, 90: 0.035, 180: 0.04, 365: 0.045, 730: 0.05},
+    "rms_burp_max": {0: 0.10, 90: 0.105, 180: 0.11, 365: 0.115, 730: 0.12},
+    "rms_content_min": {0: 0.0, 90: 0.0, 180: 0.0, 365: 0.0, 730: 0.0},
+    "rms_content_max": {0: 0.055, 90: 0.060, 180: 0.065, 365: 0.070, 730: 0.075},
+    
+    # Spectral centroid thresholds
+    "spectral_hungry_min": {0: 800.0, 90: 850.0, 180: 900.0, 365: 950.0, 730: 1000.0},
+    "spectral_hungry_max": {0: 2500.0, 90: 2400.0, 180: 2300.0, 365: 2200.0, 730: 2100.0},
+    "spectral_pain_min": {0: 2400.0, 90: 2300.0, 180: 2200.0, 365: 2100.0, 730: 2000.0},
+    "spectral_pain_max": {0: 5200.0, 90: 5000.0, 180: 4800.0, 365: 4600.0, 730: 4400.0},
+    "spectral_gas_min": {0: 2200.0, 90: 2150.0, 180: 2100.0, 365: 2050.0, 730: 2000.0},
+    "spectral_gas_max": {0: 4200.0, 90: 4100.0, 180: 4000.0, 365: 3900.0, 730: 3800.0},
+    "spectral_discomfort_min": {0: 1200.0, 90: 1250.0, 180: 1300.0, 365: 1350.0, 730: 1400.0},
+    "spectral_discomfort_max": {0: 2800.0, 90: 2750.0, 180: 2700.0, 365: 2650.0, 730: 2600.0},
+}
+
+
+def interpolate_threshold(feature_key: str, age_days: int) -> float:
+    """
+    Linear interpolation between anchor points for given age.
+    
+    For 0-90 days: returns exact anchor value (preserves current behavior).
+    For 91+ days: interpolates between nearest anchors.
+    
+    Args:
+        feature_key: Key in AGE_ANCHOR_POINTS (e.g., "f0_hungry_min")
+        age_days: Baby's age in days
+    
+    Returns:
+        Interpolated threshold value
+    """
+    anchors = AGE_ANCHOR_POINTS.get(feature_key, {})
+    if not anchors:
+        return 0.0
+    
+    # Get sorted anchor ages
+    ages = sorted(anchors.keys())
+    
+    # For 0-90 days: return exact value (preserve current behavior)
+    if age_days <= 90:
+        # Find closest anchor <= age_days
+        for age in reversed(ages):
+            if age <= age_days:
+                return anchors[age]
+        return anchors[ages[0]]
+    
+    # Find surrounding anchors for interpolation
+    lower_age = None
+    upper_age = None
+    
+    for age in ages:
+        if age <= age_days:
+            lower_age = age
+        if age >= age_days and upper_age is None:
+            upper_age = age
+    
+    # Edge cases
+    if lower_age is None:
+        return anchors[ages[0]]
+    if upper_age is None:
+        return anchors[ages[-1]]
+    if lower_age == upper_age:
+        return anchors[lower_age]
+    
+    # Linear interpolation
+    lower_val = anchors[lower_age]
+    upper_val = anchors[upper_age]
+    ratio = (age_days - lower_age) / (upper_age - lower_age)
+    return lower_val + ratio * (upper_val - lower_val)
+
+
+def get_age_adjusted_profiles(age_days: int) -> Dict:
+    """
+    Returns emotion profiles with age-adjusted thresholds.
+    
+    For 0-90 days: returns EMOTION_PROFILES_0_3M exactly (no change).
+    For 91+ days: returns interpolated profiles based on developmental curves.
+    
+    Args:
+        age_days: Baby's age in days
+    
+    Returns:
+        Dict of emotion profiles with age-appropriate thresholds
+    """
+    # For 0-90 days: preserve current behavior exactly
+    if age_days <= 90:
+        return EMOTION_PROFILES_0_3M
+    
+    # Build age-adjusted profiles for older babies
+    adjusted = {}
+    
+    for emotion, config in EMOTION_PROFILES_0_3M.items():
+        adjusted[emotion] = {
+            "prior": config["prior"],
+            "rules": []
+        }
+        
+        for rule in config["rules"]:
+            feature = rule["feature"]
+            
+            # Map feature name to anchor point keys
+            if feature == "f0":
+                min_key = f"f0_{emotion}_min"
+                max_key = f"f0_{emotion}_max"
+            elif feature == "rms_mean":
+                min_key = f"rms_{emotion}_min"
+                max_key = f"rms_{emotion}_max"
+            elif feature == "spectral_centroid":
+                min_key = f"spectral_{emotion}_min"
+                max_key = f"spectral_{emotion}_max"
+            else:
+                # Features without age curves keep original thresholds
+                adjusted[emotion]["rules"].append(rule)
+                continue
+            
+            # Interpolate min/max for this age
+            adjusted_min = interpolate_threshold(min_key, age_days)
+            adjusted_max = interpolate_threshold(max_key, age_days)
+            
+            # If no anchor points found, use original
+            if adjusted_min == 0.0 and adjusted_max == 0.0:
+                adjusted[emotion]["rules"].append(rule)
+            else:
+                adjusted_rule = {
+                    "feature": feature,
+                    "min": adjusted_min if adjusted_min > 0 else rule.get("min"),
+                    "max": adjusted_max if adjusted_max > 0 else rule.get("max"),
+                    "weight": rule["weight"],
+                }
+                adjusted[emotion]["rules"].append(adjusted_rule)
+    
+    return adjusted
 
 
 EMOTION_PROFILES_0_3M = {
@@ -195,10 +372,20 @@ def _score_profiles(
     return scores, trigger_map
 
 
-def analyze_cry_rules(features: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a rule-based cry result with normalized emotion scores."""
+def analyze_cry_rules(features: Dict[str, Any], age_days: int = 45) -> Dict[str, Any]:
+    """
+    Return a rule-based cry result with normalized emotion scores.
+    
+    Args:
+        features: Acoustic features dict
+        age_days: Baby's age in days (default 45 for backward compatibility)
+    
+    Returns:
+        Dict with emotion scores and debug info
+    """
     values = _extract_scoring_features(features or {})
-    raw_scores, triggers = _score_profiles(values, EMOTION_PROFILES_0_3M)
+    profiles = get_age_adjusted_profiles(age_days)
+    raw_scores, triggers = _score_profiles(values, profiles)
 
     total = sum(max(v, 0.0) for v in raw_scores.values())
     if total <= 1e-9:

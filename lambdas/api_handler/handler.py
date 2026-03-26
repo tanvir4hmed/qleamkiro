@@ -131,12 +131,12 @@ def _float_to_decimal(obj: Any) -> Any:
 
 
 def get_allowed_origin(event: Dict) -> str:
-    """Get the allowed origin from request headers if trusted.
+    """
+    Get the allowed origin from request headers if trusted.
+    Bug Fix #6: Reject unknown origins in production instead of falling back to request origin.
     
     Returns the specific origin if it's in the allowed list, otherwise returns
-    the first allowed origin as fallback. This is required because when
-    Access-Control-Allow-Credentials is true, Access-Control-Allow-Origin
-    cannot be '*' - it must be a specific origin.
+    the first allowed origin as fallback for dev, or rejects for production.
     """
     # Check both Origin and origin header keys (API Gateway can use either)
     headers = event.get("headers", {})
@@ -160,18 +160,22 @@ def get_allowed_origin(event: Dict) -> str:
             return origin
     
     # For development: allow localhost origins
-    if "localhost" in origin or "127.0.0.1" in origin:
-        logger.debug(f"Allowing localhost origin: {origin}")
+    if ENVIRONMENT == "dev" and ("localhost" in origin or "127.0.0.1" in origin):
+        logger.debug(f"Allowing localhost origin in dev: {origin}")
         return origin
     
-    # If no match but we have allowed origins configured, return the first one
-    # This handles cases where the origin header might be missing or different
+    # Production: reject unknown origins
+    if ENVIRONMENT == "prod":
+        logger.warning(f"Rejected unknown origin in production: {origin}")
+        return ALLOWED_ORIGINS[0].rstrip("/") if ALLOWED_ORIGINS else ""
+    
+    # Dev/staging: allow with warning
     if ALLOWED_ORIGINS:
         logger.warning(f"Origin {origin} not in allowed list, using first allowed: {ALLOWED_ORIGINS[0]}")
         return ALLOWED_ORIGINS[0].rstrip("/")
     
-    # Last resort fallback (should not happen in production)
-    logger.warning("No allowed origins configured, returning request origin")
+    # Last resort fallback (should not happen)
+    logger.warning("No allowed origins configured")
     return origin if origin else "*"
 
 
@@ -193,9 +197,18 @@ def response(status_code: int, body: Any, event: Optional[Dict] = None) -> Dict:
 
 
 def get_user_id(event: Dict) -> str:
-    """Extract Cognito user ID from JWT claims."""
+    """
+    Extract Cognito user ID from JWT claims.
+    Bug Fix #7: Raise exception for unauthenticated requests instead of returning "anonymous".
+    """
     claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
-    return claims.get("sub", claims.get("cognito:username", "anonymous"))
+    user_id = claims.get("sub") or claims.get("cognito:username")
+    
+    if not user_id:
+        logger.warning("Unauthenticated request - no user_id in claims")
+        raise ValueError("Unauthenticated request")
+    
+    return user_id
 
 
 # =============================================================================
@@ -257,12 +270,21 @@ def create_child(event: Dict) -> Dict:
     child_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    # Phase 1: Add language_region and trust_score
+    language_region = body.get("language_region", "en").strip().lower()
+    # Validate language_region
+    valid_languages = ["en", "zh", "ar", "fr", "de", "es", "pt", "hi", "ko", "ja", "multilingual", "other"]
+    if language_region not in valid_languages:
+        language_region = "en"  # Default to English
+
     profile = {
         "child_id": child_id,
         "parent_id": user_id,
         "name": child_name,
         "birth_date": birth_date,
         "gender": gender if gender in ("boy", "girl", "other") else "",
+        "language_region": language_region,  # Phase 1: New field
+        "trust_score": 0.5,  # Phase 1: New field - starts at neutral
         "baseline_features": {},
         "readiness_score": 0.5,
         "session_count": 0,

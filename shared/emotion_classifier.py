@@ -99,6 +99,126 @@ def load_model(model_path: Optional[str] = None) -> bool:
         return False
 
 
+def load_best_model_for_age(age_days: int, communication_stage: str = "A") -> bool:
+    """
+    Load the most specific model available for the given age (degradation chain).
+    
+    Degradation chain:
+    1. Day model (age_day_bucket)
+    2. Week model (age_week_bucket)
+    3. Slot model (age_slot_bucket)
+    4. Global model (all ages)
+    5. Basic mode (rule-based fallback)
+    
+    Args:
+        age_days: Baby's age in days
+        communication_stage: Developmental stage (A-F)
+    
+    Returns:
+        True if a model was loaded successfully
+    """
+    global _numpy_model, _numpy_model_loaded, _active_model_version
+    
+    # Calculate buckets
+    age_day = age_days
+    age_week = age_days // 7
+    age_slot = _get_age_slot(age_days)
+    
+    # Try day model first (most specific)
+    if _try_load_bucket_model("day", str(age_day), communication_stage):
+        logger.info(f"Loaded day model for age_day={age_day}")
+        return True
+    
+    # Try week model
+    if _try_load_bucket_model("week", str(age_week), communication_stage):
+        logger.info(f"Loaded week model for age_week={age_week}")
+        return True
+    
+    # Try slot model
+    if _try_load_bucket_model("slot", age_slot, communication_stage):
+        logger.info(f"Loaded slot model for age_slot={age_slot}")
+        return True
+    
+    # Try global model
+    if _try_load_bucket_model("global", "all", communication_stage):
+        logger.info("Loaded global model")
+        return True
+    
+    # Fall back to Basic mode (rule-based)
+    logger.info("No trained model available, will use Basic mode")
+    return False
+
+
+def _get_age_slot(age_days: int) -> str:
+    """Get age slot bucket for given age."""
+    if age_days <= 90:
+        return "0_90"
+    elif age_days <= 180:
+        return "91_180"
+    elif age_days <= 365:
+        return "181_365"
+    else:
+        return "366_730"
+
+
+def _try_load_bucket_model(bucket_type: str, bucket_value: str, communication_stage: str) -> bool:
+    """
+    Try to load a model for a specific bucket.
+    
+    Returns:
+        True if model loaded successfully
+    """
+    global _numpy_model, _numpy_model_loaded, _active_model_version
+    import io
+    
+    model_versions_table = os.environ.get("MODEL_VERSIONS_TABLE", "")
+    if not model_versions_table:
+        return False
+    
+    try:
+        import boto3
+        dynamodb = boto3.resource("dynamodb")
+        from boto3.dynamodb.conditions import Key, Attr
+        mv_table = dynamodb.Table(model_versions_table)
+        
+        # Query for active model with this bucket
+        response = mv_table.query(
+            KeyConditionExpression=Key("model_type").eq("emotion_classifier"),
+            FilterExpression=(
+                Attr("active").eq(True) &
+                Attr("age_bucket_type").eq(bucket_type) &
+                Attr("age_bucket_value").eq(bucket_value)
+            ),
+            Limit=1,
+        )
+        items = response.get("Items", [])
+        if not items:
+            return False
+        
+        item = items[0]
+        s3_path = item.get("s3_path", "")
+        s3_bucket = item.get("s3_bucket", "")
+        version = int(item.get("version", 0))
+        
+        if not s3_path or not s3_bucket:
+            return False
+        
+        # Load model from S3
+        s3_client = boto3.client("s3")
+        obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_path)
+        buf = io.BytesIO(obj["Body"].read())
+        data = np.load(buf)
+        
+        _numpy_model = {k: data[k] for k in data.files}
+        _numpy_model_loaded = True
+        _active_model_version = version
+        
+        return True
+    except Exception as e:
+        logger.debug(f"Could not load {bucket_type}={bucket_value} model: {e}")
+        return False
+
+
 def load_numpy_model(model_path: Optional[str] = None) -> bool:
     """
     Load Phase 3/4 numpy model (.npz file).

@@ -29,11 +29,13 @@ def encode_age(age_days: int) -> np.ndarray:
         np.ndarray of shape (4,), dtype float32
     """
     age = max(0, min(age_days, MAX_AGE_DAYS))
+    # Smooth sigmoid decay for newborn hint: 1.0 at day 60, 0.5 at day 90, ~0.0 at day 120
+    newborn_hint = 1.0 / (1.0 + math.exp((age - 90) / 10))
     return np.array([
         age / MAX_AGE_DAYS,
         math.sin(age * math.pi / 90),
         math.sin(age * math.pi / 180),
-        1.0 if age < 90 else 0.0,
+        newborn_hint,
     ], dtype=np.float32)
 
 
